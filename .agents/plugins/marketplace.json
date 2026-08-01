@@ -1,0 +1,21 @@
+{
+  "name": "orchesta-workspace",
+  "interface": {
+    "displayName": "Orchestra Workspace"
+  },
+  "plugins": [
+    {
+      "name": "orchestra",
+      "description": "Canvas-aware terminal, note, file-tree and browser coordination",
+      "source": {
+        "source": "local",
+        "path": "./plugins/orchestra"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
