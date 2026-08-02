@@ -1,20 +1,33 @@
 ---
 name: orchestra-canvas
-description: Trigger immediately whenever the user mentions Orchestra, connected notes, canvas, notes, wires, ropes, browser portals, or spatial multi-agent coordination. Automatically reads $ORCHESTRA_CONTEXT_DIR/connected_notes.md and $ORCHESTRA_CONTEXT_DIR/context.json directly without executing grep or file searches.
+description: Safely operate Orchestra canvas connections, terminals, notes, file trees and browser portals.
 ---
 
-# Orchestra Canvas Context & Multi-Agent Skill
+# Orchestra Canvas
 
-When running inside an Orchestra Desktop terminal node, your session is part of a spatial 2D canvas workspace. You are connected via physical cables (ropes) to other nodes such as Markdown Notes, File Trees, Browser Portals, or Peer Agent Terminals.
+Follow the canonical workspace skill at `skills/orchestra-canvas/SKILL.md`.
+The cable graph is an access-control graph: use only nodes returned by
+`orchestra connections`.
 
-## 1. MANDATORY DIRECT ACTION (NO GREP OR FILE SEARCHES):
-- **ALWAYS** read `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` directly to view notes connected to THIS terminal.
-- **ALWAYS** read `$ORCHESTRA_CONTEXT_DIR/context.json` directly to inspect connected browser URLs, peer agent IDs, and file trees.
-- **DO NOT** execute `grep`, `find`, or manual filesystem searches to discover connected notes. Rely strictly on `$ORCHESTRA_CONTEXT_DIR`.
+Run this bootstrap before acting:
 
-## 2. Interacting with Connected Markdown Notes:
-- **Reading**: Read `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` to retrieve tasks, specifications, or reviewer feedback.
-- **Updating**: Write directly to `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` when completing tasks or updating progress. The Orchestra canvas re-renders your edits live in real time.
+```bash
+orchestra doctor
+orchestra connections
+orchestra agents
+sed -n '1,240p' "$ORCHESTRA_CONTEXT_DIR/connected_notes.md"
+sed -n '1,240p' "$ORCHESTRA_CONTEXT_DIR/context.json"
+```
 
-## 3. Orchestrating Peer Terminals & Agents:
-- To delegate subtasks to connected peer agents, write instructions into `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` or communicate via socket.
+For every interactive action use:
+
+```bash
+orchestra terminal screen <id> --plain
+orchestra terminal type <id> "text"
+orchestra terminal key <id> enter
+orchestra terminal wait-for <id> "pattern" --timeout-secs 30
+```
+
+Inspect and classify the current screen before writing. `inputWritten` only
+proves PTY delivery, never that an agent processed the request. Never expose
+`ORCHESTRA_TOKEN` or edit canvas context files directly.
