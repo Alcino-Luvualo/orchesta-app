@@ -1,20 +1,30 @@
 ---
 name: orchesta
-description: Trigger immediately whenever the user mentions Orchestra, orchesta, connected notes, canvas, notes, wires, ropes, browser portals, or spatial multi-agent coordination inside Orchestra Desktop. Automatically reads $ORCHESTRA_CONTEXT_DIR/connected_notes.md and $ORCHESTRA_CONTEXT_DIR/context.json directly without executing grep or file searches.
+description: Use Orchestra Desktop canvases, connected terminals, notes, file trees and browser portals safely.
 ---
 
-# Orchesta Canvas Context & Multi-Agent Skill
+# Orchestra compatibility skill
 
-When running inside an Orchestra Desktop terminal node (where `ORCHESTRA=1` and `$ORCHESTRA_CONTEXT_DIR` are set), your session is part of a spatial 2D canvas workspace. You are connected via physical cables (ropes) to other nodes such as Markdown Notes, File Trees, Browser Portals, or Peer Agent Terminals.
+The canonical instructions are in `skills/orchestra-canvas/SKILL.md`. When this
+compatibility name is activated, follow that skill exactly.
 
-## 1. MANDATORY DIRECT ACTION (NO GREP OR FILE SEARCHES):
-- **ALWAYS** read `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` directly to view notes connected to THIS terminal.
-- **ALWAYS** read `$ORCHESTRA_CONTEXT_DIR/context.json` directly to inspect connected browser URLs, peer agent IDs, and file trees connected ONLY to this agent node.
-- **DO NOT** execute `grep`, `find`, or manual filesystem searches to discover connected notes. Rely strictly on `$ORCHESTRA_CONTEXT_DIR`.
+Before any connected-node action, run:
 
-## 2. Interacting with Connected Markdown Notes:
-- **Reading**: Read `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` to retrieve tasks, specifications, or reviewer feedback.
-- **Updating**: Write directly to `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` when completing tasks or updating progress. The Orchestra canvas re-renders your edits live in real time.
+```bash
+orchestra doctor
+orchestra connections
+orchestra agents
+```
 
-## 3. Orchestrating Peer Terminals & Agents:
-- To delegate subtasks to connected peer agents, write instructions into `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` or communicate via socket.
+For an interactive terminal, always inspect first:
+
+```bash
+orchestra terminal screen <id> --plain
+```
+
+Classify the visible state, then use `terminal type` and an intentional
+`terminal key`, and inspect again. `inputWritten` is not proof of semantic
+delivery. Use only IDs and permissions returned by `orchestra connections`.
+To create a connected note, use the authenticated `orchestra note create`
+command documented by the canonical skill; never write canvas context or
+database files directly.
