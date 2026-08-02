@@ -1,6 +1,29 @@
 {
-  "sessionId": "term_1786115982071",
-  "terminalTitle": "Antigravity CLI",
-  "connectedNotes": [],
-  "connectedPeerAgents": []
+  "terminals": [
+    {
+      "sessionId": "browser_validation_terminal3",
+      "agent": "Browser validation terminal",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [],
+      "connectedPeerAgents": [],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "browser_validation_terminal4",
+      "agent": "Browser validation terminal",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [],
+      "connectedPeerAgents": [],
+      "connectedBrowsers": [
+        {
+          "id": "browser_validation_portal4",
+          "title": "Browser Portal",
+          "url": "http://127.0.0.1:37194/start.html"
+        }
+      ],
+      "connectedFileTrees": []
+    }
+  ],
+  "updatedAt": "2026-08-16T20:35:39.965Z"
 }
