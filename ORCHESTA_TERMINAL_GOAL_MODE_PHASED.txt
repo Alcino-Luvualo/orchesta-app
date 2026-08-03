@@ -1,0 +1,3361 @@
+# ORCHESTA — NEXT-GENERATION TERMINAL
+# Warp-like Rich Input + Ghostty-like Terminal Core
+#
+# OBJECTIVE:
+# Transform the current Orchesta terminal into a first-class modern developer
+# terminal, combining:
+#
+# - Warp-style native command editor
+# - Warp-style semantic command/output Blocks
+# - Ghostty-style terminal correctness and compatibility
+# - Real PTY execution
+# - Excellent interactive TUI/CLI-agent compatibility
+# - High performance
+# - Proper copy/select/mouse behavior
+# - Shell integration
+# - Session persistence-ready architecture
+#
+# Do NOT implement a visual imitation only.
+#
+# This task is architectural.
+#
+# The terminal must remain a REAL Linux terminal capable of correctly running:
+#
+# bash
+# zsh
+# fish
+# sh
+# Claude Code
+# Codex
+# Gemini CLI
+# OpenCode
+# vim
+# neovim
+# nano
+# htop
+# btop
+# less
+# man
+# ssh
+# docker
+# npm
+# pnpm
+# bun
+# yarn
+# git
+# Python REPL
+# Node REPL
+# sudo
+# interactive scripts
+#
+# while providing a modern editor whenever the shell is sitting at its prompt.
+#
+#
+# ============================================================
+# CRITICAL EXECUTION CONTRACT — GOAL MODE / STRICT PHASE GATES
+# ============================================================
+#
+# THIS SPECIFICATION WILL BE EXECUTED IN AUTONOMOUS / GOAL MODE.
+#
+# Therefore, implementation MUST be strictly phase-gated.
+#
+# The existence of a later phase in this document is NOT permission to begin it.
+#
+# ABSOLUTE RULE:
+#
+#     IMPLEMENT ONE PHASE -> VALIDATE THAT PHASE COMPLETELY ->
+#     FIX EVERYTHING FOUND -> RE-VALIDATE -> MARK PHASE PASS ->
+#     ONLY THEN START THE NEXT PHASE.
+#
+# NEVER implement multiple phases at once merely because the full specification
+# is available in the same prompt.
+#
+# NEVER "get ahead" by partially implementing features from a future phase.
+#
+# NEVER continue to the next phase while the current phase has:
+#
+# - failing tests introduced by the phase
+# - failing type checks introduced by the phase
+# - failing build introduced by the phase
+# - unresolved runtime exceptions introduced by the phase
+# - known terminal regressions introduced by the phase
+# - broken PTY behavior introduced by the phase
+# - broken interactive-program behavior introduced by the phase
+# - broken resize/copy/focus/keyboard behavior within that phase's scope
+# - TODOs that are required for that phase's acceptance criteria
+# - placeholder implementations pretending to satisfy the phase
+# - unreviewed hacks or temporary timeout-based workarounds
+#
+# If a validation fails:
+#
+#     DO NOT START THE NEXT PHASE.
+#
+# Instead:
+#
+# 1. diagnose the failure
+# 2. determine whether it is pre-existing or introduced by this phase
+# 3. fix failures introduced by this phase
+# 4. fix directly relevant pre-existing failures when required for correctness
+# 5. re-run the failed validation
+# 6. re-run the phase regression set
+# 7. continue this loop until the phase passes
+#
+# If the phase cannot be safely completed because of a genuine external blocker
+# that cannot be resolved from the repository/environment without risky or
+# unrelated system changes:
+#
+# - STOP at the current phase
+# - mark the phase BLOCKED, not PASS
+# - document the exact blocker and evidence
+# - do NOT claim the phase is complete
+# - do NOT continue to the next dependent phase
+#
+# A phase may only transition to PASS when its required acceptance criteria are
+# satisfied with evidence.
+#
+# ============================================================
+# PHASE STATUS MUST BE PERSISTED
+# ============================================================
+#
+# At the beginning of the work, create/update a repository-local progress file:
+#
+# docs/terminal-v2-progress.md
+#
+# If the repository already has a more appropriate engineering/progress docs
+# location, use that instead, but keep ONE canonical phase-progress file.
+#
+# The progress file must contain:
+#
+# - current phase
+# - phase status: NOT_STARTED | IN_PROGRESS | VALIDATING | PASS | BLOCKED
+# - baseline test/build/typecheck state
+# - files modified during the phase
+# - tests added during the phase
+# - exact validation commands run
+# - validation results
+# - regressions found
+# - regressions fixed
+# - remaining blockers
+# - decisions made
+# - timestamp/checkpoint for the completed phase
+#
+# Update this file DURING the work, not only at the very end.
+#
+# This is important because Goal Mode may run for a long time and the agent must
+# preserve a reliable implementation trail instead of relying on memory alone.
+#
+# ============================================================
+# BASELINE BEFORE PHASE A
+# ============================================================
+#
+# BEFORE modifying terminal behavior:
+#
+# 1. inspect repository status
+# 2. identify unrelated user changes and preserve them
+# 3. determine package manager and project scripts
+# 4. run the relevant existing baseline checks where available:
+#
+#    - typecheck
+#    - lint
+#    - unit tests
+#    - terminal-related tests
+#    - build
+#
+# 5. record which failures already existed BEFORE this task
+# 6. run a basic terminal smoke test if the app is runnable
+# 7. record the current terminal architecture
+#
+# Never blame this implementation for a pre-existing failure without evidence,
+# and never silently ignore a new failure because the baseline already had some
+# unrelated failures.
+#
+# ============================================================
+# DEFINITION OF "VALIDATED"
+# ============================================================
+#
+# "Validated" does NOT mean:
+#
+# - code compiles in one file
+# - the UI looks correct
+# - one happy-path test passed
+# - the agent read the code and believes it is correct
+# - a feature was manually clicked once
+#
+# For this project, a phase is validated only after all validation layers
+# relevant to that phase have been executed:
+#
+# LAYER 1 — Static correctness
+#
+# - TypeScript/type checks pass for changed code
+# - no new unresolved imports
+# - no obvious unsafe IPC contract mismatch
+# - no new lint errors caused by the phase
+#
+# LAYER 2 — Unit tests
+#
+# - tests for new pure logic pass
+# - tests for state transitions pass
+# - tests for parsers/helpers pass
+#
+# LAYER 3 — Integration tests
+#
+# - renderer/main/PTY boundaries relevant to the phase work together
+# - IPC contracts work end-to-end where applicable
+# - shell/PTY integration is exercised where applicable
+#
+# LAYER 4 — Regression tests
+#
+# - existing terminal behavior that should remain working still works
+# - previously completed phases remain passing
+#
+# LAYER 5 — Runtime smoke tests
+#
+# - launch the relevant app/terminal path when environment permits
+# - verify the actual behavior, not only mocks
+#
+# LAYER 6 — Stress/edge cases appropriate to the phase
+#
+# Examples:
+# - rapid resize
+# - long output
+# - multiline input
+# - Ctrl+C
+# - interactive CLI
+# - Unicode
+# - alternate screen
+#
+# LAYER 7 — Diff review
+#
+# Before declaring PASS:
+#
+# - inspect the complete diff for the phase
+# - remove debug code/log spam/dead code
+# - verify no unrelated subsystem was unintentionally rewritten
+# - verify no security-sensitive Electron settings were weakened
+# - verify no required acceptance item is merely commented/TODO'd
+#
+# ============================================================
+# STRICT PHASE BOUNDARY RULE
+# ============================================================
+#
+# Future-phase code is forbidden unless it is the MINIMUM compatibility seam
+# strictly required to complete the current phase safely.
+#
+# Example:
+#
+# Phase B may define an interface needed by Phase C later, but it must NOT start
+# implementing Phase C shell integration.
+#
+# Phase C may expose the state events required by Phase D later, but it must NOT
+# start building the Phase D RichCommandEditor.
+#
+# Phase D may define the editor execution callback required by Phase E later,
+# but it must NOT implement Phase E echo reconciliation early.
+#
+# If a future-phase seam is created early:
+#
+# - keep it minimal
+# - document why it is required now
+# - do not implement future behavior behind it
+#
+# ============================================================
+# NO PHASE SKIPPING
+# ============================================================
+#
+# Do not skip a phase because the repository appears to already contain some of
+# its functionality.
+#
+# If functionality already exists:
+#
+# 1. audit it against this specification
+# 2. test it
+# 3. fix gaps
+# 4. validate it against the phase acceptance criteria
+# 5. only then mark that phase PASS
+#
+# "Already implemented" without verification is NOT PASS.
+#
+# ============================================================
+# NO FALSE PASS
+# ============================================================
+#
+# Never mark PASS if:
+#
+# - a mandatory test was not run and no equivalent validation exists
+# - an implementation is mocked in production code
+# - a test was disabled/skipped to make the suite green
+# - assertions were weakened just to pass
+# - a failing behavior was hidden behind CSS
+# - errors are swallowed without a correctness strategy
+# - the feature only works for one hard-coded command/process
+# - a timeout/race workaround is being used instead of state synchronization
+#
+# If an environment-dependent tool such as Claude Code, Codex, fish, htop, or
+# SSH is unavailable, do NOT fabricate a successful result. Use the best safe
+# automated substitute possible and record the unavailable real-world smoke
+# test explicitly. A phase may only be considered PASS if the unavailable test
+# is not a required dependency for the next phase; otherwise mark BLOCKED.
+#
+# ============================================================
+# CHECKPOINT RULE
+# ============================================================
+#
+# At the end of every PASS phase:
+#
+# 1. update docs/terminal-v2-progress.md
+# 2. record exact validation commands and their results
+# 3. inspect git diff/status
+# 4. preserve unrelated user changes
+# 5. create a clean logical checkpoint
+#
+# If repository workflow permits autonomous commits and the existing project
+# convention supports them, make a focused phase commit.
+#
+# If commits are not appropriate, do NOT force them; the progress file and clean
+# logical diff still act as the checkpoint.
+#
+# Never use destructive git commands to erase unrelated work.
+#
+# ============================================================
+# 0. FIRST: AUDIT THE EXISTING ORCHESTA IMPLEMENTATION
+# ============================================================
+#
+# Before changing code:
+#
+# 1. Inspect the entire terminal implementation.
+#
+# Identify:
+#
+# - Electron main-process code
+# - renderer terminal components
+# - xterm.js usage, if present
+# - node-pty usage
+# - PTY creation
+# - IPC communication
+# - terminal lifecycle
+# - resize handling
+# - FitAddon or custom fit logic
+# - terminal serialization
+# - workspace persistence
+# - keyboard handlers
+# - clipboard handlers
+# - mouse handlers
+# - terminal state stores
+# - React components
+# - Zustand/Redux/context stores
+# - terminal tabs
+# - terminal windows/cards
+# - terminal focus logic
+# - current command execution code
+# - current shell selection
+# - terminal theme logic
+# - process cleanup
+# - terminal restoration logic
+#
+# Do NOT rewrite working infrastructure unless needed.
+#
+# Produce an internal architecture map before implementing.
+#
+#
+# ============================================================
+# 1. FUNDAMENTAL ARCHITECTURE
+# ============================================================
+#
+# The new terminal must NOT be modeled as:
+#
+# keyboard
+#    ↓
+# xterm.js
+#    ↓
+# PTY
+#
+#
+# Instead build:
+#
+#
+#                   ORCHESTA TERMINAL
+#
+# ┌────────────────────────────────────────────────────┐
+# │                BlockList / Viewport                │
+# │                                                    │
+# │  Command Block                                     │
+# │  Command Block                                     │
+# │  Command Block                                     │
+# │                                                    │
+# └───────────────────────┬────────────────────────────┘
+#                         │
+#                         │
+# ┌───────────────────────▼────────────────────────────┐
+# │             Rich Command Input Editor              │
+# │                                                    │
+# │  > pnpm install react█                             │
+# │                                                    │
+# └───────────────────────┬────────────────────────────┘
+#                         │ ENTER
+#                         ▼
+# ┌────────────────────────────────────────────────────┐
+# │                TerminalSession                     │
+# │                                                    │
+# │  Shell state                                       │
+# │  PTY state                                         │
+# │  VT state                                          │
+# │  foreground process state                          │
+# │  current block                                     │
+# │  CWD                                               │
+# │  exit code                                         │
+# │  terminal modes                                    │
+# │                                                    │
+# └───────────────────────┬────────────────────────────┘
+#                         │
+#                         ▼
+#                    REAL PTY
+#                         │
+#                 bash / zsh / fish
+#                         │
+#                      Linux
+#
+#
+# The editor and terminal output MUST be conceptually independent.
+#
+#
+# ============================================================
+# 2. TERMINAL STATE MACHINE
+# ============================================================
+#
+# Implement an explicit terminal state machine.
+#
+# At minimum:
+#
+# enum TerminalInteractionMode {
+#   ShellPrompt,
+#   CommandRunning,
+#   InteractiveProgram,
+#   AlternateScreen,
+#   PasswordInput,
+#   ShellFallback,
+#   Disconnected,
+# }
+#
+#
+# ------------------------------------------------------------
+# ShellPrompt
+# ------------------------------------------------------------
+#
+# The shell is ready for a new command.
+#
+# Keyboard input belongs to Orchesta's CommandEditor.
+#
+# DO NOT send ordinary typing directly to the PTY.
+#
+# The user must be able to:
+#
+# - click anywhere inside the command
+# - position caret with mouse
+# - drag-select text
+# - double click a word
+# - triple click a logical line
+# - select ranges
+# - type over selection
+# - insert/delete in the middle
+# - use multiline commands
+# - use Shift+Enter for newline
+# - use Ctrl+Enter optionally for newline
+# - use Alt+Enter optionally for newline
+# - use Home/End
+# - Ctrl+A / Ctrl+E
+# - Ctrl+Left / Ctrl+Right
+# - Alt+Left / Alt+Right
+# - word selection
+# - subword movement
+# - undo
+# - redo
+# - copy
+# - cut
+# - paste
+# - multiline paste
+# - autocomplete
+# - history
+# - syntax highlighting
+# - bracket matching
+# - auto-close pairs
+# - multiple cursors
+#
+#
+# ------------------------------------------------------------
+# CommandRunning
+# ------------------------------------------------------------
+#
+# As soon as Enter executes the editor buffer:
+#
+# editor input is no longer the owner of keyboard input.
+#
+# Keyboard events MUST be capable of going to the PTY.
+#
+# This is essential for:
+#
+# sudo
+# prompts
+# yes/no questions
+# readline
+# interactive installers
+# package managers
+# CLIs
+#
+#
+# ------------------------------------------------------------
+# InteractiveProgram / AlternateScreen
+# ------------------------------------------------------------
+#
+# For:
+#
+# vim
+# nvim
+# htop
+# btop
+# less
+# nano
+# Claude Code
+# Codex
+# Gemini CLI
+# OpenCode
+# etc.
+#
+# Orchesta MUST behave like a proper terminal.
+#
+# The RichCommandEditor must NOT intercept:
+#
+# arrows
+# Enter
+# Escape
+# Tab
+# Ctrl+C
+# Ctrl+D
+# mouse reports
+# bracketed paste
+# function keys
+# Kitty keyboard sequences
+# application cursor mode
+#
+# Send them to PTY according to terminal protocol/state.
+#
+#
+# ============================================================
+# 3. DO NOT DETECT TUIs BY PROCESS NAME ONLY
+# ============================================================
+#
+# Do not create fragile code like:
+#
+# if process === "vim" || process === "claude"
+#
+# Process names can provide auxiliary hints but must NOT be the primary
+# architecture.
+#
+# Detect terminal state using a combination of:
+#
+# - shell preexec/precmd lifecycle
+# - PTY foreground process group where available
+# - alternate-screen DEC modes
+# - terminal control sequences
+# - mouse-reporting modes
+# - application cursor-key mode
+# - shell integration
+# - prompt markers
+# - command-running state
+#
+# The primary simple rule should be:
+#
+# At a confirmed shell prompt:
+#     RichCommandEditor owns text entry.
+#
+# After command execution and until the next confirmed shell prompt:
+#     PTY owns keyboard interaction.
+#
+# This naturally supports most CLI/TUI programs.
+#
+#
+# ============================================================
+# 4. RICH COMMAND EDITOR
+# ============================================================
+#
+# Build a real editor.
+#
+# DO NOT implement the final architecture with a primitive:
+#
+# <input>
+#
+# DO NOT rely on a bare:
+#
+# contenteditable=true
+#
+# as the text-model architecture.
+#
+# Use a proper editor engine or editor model.
+#
+# CodeMirror 6 is acceptable if it integrates well with the current React
+# architecture.
+#
+# A custom editor is acceptable only if there is a very strong reason.
+#
+# Abstract it behind:
+#
+# CommandEditorEngine
+#
+# so implementation can change later.
+#
+#
+# Editor state should resemble:
+#
+# interface CommandEditorState {
+#   document: TextDocument
+#   selections: SelectionRange[]
+#   primaryCursor: Cursor
+#   undoStack: EditOperation[]
+#   redoStack: EditOperation[]
+#   composition?: IMEComposition
+#   suggestion?: Autosuggestion
+#   diagnostics: Diagnostic[]
+#   tokens: ShellToken[]
+# }
+#
+#
+# ============================================================
+# 5. CLICK-TO-EDIT — CRITICAL REQUIREMENT
+# ============================================================
+#
+# This is one of the core requirements.
+#
+# If the editor contains:
+#
+# npm install react-router-dom
+#
+# clicking between:
+#
+# react-|router
+#
+# MUST put the actual caret there.
+#
+# Typing:
+#
+# awesome-
+#
+# must produce:
+#
+# npm install react-awesome-router-dom
+#
+# It must behave like a normal IDE editor.
+#
+# No fake cursor positioning.
+# No sending 15 synthetic arrows to xterm while in normal rich-editor mode.
+#
+# Pixel -> text offset mapping must account for:
+#
+# - glyph width
+# - font metrics
+# - Unicode
+# - emoji
+# - grapheme clusters
+# - ligatures
+# - wrapped lines
+# - DPI scaling
+# - zoom
+#
+#
+# ============================================================
+# 6. MULTILINE EDITING
+# ============================================================
+#
+# Enter:
+#     execute command
+#
+# Shift+Enter:
+#     insert newline
+#
+# Optionally:
+#
+# Ctrl+Enter
+# Alt+Enter
+#
+# should also be configurable to insert newline.
+#
+#
+# Example:
+#
+# docker run \
+#   --name postgres \
+#   -e POSTGRES_PASSWORD=test \
+#   postgres:latest
+#
+#
+# must be editable as a normal multiline document.
+#
+#
+# Up/Down behavior:
+#
+# If the command has multiple visual lines:
+#
+# Up/Down move through visual lines first.
+#
+# Only invoke command-history behavior when movement would leave the command
+# buffer according to the configured history semantics.
+#
+#
+# ============================================================
+# 7. SOFT WRAPPING
+# ============================================================
+#
+# Long commands should wrap visually without inserting newline characters.
+#
+# Differentiate:
+#
+# logical lines
+#
+# from:
+#
+# visual wrapped lines.
+#
+# Selection and cursor movement must understand the difference.
+#
+# Resize must rewrap the editor without mutating its underlying text.
+#
+#
+# ============================================================
+# 8. AUTO-CLOSING PAIRS
+# ============================================================
+#
+# Support:
+#
+# ""
+# ''
+# ``
+# ()
+# []
+# {}
+#
+# Example:
+#
+# typing:
+#
+# echo "
+#
+# creates:
+#
+# echo "█"
+#
+# Typing the closing quote while the caret is immediately before the generated
+# closing quote should advance over it rather than duplicate it.
+#
+# Backspace between an untouched auto-pair should remove both.
+#
+#
+# ============================================================
+# 9. SHELL-AWARE SYNTAX HIGHLIGHTING
+# ============================================================
+#
+# Parse the command in real time.
+#
+# Distinguish:
+#
+# executable
+# subcommand
+# flags
+# options
+# positional arguments
+# strings
+# variables
+# operators
+# pipes
+# redirects
+# substitutions
+# environment assignments
+# command substitutions
+# comments
+# paths
+#
+#
+# Examples:
+#
+# NODE_ENV=production pnpm run build
+#
+# git commit -m "fix terminal"
+#
+# cat file.txt | grep foo > result.txt
+#
+# docker compose up -d
+#
+#
+# Do NOT color purely with a fragile collection of regular expressions.
+#
+# Prefer a real shell parser/tree.
+#
+# tree-sitter-bash or another robust shell grammar is acceptable.
+#
+# The implementation must tolerate incomplete commands while typing.
+#
+#
+# ============================================================
+# 10. LIVE ERROR UNDERLINING
+# ============================================================
+#
+# Add IDE-style diagnostics before execution.
+#
+# Examples:
+#
+# - unmatched quote
+# - unmatched bracket
+# - malformed shell syntax
+# - obviously invalid redirection
+# - executable does not exist
+# - invalid known flag when completion metadata knows the command
+#
+# Underline the relevant range.
+#
+# Hover can explain the error.
+#
+# Do not block execution unless absolutely necessary.
+#
+#
+# ============================================================
+# 11. COMMAND INSPECTOR / X-RAY
+# ============================================================
+#
+# Hovering a command component should optionally show documentation.
+#
+# Example:
+#
+# git checkout -b feature
+#     ────────
+#
+# Hover "checkout":
+#
+# Show:
+#
+# Checkout/switch branches or restore working tree files
+#
+# Hover "-b":
+#
+# Show description for the flag.
+#
+# Architect:
+#
+# CommandDocumentationProvider
+#
+# Providers may use:
+#
+# - completion specs
+# - man metadata
+# - --help cache
+# - built-in command metadata
+#
+# Never spawn expensive processes on every mouse move.
+#
+# Cache results.
+#
+#
+# ============================================================
+# 12. AUTOSUGGESTIONS
+# ============================================================
+#
+# Add ghost-text suggestions.
+#
+# Candidate sources:
+#
+# - local command history
+# - current session history
+# - project-specific history
+# - aliases
+# - known completion specs
+#
+# Example:
+#
+# user types:
+#
+# git che
+#
+# editor displays:
+#
+# git checkout main
+#        ───────────── ghost text
+#
+#
+# Support:
+#
+# Right Arrow:
+#     accept whole suggestion when appropriate
+#
+# Ctrl+Right:
+#     accept one semantic component/word
+#
+# End / Ctrl+E:
+#     accept suggestion at end when configured
+#
+# Tab acceptance must be configurable because Tab is also completion.
+#
+#
+# ============================================================
+# 13. COMPLETIONS ENGINE
+# ============================================================
+#
+# Build a provider-based completion architecture.
+#
+#
+# interface CompletionProvider {
+#   canHandle(context): boolean
+#   provide(context, signal): Promise<CompletionItem[]>
+# }
+#
+#
+# Providers:
+#
+# PathCompletionProvider
+# ExecutableCompletionProvider
+# ShellBuiltinCompletionProvider
+# AliasCompletionProvider
+# HistoryCompletionProvider
+# GitCompletionProvider
+# NpmCompletionProvider
+# PnpmCompletionProvider
+# YarnCompletionProvider
+# BunCompletionProvider
+# DockerCompletionProvider
+# EnvironmentVariableProvider
+# CompletionSpecProvider
+#
+#
+# Examples:
+#
+# git checkout <TAB>
+#
+# should suggest:
+#
+# branches
+# tags where appropriate
+#
+#
+# cd <TAB>
+#
+# directories first.
+#
+#
+# npm run <TAB>
+#
+# package.json scripts.
+#
+#
+# git --<TAB>
+#
+# flags.
+#
+#
+# Requirements:
+#
+# - fuzzy matching
+# - ranking
+# - descriptions
+# - keyboard navigation
+# - mouse selection
+# - asynchronous providers
+# - cancellation
+# - debounce
+# - no blocking the renderer
+#
+#
+# Background shell queries MUST NOT corrupt the active shell.
+#
+# Local completion queries should run in isolated/forked/helper shell
+# processes when possible.
+#
+#
+# ============================================================
+# 14. ALIASES
+# ============================================================
+#
+# Discover shell aliases.
+#
+# Completion must understand:
+#
+# alias gc='git checkout'
+#
+# Typing:
+#
+# gc <TAB>
+#
+# should be able to provide git-checkout completions.
+#
+#
+# Add optional alias expansion.
+#
+# Example:
+#
+# gc<SPACE>
+#
+# becomes:
+#
+# git checkout 
+#
+# if enabled.
+#
+#
+# Provide an escape key combination for inserting the space without expansion.
+#
+#
+# ============================================================
+# 15. COMMAND HISTORY
+# ============================================================
+#
+# Do not implement history as only:
+#
+# string[]
+#
+#
+# Store rich entries:
+#
+# interface CommandHistoryEntry {
+#   id: string
+#   command: string
+#   cwd: string
+#   shell: string
+#   startedAt: number
+#   finishedAt?: number
+#   durationMs?: number
+#   exitCode?: number
+#   sessionId: string
+#   terminalId: string
+#   workspaceId: string
+#   gitBranch?: string
+#   hostname?: string
+#   remote?: boolean
+# }
+#
+#
+# Up:
+#
+# performs prefix-aware history retrieval where appropriate.
+#
+#
+# Ctrl+R:
+#
+# opens a floating Command Search.
+#
+# It must support:
+#
+# fuzzy search
+# highlighting matched ranges
+# cwd display
+# exit code
+# duration
+# date
+# session
+#
+#
+# Selecting a history entry should INSERT it into the editor,
+# NOT execute it immediately.
+#
+#
+# ============================================================
+# 16. MULTIPLE CURSORS
+# ============================================================
+#
+# Support editor-grade multicursor.
+#
+# At minimum:
+#
+# - Add cursor above
+# - Add cursor below
+# - Add selection for next occurrence
+#
+# Editing should apply atomically to every selection.
+#
+#
+# ============================================================
+# 17. UNDO / REDO
+# ============================================================
+#
+# Build proper operation-based undo/redo.
+#
+# Must preserve:
+#
+# selections
+# cursors
+# multiline edits
+# autoclose operations
+# multicursor edits
+#
+#
+# ============================================================
+# 18. IME / INTERNATIONAL INPUT
+# ============================================================
+#
+# Treat this as a first-class requirement.
+#
+# Do not route raw keystrokes to the PTY while an IME composition is active in
+# ShellPrompt mode.
+#
+# Handle:
+#
+# compositionstart
+# compositionupdate
+# compositionend
+#
+# Only committed text should modify the editor document.
+#
+# Test:
+#
+# accented characters
+# Portuguese keyboard
+# Chinese/Japanese IME where available
+# emoji
+#
+#
+# ============================================================
+# 19. EXECUTING THE EDITOR BUFFER
+# ============================================================
+#
+# When Enter is pressed in ShellPrompt mode:
+#
+# 1. obtain the exact editor document
+# 2. create a pending TerminalBlock
+# 3. persist command metadata
+# 4. transition session to CommandRunning
+# 5. write the command to the PTY
+# 6. send newline
+# 7. clear the editor only after command handoff succeeds
+#
+#
+# PTY writes should NOT happen character by character while the user is editing
+# in Rich Input mode.
+#
+# The complete command is handed off at execution.
+#
+#
+# Handle command echo correctly.
+#
+# The UI must NEVER show:
+#
+# > npm run dev
+# npm run dev
+#
+# as an accidental duplicated command caused by displaying both the RichEditor
+# and PTY echo.
+#
+# Implement an explicit command-echo reconciliation layer.
+#
+# Do not solve this with random timeout-based hiding.
+#
+#
+# ============================================================
+# 20. SHELL INTEGRATION
+# ============================================================
+#
+# Create Orchesta shell integration scripts.
+#
+# Initially support:
+#
+# bash
+# zsh
+# fish
+#
+# Design for:
+#
+# nushell
+# PowerShell
+#
+# later.
+#
+#
+# Never permanently modify a user's .bashrc/.zshrc silently.
+#
+# Prefer injection through process startup/environment where practical.
+#
+# Provide explicit installation when persistence is needed.
+#
+#
+# Hooks should expose:
+#
+# PROMPT_START
+# PROMPT_END
+# COMMAND_START / PREEXEC
+# COMMAND_FINISHED
+# CWD_CHANGED
+# SHELL_READY
+#
+#
+# Metadata:
+#
+# command
+# cwd
+# exitCode
+# timestamp
+# hostname
+# shell
+# optional git metadata
+#
+#
+# Use an out-of-band terminal control envelope rather than printing visible
+# text.
+#
+# Prefer standard protocols where they solve the problem.
+#
+# Support OSC 133 prompt semantic markers.
+#
+# Support OSC 7 working-directory reporting.
+#
+# Orchesta-specific metadata can use a clearly namespaced protocol.
+#
+# Example conceptual event:
+#
+# ORCHESTA_PREEXEC {
+#   command,
+#   cwd,
+#   timestamp
+# }
+#
+#
+# Never parse the visible shell prompt with regex to determine whether the
+# shell is ready.
+#
+#
+# ============================================================
+# 21. OSC 133 SEMANTIC PROMPT REGIONS
+# ============================================================
+#
+# Parse and track OSC 133.
+#
+# This should create semantic regions for:
+#
+# prompt
+# command input
+# command output
+# command finished
+#
+#
+# Use semantic regions rather than assuming each region maps to one physical
+# line.
+#
+# A prompt may span several lines.
+#
+# A line may contain multiple semantic regions.
+#
+#
+# ============================================================
+# 22. WARP-STYLE BLOCK MODEL
+# ============================================================
+#
+# Implement:
+#
+# interface TerminalBlock {
+#   id: string
+#   sessionId: string
+#
+#   prompt?: PromptSnapshot
+#
+#   command: string
+#   cwd: string
+#
+#   startedAt: number
+#   finishedAt?: number
+#   durationMs?: number
+#
+#   exitCode?: number
+#
+#   state:
+#     | "pending"
+#     | "running"
+#     | "success"
+#     | "error"
+#     | "interrupted"
+#
+#   output: TerminalOutputBuffer
+#
+#   interactive?: boolean
+#
+#   git?: {
+#     branch?: string
+#     dirty?: boolean
+#   }
+# }
+#
+#
+# Do NOT store output only as plaintext if the terminal renderer has richer
+# information.
+#
+# Preserve enough state for:
+#
+# ANSI colors
+# bold
+# italic
+# underline
+# hyperlinks
+# Unicode
+# graphemes
+#
+#
+# ============================================================
+# 23. BLOCK UI
+# ============================================================
+#
+# Each command + output becomes one atomic Block.
+#
+#
+# Example:
+#
+# ╭─────────────────────────────────────────────────────────╮
+# │ ~/orchesta  main                                       │
+# │ > pnpm test                                            │
+# │                                                        │
+# │ ✓ terminal.test.ts                                     │
+# │ ✓ shell.test.ts                                        │
+# │                                                        │
+# │ ✓ 24 tests                              1.42s     0    │
+# ╰─────────────────────────────────────────────────────────╯
+#
+#
+# The visual design should remain Orchesta-native.
+#
+# Do NOT clone Warp's colors or visual identity.
+#
+#
+# Blocks should support:
+#
+# click to select
+# multi-select
+# keyboard navigation
+# copy command
+# copy output
+# copy command + output
+# re-run
+# edit/re-input
+# run with sudo
+# bookmark
+# clear
+# filter output
+# search inside output
+# collapse
+# expand
+#
+#
+# ============================================================
+# 24. RE-INPUT
+# ============================================================
+#
+# Clicking/re-inputting an old command should put that command into the current
+# RichCommandEditor.
+#
+# It must NOT immediately execute.
+#
+# The user can then click anywhere in it and edit normally.
+#
+#
+# ============================================================
+# 25. BLOCK EXIT STATUS
+# ============================================================
+#
+# Successful command:
+#
+# subtle success state.
+#
+# Non-zero exit:
+#
+# subtle error indicator/sidebar.
+#
+# Do not paint an enormous red rectangle.
+#
+#
+# ============================================================
+# 26. STICKY COMMAND HEADER
+# ============================================================
+#
+# When scrolling through a very long block and its command is above the
+# viewport, display a compact sticky header:
+#
+# > npm run build
+#
+# plus:
+#
+# running / exit code
+# duration
+#
+# Clicking the header should jump to the start of that block.
+#
+#
+# ============================================================
+# 27. BLOCK FILTERING
+# ============================================================
+#
+# Allow non-destructive filtering of a block's output.
+#
+# Example:
+#
+# filter:
+#
+# error
+#
+# only visually shows matching lines.
+#
+# Original output remains intact.
+#
+# Support:
+#
+# literal
+# case-insensitive
+# regex if safe
+#
+#
+# ============================================================
+# 28. BLOCK VIRTUALIZATION
+# ============================================================
+#
+# Do NOT mount the complete DOM for every historical line.
+#
+# A terminal can contain millions of lines.
+#
+# Build a virtualized BlockList.
+#
+# Maintain block heights and viewport indexing efficiently.
+#
+# If existing dependencies already provide a suitable data structure, use
+# them.
+#
+# Otherwise build a height-index / prefix-sum structure.
+#
+# Requirements:
+#
+# O(log n) or similarly efficient:
+#
+# - find block from scroll offset
+# - update block height
+# - jump to block
+#
+#
+# Only visible blocks plus overscan should render expensive content.
+#
+#
+# ============================================================
+# 29. ACTIVE VS IMMUTABLE OUTPUT
+# ============================================================
+#
+# Follow the useful architectural concept used by high-performance terminals:
+#
+# Active mutable screen:
+#
+# optimized for random cell updates.
+#
+# Historical output:
+#
+# optimized for compact sequential storage.
+#
+#
+# Do not keep millions of empty fixed-size cell objects forever.
+#
+#
+# Implement a storage abstraction:
+#
+# TerminalOutputStorage
+#
+# with:
+#
+# ActiveScreenStorage
+# HistoricalStorage
+#
+#
+# ============================================================
+# 30. TERMINAL EMULATION CORE
+# ============================================================
+#
+# Terminal correctness is more important than visual effects.
+#
+# Build/maintain an abstraction:
+#
+# interface TerminalCore {
+#   write(data)
+#   resize(cols, rows)
+#   reset()
+#   getScreen()
+#   getScrollback()
+#   onModeChange(...)
+#   onTitleChange(...)
+#   onCwdChange(...)
+#   onHyperlink(...)
+# }
+#
+#
+# Current implementation may use xterm.js.
+#
+# Do not automatically replace it unless necessary.
+#
+#
+# But architect so we can later use:
+#
+# LibGhosttyTerminalCore
+#
+# without rewriting the entire Orchesta terminal.
+#
+#
+# IMPORTANT:
+#
+# libghostty is evolving.
+#
+# If experimenting with it:
+#
+# - keep it behind a feature flag
+# - isolate FFI/native code
+# - pin a known commit/version
+# - never leak libghostty types throughout React/business logic
+#
+#
+# ============================================================
+# 31. GHOSTTY-CLASS VT COMPATIBILITY TARGET
+# ============================================================
+#
+# Use modern terminal compatibility as the target.
+#
+# Preserve/support where backend permits:
+#
+# ANSI/ECMA-48
+# VT100/xterm behaviors
+# 24-bit color
+# SGR
+# OSC 8 hyperlinks
+# OSC 52 clipboard
+# OSC 133 prompt semantics
+# alternate screen
+# bracketed paste
+# mouse tracking
+# focus events
+# application cursor keys
+# application keypad
+# synchronized output/rendering
+# Kitty Keyboard Protocol
+# Kitty Graphics Protocol
+#
+# Do not implement fake partial protocols if the current terminal core already
+# supports them correctly.
+#
+#
+# ============================================================
+# 32. UNICODE AND TEXT RENDERING
+# ============================================================
+#
+# Must correctly handle:
+#
+# combining characters
+# emoji
+# skin tones
+# flags
+# ZWJ sequences
+# wide characters
+# double-width CJK characters
+# grapheme clusters
+#
+#
+# Cursor and selection must operate on valid grapheme boundaries.
+#
+# Never split UTF-16 surrogate pairs or Unicode grapheme clusters.
+#
+#
+# ============================================================
+# 33. LIGATURES
+# ============================================================
+#
+# Support programming-font ligatures where renderer permits.
+#
+# Selection/caret positions must still correspond to source characters, not
+# visual ligature glyph count.
+#
+#
+# ============================================================
+# 34. GPU / RENDERING PERFORMANCE
+# ============================================================
+#
+# Preserve GPU-accelerated rendering when available.
+#
+# Do not render terminal output as thousands of React <span> elements.
+#
+# React should manage structure/state, NOT individual terminal cells at high
+# frequency.
+#
+#
+# Frequent PTY output should bypass expensive React render cycles.
+#
+# Batch updates.
+#
+# Use requestAnimationFrame/frame scheduling.
+#
+# Avoid one state update for every PTY chunk.
+#
+# Avoid one IPC message for every character.
+#
+#
+# ============================================================
+# 35. PTY BACKPRESSURE
+# ============================================================
+#
+# Implement correct PTY stream batching/backpressure.
+#
+# Heavy commands such as:
+#
+# yes
+# cat huge.log
+# npm install
+# cargo build
+#
+# must not freeze the entire Orchesta workspace.
+#
+# Do not drop data.
+#
+#
+# ============================================================
+# 36. RESIZE / REFLOW
+# ============================================================
+#
+# Current terminal rendering occasionally breaks lines.
+#
+# Fix resize architecture.
+#
+# Resize pipeline:
+#
+# container ResizeObserver
+#       ↓
+# calculate pixel viewport
+#       ↓
+# calculate rows/cols
+#       ↓
+# terminal renderer resize
+#       ↓
+# PTY resize ioctl
+#
+# Debounce/coalesce resize events correctly.
+#
+#
+# Never send:
+#
+# cols = 0
+# rows = 0
+#
+# to PTY.
+#
+#
+# Handle:
+#
+# rapidly resizing Orchesta cards
+# maximize/minimize
+# workspace zoom
+# device scale
+# font change
+#
+#
+# Historical blocks should reflow without destroying command boundaries.
+#
+#
+# ============================================================
+# 37. SELECTION
+# ============================================================
+#
+# There are TWO fundamentally different selections:
+#
+# CommandEditor selection
+#
+# and
+#
+# TerminalOutput selection.
+#
+# Keep them independent.
+#
+#
+# ShellPrompt + command editor click:
+#
+# edits command.
+#
+# Historical output drag:
+#
+# selects terminal output.
+#
+#
+# Do not let xterm steal selection from the RichCommandEditor.
+#
+#
+# ============================================================
+# 38. COPY
+# ============================================================
+#
+# Fix the current inability to reliably copy terminal output.
+#
+#
+# Linux:
+#
+# Ctrl+Shift+C:
+#
+# if terminal output selection exists:
+#     copy terminal selection
+#
+# else:
+#     configurable fallback
+#
+#
+# Inside RichCommandEditor:
+#
+# Ctrl+C:
+#
+# if editor selection exists:
+#     copy selected editor text
+#
+# else:
+#     preserve terminal/shell semantics according to mode
+#
+#
+# When a program is running:
+#
+# Ctrl+C:
+#
+# MUST send SIGINT / ^C to PTY unless a deliberate terminal-selection copy
+# shortcut is being used.
+#
+#
+# ============================================================
+# 39. COPY ON SELECT
+# ============================================================
+#
+# Add configurable:
+#
+# copyOnSelect
+#
+# especially useful on Linux.
+#
+# Do not force it for everybody.
+#
+#
+# ============================================================
+# 40. PASTE SECURITY
+# ============================================================
+#
+# Implement paste protection.
+#
+# If pasted content contains suspicious multiline shell commands and the
+# destination could execute them, do not blindly run them.
+#
+# RichCommandEditor paste:
+#
+# insertion should NEVER automatically execute because the pasted text has
+# newline characters.
+#
+#
+# For raw PTY mode:
+#
+# respect bracketed-paste mode.
+#
+# Add protection for unsafe non-bracketed multiline paste.
+#
+#
+# ============================================================
+# 41. OSC 52 CLIPBOARD SECURITY
+# ============================================================
+#
+# Programs may attempt to read/write clipboard via terminal escape sequences.
+#
+# Architect permissions:
+#
+# clipboardRead:
+#   ask | allow | deny
+#
+# clipboardWrite:
+#   ask | allow | deny
+#
+# Use secure defaults.
+#
+#
+# ============================================================
+# 42. URLS AND FILE PATHS
+# ============================================================
+#
+# Detect:
+#
+# URLs
+# file paths
+# source locations such as:
+#
+# src/main.ts:124:15
+#
+#
+# Ctrl+click:
+#
+# URLs:
+#     open browser / Orchesta portal depending on user setting
+#
+# File paths:
+#     open Orchesta Code/File Explorer
+#
+#
+# Support OSC 8 hyperlinks where renderer provides them.
+#
+#
+# ============================================================
+# 43. MOUSE MODES
+# ============================================================
+#
+# Correctly distinguish:
+#
+# normal terminal selection
+#
+# from:
+#
+# application mouse reporting.
+#
+#
+# When a TUI enables mouse reporting:
+#
+# mouse events should reach the TUI.
+#
+# Provide a modifier to force local text selection where appropriate.
+#
+#
+# ============================================================
+# 44. TRACKPAD SCROLLING
+# ============================================================
+#
+# Trackpad scrolling must feel native and smooth.
+#
+# Do not quantize all precision-trackpad deltas into giant wheel jumps.
+#
+# Maintain different handling for:
+#
+# precision scrolling
+# discrete mouse wheel scrolling
+#
+# if the framework provides that information.
+#
+#
+# ============================================================
+# 45. PROMPT-AWARE CLICK FALLBACK
+# ============================================================
+#
+# If for some compatibility mode Orchesta is using the shell's line editor
+# instead of RichCommandEditor:
+#
+# support Ghostty-style prompt-aware Alt+click.
+#
+# Using OSC 133 prompt regions, calculate the clicked character position and
+# move the shell cursor using the safest available method.
+#
+# But this is only a FALLBACK.
+#
+# Normal Orchesta Rich Input mode must use a genuine editor caret.
+#
+#
+# ============================================================
+# 46. PROMPT
+# ============================================================
+#
+# Support two broad modes:
+#
+# Orchesta Prompt
+# Shell PS1 Prompt
+#
+#
+# Orchesta prompt can expose context chips:
+#
+# cwd
+# git branch
+# dirty state
+# SSH host
+# environment
+# runtime
+#
+#
+# Example:
+#
+# ~/orchesta   main*   node 24
+# >
+#
+#
+# Do not break:
+#
+# Starship
+# Oh My Zsh
+# Powerlevel10k
+# custom PS1
+#
+#
+# Shell PS1 compatibility mode should display the user's real prompt.
+#
+#
+# ============================================================
+# 47. FOREGROUND COMMAND / SECURE INPUT
+# ============================================================
+#
+# Never store password text.
+#
+# If the terminal goes into no-echo/secure input:
+#
+# disable:
+#
+# history
+# autosuggestions
+# command logging
+# semantic text capture
+#
+# for the secret data.
+#
+#
+# ============================================================
+# 48. CTRL+C SEMANTICS
+# ============================================================
+#
+# Ctrl+C behavior MUST depend on state.
+#
+#
+# ShellPrompt + editor has text:
+#
+# clear/cancel editor buffer
+#
+# or configurable shell-style behavior.
+#
+#
+# CommandRunning:
+#
+# send ^C to PTY.
+#
+#
+# InteractiveProgram:
+#
+# send ^C to PTY.
+#
+#
+# Terminal output selected:
+#
+# Ctrl+Shift+C copies.
+#
+#
+# ============================================================
+# 49. CTRL+D SEMANTICS
+# ============================================================
+#
+# Rich editor has text:
+#
+# delete next character where appropriate.
+#
+#
+# Rich editor empty at shell prompt:
+#
+# optionally send EOF/^D to shell, matching common terminal expectations.
+#
+#
+# Running program:
+#
+# send ^D.
+#
+#
+# ============================================================
+# 50. CTRL+L
+# ============================================================
+#
+# At shell prompt:
+#
+# clear visible terminal viewport while maintaining proper history model.
+#
+#
+# Running program:
+#
+# preserve program semantics if raw mode requires it.
+#
+#
+# ============================================================
+# 51. KEYBINDING DISPATCH SYSTEM
+# ============================================================
+#
+# Build a central action dispatch layer.
+#
+#
+# Shortcut:
+#     key event
+#         ↓
+# KeybindingResolver
+#         ↓
+# App State / Terminal State
+#         ↓
+# Command
+#
+#
+# Example actions:
+#
+# editor.clear
+# editor.undo
+# editor.redo
+# editor.cursorLeft
+# editor.cursorRight
+# editor.moveWordLeft
+# editor.moveWordRight
+# editor.addCursorAbove
+# editor.addCursorBelow
+# editor.addNextOccurrence
+# history.open
+# completion.open
+# terminal.copy
+# terminal.paste
+# terminal.clear
+# terminal.sendCtrlC
+# block.previous
+# block.next
+# block.copyCommand
+# block.copyOutput
+# block.reinput
+#
+#
+# Bindings must be context-aware.
+#
+# A keybind should only consume the event if its action can actually execute.
+#
+# Example:
+#
+# Ctrl+Shift+C
+#
+# if there is a selection:
+#     copy
+#
+# otherwise:
+#     optionally allow normal event routing.
+#
+#
+# ============================================================
+# 52. COMMAND SEARCH
+# ============================================================
+#
+# Ctrl+R opens a polished searchable overlay.
+#
+#
+# Search sources:
+#
+# terminal history
+# current session
+# current project
+# saved Orchesta commands/workflows
+#
+#
+# Results should be fuzzy-ranked.
+#
+# Enter inserts into editor.
+#
+# Optional secondary action executes immediately.
+#
+#
+# ============================================================
+# 53. COMMAND CORRECTIONS
+# ============================================================
+#
+# After an unsuccessful command:
+#
+# optionally analyze common mistakes.
+#
+# Examples:
+#
+# gti status
+#
+# suggest:
+#
+# git status
+#
+#
+# git push with missing upstream:
+#
+# suggest appropriate command if detectable.
+#
+#
+# Corrections must never execute automatically.
+#
+# Clicking/right-arrow inserts correction into editor.
+#
+#
+# ============================================================
+# 54. CWD TRACKING
+# ============================================================
+#
+# Track CWD using shell integration / OSC 7.
+#
+# Never parse:
+#
+# ~/project $
+#
+# visually.
+#
+#
+# CWD powers:
+#
+# file completions
+# project context
+# new terminal inheritance
+# block metadata
+# title
+# Git metadata
+#
+#
+# ============================================================
+# 55. NEW TERMINALS / SPLITS
+# ============================================================
+#
+# A new terminal created from another terminal should optionally inherit:
+#
+# cwd
+# environment profile
+# shell
+#
+# Do not inherit unsafe transient process state.
+#
+#
+# ============================================================
+# 56. SSH
+# ============================================================
+#
+# Do not special-case SSH as if it were local shell execution.
+#
+# Ensure terminal capabilities survive remote sessions.
+#
+#
+# Handle:
+#
+# TERM
+# COLORTERM
+# TERM_PROGRAM
+# terminfo compatibility
+#
+#
+# Rich input and Blocks over SSH require additional shell integration.
+#
+# If remote integration is unavailable:
+#
+# gracefully fall back to standard terminal/raw shell behavior.
+#
+# NEVER break SSH just to retain Blocks.
+#
+#
+# ============================================================
+# 57. TERMINFO
+# ============================================================
+#
+# If Orchesta eventually declares a custom TERM:
+#
+# provide correct terminfo.
+#
+# Until then, prefer a truthful widely-supported TERM that matches the
+# capabilities of the underlying terminal emulator.
+#
+# Never claim support for terminal capabilities the renderer doesn't implement.
+#
+#
+# ============================================================
+# 58. COMMAND FINISHED NOTIFICATIONS
+# ============================================================
+#
+# Add optional notifications for long-running commands.
+#
+# Config:
+#
+# never
+# when-unfocused
+# always
+#
+# plus threshold:
+#
+# e.g. notify only after 5 seconds.
+#
+#
+# Shell integration / OSC 133 should provide the lifecycle signal.
+#
+#
+# ============================================================
+# 59. BEL / ATTENTION
+# ============================================================
+#
+# Handle BEL without freezing or disruptive modal dialogs.
+#
+# Possible effects:
+#
+# subtle visual indicator
+# tab badge
+# optional sound
+# system notification
+#
+#
+# ============================================================
+# 60. ALTERNATE SCREEN
+# ============================================================
+#
+# Correctly support DEC alternate screen modes.
+#
+# TUI applications must get their own alternate screen.
+#
+# On exit:
+#
+# return to main terminal/block view.
+#
+#
+# Do not accidentally append every animation frame from htop/vim to historical
+# scrollback.
+#
+#
+# ============================================================
+# 61. INTERACTIVE CLI AGENTS
+# ============================================================
+#
+# Specifically test:
+#
+# Claude Code
+# Codex
+# Gemini CLI
+#
+#
+# These are first-class Orchesta workloads.
+#
+# Requirements:
+#
+# - no broken line wrapping
+# - no duplicated characters
+# - no missing output
+# - arrow keys work
+# - scrolling works
+# - Ctrl+C works
+# - multiline prompts work
+# - mouse where supported
+# - terminal resize works
+# - ANSI styling works
+# - long streaming output doesn't freeze
+#
+#
+# The Orchesta editor MUST NOT try to parse/edit text while an agent owns the
+# terminal interaction.
+#
+#
+# ============================================================
+# 62. TERMINAL INPUT FOCUS
+# ============================================================
+#
+# Clicking RichCommandEditor:
+#
+# editor focus.
+#
+# Clicking output:
+#
+# output selection/block focus.
+#
+# Clicking a running TUI:
+#
+# terminal/raw focus.
+#
+#
+# When a terminal card/window is focused inside the Orchesta workspace:
+#
+# trackpad/keyboard events intended for that terminal must NOT accidentally
+# control the global workspace canvas.
+#
+# Stop propagation at the correct interaction layer.
+#
+#
+# ============================================================
+# 63. ACCESSIBILITY
+# ============================================================
+#
+# The rich editor must expose normal accessible editable-text semantics.
+#
+# Terminal output should be available to accessibility APIs where practical.
+#
+# Buttons in block toolbars require labels/tooltips.
+#
+#
+# ============================================================
+# 64. SESSION DATA MODEL
+# ============================================================
+#
+# Separate:
+#
+# TerminalProcess
+# TerminalSession
+# TerminalView
+#
+#
+# Example:
+#
+# TerminalProcess
+#     real PTY/process lifecycle
+#
+# TerminalSession
+#     semantic state/history/blocks
+#
+# TerminalView
+#     current Orchesta visual window/card
+#
+#
+# Do not let closing/recreating a React component automatically imply killing
+# the shell unless explicitly requested.
+#
+# This separation is essential for future session persistence.
+#
+#
+# ============================================================
+# 65. IPC
+# ============================================================
+#
+# Use typed messages.
+#
+# Renderer -> Main:
+#
+# terminal:create
+# terminal:write
+# terminal:resize
+# terminal:signal
+# terminal:destroy
+#
+#
+# Main -> Renderer:
+#
+# terminal:data
+# terminal:exit
+# terminal:cwd
+# terminal:state
+# terminal:shell-event
+#
+#
+# Do not expose arbitrary Node APIs to renderer.
+#
+#
+# Batch terminal:data.
+#
+#
+# ============================================================
+# 66. SECURITY
+# ============================================================
+#
+# Electron security:
+#
+# contextIsolation = true
+# nodeIntegration = false
+#
+# expose only required IPC APIs.
+#
+#
+# Never allow terminal escape sequences to:
+#
+# execute renderer JavaScript
+# access arbitrary Electron APIs
+# bypass clipboard permissions
+# open arbitrary dangerous schemes
+#
+#
+# Sanitize URL/file actions.
+#
+#
+# ============================================================
+# 67. MEMORY
+# ============================================================
+#
+# Terminal histories can be enormous.
+#
+# Implement:
+#
+# bounded scrollback
+# compact historical storage
+# lazy allocation
+# virtualization
+#
+#
+# Memory limits should be PER SESSION.
+#
+# Do not create one xterm instance for every historical command block unless
+# profiling proves it is acceptable.
+#
+#
+# ============================================================
+# 68. SEARCH TERMINAL OUTPUT
+# ============================================================
+#
+# Ctrl+F while output is focused:
+#
+# search current session output.
+#
+#
+# Show:
+#
+# matches
+# match count
+# next
+# previous
+#
+#
+# Search must not block UI on very large buffers.
+#
+#
+# ============================================================
+# 69. OUTPUT HYPERLINKS
+# ============================================================
+#
+# Respect OSC 8 hyperlinks.
+#
+# Also detect plain URLs when safe.
+#
+# Hover should visually indicate link.
+#
+#
+# ============================================================
+# 70. FILE LINKS
+# ============================================================
+#
+# Recognize:
+#
+# src/foo.ts:123
+# src/foo.ts:123:7
+# /absolute/path/file.rs:42
+#
+#
+# Clicking them should integrate with Orchesta's code/file editor.
+#
+#
+# ============================================================
+# 71. DESIGN
+# ============================================================
+#
+# The design should feel:
+#
+# modern
+# dense
+# developer-oriented
+# minimal
+# fast
+#
+# but NOT look like a Warp clone.
+#
+#
+# Keep Orchesta's:
+#
+# black/dark neutral base
+# white text hierarchy
+# green accent
+#
+#
+# Rich input should feel integrated into the terminal, not like a random HTML
+# textarea pasted at the bottom.
+#
+#
+# Suggested structure:
+#
+# ┌───────────────────────────────────────────────┐
+# │ ~/project     main*                    zsh    │
+# │                                               │
+# │ > previous command                           │
+# │   output                                      │
+# │                                               │
+# │ > another command                            │
+# │   output                                      │
+# │                                               │
+# │ > git checkout fea█                          │
+# │                     feature/auth             │
+# │                     feature/browser          │
+# └───────────────────────────────────────────────┘
+#
+#
+# ============================================================
+# 72. NO FAKE TERMINAL UI
+# ============================================================
+#
+# Under no circumstances replace real PTY behavior with:
+#
+# exec(command)
+#
+# followed by:
+#
+# div.innerText = stdout
+#
+#
+# This would destroy interactive terminal compatibility.
+#
+# Keep a REAL PTY.
+#
+#
+# ============================================================
+# 73. TESTING — UNIT
+# ============================================================
+#
+# Write tests for:
+#
+# editor insertion
+# deletion
+# word navigation
+# multiline
+# soft wrap
+# selection
+# multicursor
+# undo/redo
+# history
+# autosuggestion acceptance
+# completion ranking
+# shell parser
+# OSC parsing
+# block lifecycle
+# CWD state
+# echo reconciliation
+# terminal-mode routing
+#
+#
+# ============================================================
+# 74. TESTING — PTY INTEGRATION
+# ============================================================
+#
+# Automated PTY tests:
+#
+# bash
+# zsh
+# fish
+#
+#
+# Commands:
+#
+# echo hello
+# printf hello
+# false
+# sleep
+# pwd
+# cd
+# clear
+# printf ANSI
+#
+#
+# Verify:
+#
+# block start
+# output
+# block finish
+# exit code
+# cwd
+# prompt restoration
+#
+#
+# ============================================================
+# 75. TESTING — INTERACTIVE
+# ============================================================
+#
+# Test:
+#
+# read -p
+# sudo where possible
+# node
+# python
+# less
+# nano
+# vim
+# htop
+# ssh localhost/test container
+#
+#
+# Ensure keyboard events route correctly.
+#
+#
+# ============================================================
+# 76. TESTING — RESIZE
+# ============================================================
+#
+# Resize terminal repeatedly while:
+#
+# shell prompt visible
+# long command being edited
+# npm output streaming
+# vim open
+# Claude/Codex active
+#
+#
+# No:
+#
+# broken rows
+# duplicate rows
+# blank viewport
+# cursor mismatch
+#
+#
+# ============================================================
+# 77. TESTING — HEAVY OUTPUT
+# ============================================================
+#
+# Benchmark:
+#
+# seq 1 100000
+# yes | head -n 100000
+# large build output
+#
+#
+# The rest of Orchesta must remain interactive.
+#
+#
+# ============================================================
+# 78. PERFORMANCE INSTRUMENTATION
+# ============================================================
+#
+# Measure:
+#
+# PTY bytes/sec
+# parser time
+# render frame time
+# dropped frames
+# IPC messages/sec
+# block layout time
+# memory per session
+#
+#
+# Add dev-only diagnostics where useful.
+#
+#
+# ============================================================
+# 79. IMPLEMENTATION PHASES — STRICT SEQUENTIAL EXECUTION
+# ============================================================
+#
+# DO NOT attempt a huge untestable rewrite.
+#
+# Goal Mode must execute these phases in EXACT order:
+#
+#     A -> validate A -> PASS A
+#     B -> validate B -> PASS B
+#     C -> validate C -> PASS C
+#     D -> validate D -> PASS D
+#     E -> validate E -> PASS E
+#     F -> validate F -> PASS F
+#     G -> validate G -> PASS G
+#     H -> validate H -> PASS H
+#     I -> validate I -> PASS I
+#     J -> validate J -> PASS J
+#
+# There is NO valid transition:
+#
+#     A -> B
+#
+# without:
+#
+#     A -> VALIDATING -> PASS -> B
+#
+# Every phase starts with status IN_PROGRESS.
+# Every phase ends as either PASS or BLOCKED.
+#
+# Do not start the next phase while status is IN_PROGRESS, VALIDATING, or
+# BLOCKED.
+#
+# ------------------------------------------------------------
+# PHASE A — TERMINAL FUNDAMENTALS
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# - audit current Electron -> IPC -> PTY -> renderer path
+# - fix PTY lifecycle fundamentals
+# - fix resize/reflow fundamentals
+# - fix copy/selection fundamentals
+# - fix terminal focus/keyboard ownership fundamentals
+# - fix obvious PTY batching/backpressure issues required for stability
+# - preserve existing interactive terminal behavior
+#
+# DO NOT implement yet:
+#
+# - TerminalSession state machine from Phase B
+# - shell integration from Phase C
+# - RichCommandEditor from Phase D
+# - Warp-style Blocks from Phase G
+#
+# PHASE A VALIDATION GATE:
+#
+# Must validate, where applicable:
+#
+# [ ] app/project builds
+# [ ] changed TypeScript passes typecheck
+# [ ] terminal creates correctly
+# [ ] terminal destroys correctly without orphaning accidental processes
+# [ ] repeated terminal mount/unmount does not leak listeners
+# [ ] PTY output renders correctly
+# [ ] keyboard input reaches PTY in legacy/current mode
+# [ ] Ctrl+C still works
+# [ ] copy/selection works according to current mode
+# [ ] resize updates renderer and PTY consistently
+# [ ] rapid resize does not produce zero rows/cols
+# [ ] no duplicated listeners after repeated resize/mount cycles
+# [ ] long streaming output does not freeze the whole workspace under normal
+#     expected load
+# [ ] at least basic interactive CLI behavior still works
+# [ ] no regression to existing terminal tabs/windows
+# [ ] diff reviewed
+#
+# If ANY required Phase A check fails because of Phase A changes:
+# FIX IT AND RE-RUN THE GATE.
+#
+# Only after Phase A = PASS may Phase B begin.
+#
+# ------------------------------------------------------------
+# PHASE B — TERMINAL SESSION + STATE MACHINE
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# Introduce/solidify separation of:
+#
+# - TerminalProcess
+# - TerminalSession
+# - TerminalView
+#
+# Implement the interaction state model needed by later phases, including:
+#
+# - ShellPrompt
+# - CommandRunning
+# - InteractiveProgram
+# - AlternateScreen
+# - PasswordInput
+# - ShellFallback
+# - Disconnected
+#
+# Keep current terminal usable while this architecture is introduced.
+#
+# DO NOT implement Phase C shell hooks yet.
+# DO NOT implement Phase D RichCommandEditor yet.
+#
+# PHASE B VALIDATION GATE:
+#
+# [ ] Phase A regression set still passes
+# [ ] state machine unit tests pass
+# [ ] illegal/ambiguous transitions are handled intentionally
+# [ ] terminal create/exit/disconnect transitions work
+# [ ] process/session/view lifecycles are not incorrectly coupled
+# [ ] React remount does not automatically kill process unless requested
+# [ ] keyboard routing remains correct for current terminal mode
+# [ ] state does not get stuck after process exit
+# [ ] no listener/resource leaks introduced
+# [ ] typecheck/build pass for changed code
+# [ ] diff reviewed
+#
+# Only after Phase B = PASS may Phase C begin.
+#
+# ------------------------------------------------------------
+# PHASE C — SHELL INTEGRATION + RELIABLE PROMPT DETECTION
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# - bash shell integration
+# - zsh shell integration
+# - fish shell integration where environment/test coverage permits
+# - OSC 133 semantic prompt lifecycle
+# - OSC 7 CWD tracking
+# - preexec/precmd or equivalent shell lifecycle hooks
+# - reliable ShellPrompt <-> CommandRunning transitions
+# - graceful fallback when shell integration is unavailable
+#
+# Never use visible-prompt regex parsing as the primary mechanism.
+# Never detect TUI state only by process name.
+#
+# PHASE C VALIDATION GATE:
+#
+# [ ] Phase A+B regression sets still pass
+# [ ] shell integration parser unit tests pass
+# [ ] OSC 133 parsing tests pass
+# [ ] OSC 7 CWD tests pass
+# [ ] bash prompt-ready event is detected reliably
+# [ ] zsh prompt-ready event is detected reliably
+# [ ] fish tested if available; otherwise capability recorded explicitly
+# [ ] command start is detected
+# [ ] command finish/return-to-prompt is detected
+# [ ] exit code captured where integration exposes it
+# [ ] cwd changes after cd are reflected correctly
+# [ ] prompt markers do not appear as visible garbage in terminal output
+# [ ] custom PS1/Oh My Zsh-style prompts are not broken by the mechanism
+# [ ] fallback mode remains a usable real terminal
+# [ ] command running does not falsely return to ShellPrompt mid-command
+# [ ] typecheck/build pass
+# [ ] diff reviewed
+#
+# Only after Phase C = PASS may Phase D begin.
+#
+# ------------------------------------------------------------
+# PHASE D — RICH COMMAND EDITOR
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# Introduce RichCommandEditor / CommandEditorEngine at confirmed ShellPrompt.
+#
+# Implement editor-only functionality including:
+#
+# - real caret placement by mouse
+# - text selection
+# - insertion/deletion in the middle
+# - multiline editing
+# - Shift+Enter newline
+# - undo/redo
+# - word navigation
+# - auto-closing pairs
+# - soft wrapping
+# - IME-safe composition
+# - Unicode/grapheme correctness to the degree supported by selected editor
+# - editor focus rules
+#
+# DO NOT yet implement the final editor-buffer -> PTY execution/echo
+# reconciliation from Phase E except the minimal interface seam.
+#
+# PHASE D VALIDATION GATE:
+#
+# [ ] Phase A-C regression sets still pass
+# [ ] editor insertion/deletion tests pass
+# [ ] clicking in middle places real caret
+# [ ] selection replacement works
+# [ ] double/word selection works where engine supports it
+# [ ] multiline document model works
+# [ ] Shift+Enter inserts newline without executing
+# [ ] undo/redo works
+# [ ] Home/End and word movement work
+# [ ] auto-close pairs behave correctly
+# [ ] long commands soft-wrap without mutating document text
+# [ ] resize rewraps editor correctly
+# [ ] accented Portuguese input works
+# [ ] emoji/grapheme input does not corrupt document
+# [ ] editor does not steal global workspace navigation incorrectly
+# [ ] output selection and editor selection remain independent
+# [ ] typecheck/build pass
+# [ ] diff reviewed
+#
+# Only after Phase D = PASS may Phase E begin.
+#
+# ------------------------------------------------------------
+# PHASE E — EDITOR BUFFER -> REAL PTY + ECHO RECONCILIATION
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# - execute the complete RichCommandEditor buffer through the REAL PTY
+# - transition ShellPrompt -> CommandRunning correctly
+# - clear editor only after safe handoff
+# - reconcile shell echo without duplicated command rendering
+# - route all keyboard interaction to PTY while command/program owns input
+# - return to RichCommandEditor only after confirmed prompt-ready state
+#
+# PHASE E VALIDATION GATE:
+#
+# [ ] Phase A-D regression sets still pass
+# [ ] exact editor buffer reaches the PTY
+# [ ] multiline command reaches PTY correctly
+# [ ] command is not duplicated visually
+# [ ] no character-by-character editor syncing to PTY occurs in rich mode
+# [ ] ShellPrompt -> CommandRunning transition is immediate/correct
+# [ ] running prompt/readline input can receive keyboard events
+# [ ] Ctrl+C interrupts running command
+# [ ] Ctrl+D semantics remain correct by state
+# [ ] interactive program receives arrows/Escape/Tab/Enter
+# [ ] alternate-screen program can own terminal input
+# [ ] exiting interactive program returns to RichCommandEditor automatically
+# [ ] no manual mode toggle required
+# [ ] no timeout-based echo-hiding hack
+# [ ] typecheck/build pass
+# [ ] diff reviewed
+#
+# Mandatory runtime smoke tests if available:
+#
+# [ ] echo hello
+# [ ] printf hello
+# [ ] false
+# [ ] sleep + Ctrl+C
+# [ ] read -p / comparable prompt
+# [ ] node or python REPL
+# [ ] vim/nvim/less/nano as available
+#
+# Only after Phase E = PASS may Phase F begin.
+#
+# ------------------------------------------------------------
+# PHASE F — HISTORY + PARSING + COMPLETION + AUTOSUGGESTIONS
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# - rich command history
+# - Ctrl+R command search
+# - shell-aware syntax highlighting
+# - diagnostics
+# - completion provider architecture
+# - path/executable/history completions
+# - project-aware completions defined by this spec
+# - aliases where practical
+# - autosuggestions/ghost text
+# - cancellation/debounce for async completion
+#
+# PHASE F VALIDATION GATE:
+#
+# [ ] Phase A-E regression sets still pass
+# [ ] history insertion never auto-executes unless explicitly requested
+# [ ] history metadata persists correctly for session scope
+# [ ] Ctrl+R search works
+# [ ] parser tolerates incomplete shell syntax while typing
+# [ ] syntax highlighting does not crash on malformed input
+# [ ] completion providers are cancellable
+# [ ] stale async completion results do not overwrite newer queries
+# [ ] path completion works
+# [ ] executable completion works
+# [ ] known provider tests pass (git/npm/pnpm/etc. where implemented)
+# [ ] autosuggestion acceptance behaves correctly
+# [ ] completion queries do not corrupt active shell state
+# [ ] renderer remains responsive during completion
+# [ ] typecheck/build pass
+# [ ] diff reviewed
+#
+# Only after Phase F = PASS may Phase G begin.
+#
+# ------------------------------------------------------------
+# PHASE G — SEMANTIC COMMAND/OUTPUT BLOCKS
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# - TerminalBlock lifecycle
+# - command + output grouping
+# - cwd/start/end/duration/exit metadata
+# - running/success/error/interrupted states
+# - basic block selection/actions
+# - re-input old command into RichCommandEditor without execution
+#
+# PHASE G VALIDATION GATE:
+#
+# [ ] Phase A-F regression sets still pass
+# [ ] one executed command creates exactly one expected semantic block
+# [ ] streamed output is attached to correct block
+# [ ] exit status maps to correct block state
+# [ ] command duration is captured correctly
+# [ ] cwd is associated with correct command
+# [ ] interrupted commands are represented correctly
+# [ ] command echo is not duplicated inside block
+# [ ] re-input inserts into editor and does NOT auto-execute
+# [ ] copy command/output actions work
+# [ ] ANSI/rich output is not flattened incorrectly by the block model
+# [ ] interactive/alternate-screen behavior is not broken by block capture
+# [ ] typecheck/build pass
+# [ ] diff reviewed
+#
+# Only after Phase G = PASS may Phase H begin.
+#
+# ------------------------------------------------------------
+# PHASE H — BLOCK VIRTUALIZATION + FILTERING + RICH ACTIONS
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# - virtualized BlockList
+# - efficient height/index lookup
+# - sticky command header
+# - block filtering/search
+# - collapse/expand
+# - bookmark/rerun/re-input/copy actions as specified
+# - large-history behavior
+#
+# PHASE H VALIDATION GATE:
+#
+# [ ] Phase A-G regression sets still pass
+# [ ] large block history does not mount all historical DOM at once
+# [ ] viewport navigation remains correct after dynamic height changes
+# [ ] jump-to-block works
+# [ ] sticky header points to correct block
+# [ ] filtering is non-destructive
+# [ ] clearing a visual filter restores original output
+# [ ] collapse/expand preserves block data
+# [ ] block actions target correct block
+# [ ] scroll remains stable during streaming output
+# [ ] memory growth is bounded according to configured strategy
+# [ ] typecheck/build pass
+# [ ] diff reviewed
+#
+# Only after Phase H = PASS may Phase I begin.
+#
+# ------------------------------------------------------------
+# PHASE I — ADVANCED GHOSTTY-CLASS TERMINAL BEHAVIOR
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# - advanced VT compatibility integrations supported by current backend
+# - clipboard security / OSC 52 policy
+# - OSC 8 hyperlinks
+# - URL/file path integrations
+# - mouse mode correctness
+# - bracketed paste/paste security
+# - notifications/BEL
+# - SSH/fallback behavior improvements
+# - trackpad scrolling polish
+# - prompt-aware click fallback when rich editor is unavailable
+# - truthful TERM/terminfo behavior
+#
+# PHASE I VALIDATION GATE:
+#
+# [ ] Phase A-H regression sets still pass
+# [ ] bracketed paste works in applications that request it
+# [ ] multiline paste into RichCommandEditor never auto-executes
+# [ ] OSC 52 obeys permission policy
+# [ ] OSC 8 links behave safely
+# [ ] plain URL/file actions sanitize target before opening
+# [ ] mouse-reporting TUI receives mouse input when enabled
+# [ ] local selection remains possible through defined modifier/fallback
+# [ ] alternate screen remains correct
+# [ ] focus events do not break editor/PTY ownership
+# [ ] SSH remains usable without remote Orchesta shell integration
+# [ ] fallback terminal remains fully usable when semantic features unavailable
+# [ ] TERM/terminfo claims match actual capabilities
+# [ ] typecheck/build pass
+# [ ] diff reviewed
+#
+# Only after Phase I = PASS may Phase J begin.
+#
+# ------------------------------------------------------------
+# PHASE J — FULL PERFORMANCE + REGRESSION + FINAL ACCEPTANCE
+# ------------------------------------------------------------
+#
+# Scope:
+#
+# This phase is NOT primarily for adding new product features.
+# It is the hardening and proof phase for everything completed above.
+#
+# Perform:
+#
+# - full unit suite
+# - full terminal integration suite
+# - full relevant app regression suite
+# - typecheck
+# - lint where project uses it
+# - production build/package check where feasible
+# - PTY stress tests
+# - resize stress tests
+# - interactive CLI/TUI tests
+# - memory/performance review
+# - security review of terminal IPC/clipboard/link changes
+# - exact FINAL ACCEPTANCE BEHAVIOR from Section 82
+#
+# PHASE J VALIDATION GATE:
+#
+# [ ] all mandatory previous phase gates remain PASS
+# [ ] full typecheck passes or only documented unrelated baseline failures remain
+# [ ] full relevant test suite passes or only documented unrelated baseline
+#     failures remain
+# [ ] production build/package path succeeds where environment permits
+# [ ] seq 1 100000 does not corrupt terminal state
+# [ ] yes | head -n 100000 does not freeze the whole Orchesta workspace beyond
+#     reasonable limits
+# [ ] repeated rapid resize does not corrupt rows/cursor
+# [ ] long command editing remains correct after resize
+# [ ] Unicode/emoji/accents remain correct
+# [ ] Ctrl+C works in running commands
+# [ ] interactive programs work
+# [ ] alternate-screen programs work
+# [ ] Claude Code tested if installed
+# [ ] Codex tested if installed
+# [ ] Gemini CLI tested if installed
+# [ ] no command echo duplication
+# [ ] no invisible shell-integration garbage
+# [ ] no new high-severity security regression
+# [ ] no obvious listener/process/resource leak from repeated terminal lifecycle
+# [ ] Section 82 final acceptance flow passes end-to-end
+# [ ] final diff reviewed
+# [ ] docs/terminal-v2-progress.md marks A-J status truthfully
+#
+# If Phase J finds a regression belonging to an earlier phase:
+#
+# 1. identify owning phase/subsystem
+# 2. fix the regression
+# 3. re-run that subsystem's phase gate
+# 4. then re-run Phase J validation
+#
+# Do NOT declare the project complete until Phase J = PASS.
+#
+# ============================================================
+# PER-PHASE EXECUTION LOOP — MANDATORY ALGORITHM
+# ============================================================
+#
+# For EACH phase, follow this algorithm exactly:
+#
+# STEP 1 — READ
+#
+# Read the entire specification, but focus implementation ONLY on the current
+# phase and dependencies already completed.
+#
+# STEP 2 — PLAN CURRENT PHASE
+#
+# Write a concise internal plan for the current phase:
+#
+# - files likely to change
+# - architecture changes
+# - tests to add
+# - validation commands
+# - risks/regressions to watch
+#
+# STEP 3 — MARK IN_PROGRESS
+#
+# Update the phase progress file.
+#
+# STEP 4 — IMPLEMENT ONLY CURRENT PHASE
+#
+# Keep changes cohesive and minimal.
+#
+# STEP 5 — ADD/UPDATE TESTS
+#
+# Do not postpone tests to Phase J when the behavior can be tested now.
+#
+# STEP 6 — MARK VALIDATING
+#
+# Update the progress file before running the gate.
+#
+# STEP 7 — RUN CURRENT PHASE GATE
+#
+# Run static checks + focused tests + integration tests + regression tests +
+# runtime smoke tests relevant to the phase.
+#
+# STEP 8 — IF ANY FAILURE, LOOP
+#
+# Diagnose -> fix -> test again.
+#
+# Remain in the SAME phase.
+#
+# STEP 9 — REVIEW DIFF
+#
+# Confirm no future-phase implementation leaked in and no unrelated work was
+# damaged.
+#
+# STEP 10 — MARK PASS
+#
+# Only when the gate is green, record evidence and mark current phase PASS.
+#
+# STEP 11 — CHECKPOINT
+#
+# Create the logical checkpoint described above.
+#
+# STEP 12 — ONLY NOW BEGIN NEXT PHASE
+#
+# Never reverse STEP 10 and STEP 12.
+#
+# ============================================================
+# GOAL MODE COMPLETION CONDITION
+# ============================================================
+#
+# Goal Mode must NOT consider the task complete because "most features are
+# implemented".
+#
+# Completion requires:
+#
+# - Phase A = PASS
+# - Phase B = PASS
+# - Phase C = PASS
+# - Phase D = PASS
+# - Phase E = PASS
+# - Phase F = PASS
+# - Phase G = PASS
+# - Phase H = PASS
+# - Phase I = PASS
+# - Phase J = PASS
+# - Section 82 final acceptance behavior validated
+# - final regression suite executed
+# - progress file updated truthfully
+# - final report produced
+#
+# If execution stops before that point, report the exact last PASS phase and the
+# current BLOCKED/IN_PROGRESS phase. Do not present partial completion as full
+# completion.
+#
+#
+# ============================================================
+# 80. MIGRATION / BACKWARDS COMPATIBILITY
+# ============================================================
+#
+# Introduce a feature flag:
+#
+# terminal.richInputV2
+#
+# Allow old terminal rendering during development.
+#
+# Do not leave two permanent terminal implementations after V2 is stable.
+#
+#
+# ============================================================
+# 81. IMPORTANT ENGINEERING RULES
+# ============================================================
+#
+# NO random setTimeout fixes.
+#
+# NO DOM scraping to determine shell state.
+#
+# NO regex matching the visible prompt as primary shell detection.
+#
+# NO process-name-only TUI detection.
+#
+# NO key-by-key RichEditor -> PTY syncing.
+#
+# NO one React render per PTY data chunk.
+#
+# NO duplicated command echo.
+#
+# NO global keyboard handler that steals TUI keys.
+#
+# NO breaking Ctrl+C.
+#
+# NO breaking SSH.
+#
+# NO breaking vim/nvim.
+#
+# NO breaking Claude Code/Codex.
+#
+#
+# ============================================================
+# 82. FINAL ACCEPTANCE BEHAVIOR
+# ============================================================
+#
+# This exact flow must work:
+#
+# 1.
+#
+# User sees:
+#
+# > npm install react-router-dom
+#
+#
+# 2.
+#
+# User clicks exactly between:
+#
+# react-router
+#
+#
+# 3.
+#
+# caret moves there.
+#
+#
+# 4.
+#
+# User types:
+#
+# awesome-
+#
+#
+# 5.
+#
+# command now reads:
+#
+# > npm install react-awesome-router-dom
+#
+#
+# 6.
+#
+# User presses Shift+Enter.
+#
+# A newline is inserted instead of executing.
+#
+#
+# 7.
+#
+# User edits both lines normally.
+#
+#
+# 8.
+#
+# User presses Enter.
+#
+# The complete command buffer is sent to the REAL PTY.
+#
+#
+# 9.
+#
+# It becomes a semantic Block.
+#
+#
+# 10.
+#
+# Its output streams live.
+#
+#
+# 11.
+#
+# The block stores:
+#
+# command
+# cwd
+# start time
+# duration
+# output
+# exit code
+#
+#
+# 12.
+#
+# A fresh RichCommandEditor becomes available after the shell reports that it
+# has returned to the prompt.
+#
+#
+# 13.
+#
+# User enters:
+#
+# claude
+#
+#
+# 14.
+#
+# Claude Code starts.
+#
+#
+# 15.
+#
+# Orchesta automatically stops treating input as RichCommandEditor text.
+#
+# Keyboard/mouse/terminal sequences belong to the real PTY/interactive app.
+#
+#
+# 16.
+#
+# Claude Code behaves correctly.
+#
+#
+# 17.
+#
+# User exits Claude.
+#
+#
+# 18.
+#
+# Shell integration reports the new prompt.
+#
+#
+# 19.
+#
+# Orchesta automatically returns to RichCommandEditor mode.
+#
+#
+# No manual switch should be necessary.
+#
+#
+# ============================================================
+# 83. FINAL DELIVERABLE
+# ============================================================
+#
+# After implementation provide:
+#
+# - architecture summary
+# - files created
+# - files modified
+# - major state machines
+# - shell integration mechanism
+# - editor architecture
+# - block architecture
+# - PTY architecture
+# - how raw interactive programs are handled
+# - tests added
+# - benchmark results
+# - known remaining limitations
+# - phase-by-phase status A through J
+# - validation evidence for every phase
+# - exact commands used for typecheck/tests/build/benchmarks
+# - any environment-dependent checks that could not be run
+# - final Section 82 acceptance result
+# - path to the canonical terminal-v2 progress file
+#
+#
+# IMPORTANT:
+#
+# The final report must not say "done", "complete", or equivalent unless all
+# mandatory phase gates are PASS.
+#
+# Do not merely describe the solution.
+#
+# Implement it.
+#
+# Run tests.
+#
+# Fix regressions discovered during implementation.
+#
+# The final terminal should feel like a purpose-built modern developer
+# terminal rather than xterm.js embedded inside a card.
