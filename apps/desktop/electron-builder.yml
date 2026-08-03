@@ -10,8 +10,17 @@ files:
 extraResources:
   - from: ../../target/release/orchestra-core
     to: bin/orchestra-core
-  - from: ../../target/release/orchestra-cli
+  - from: ../../target/release/orchestra
     to: bin/orchestra
+  # The daemon resolves these paths relative to process.resourcesPath in a
+  # packaged app. Keep the canonical skill and the plugin tree as real
+  # resources instead of relying on the package's working directory.
+  - from: ../../skills/orchestra-canvas
+    to: skills/orchestra-canvas
+  - from: ../../.agents/plugins/plugins/orchestra
+    to: plugins/orchestra
+  - from: ../../.agents/plugins/marketplace.json
+    to: plugins/marketplace.json
 linux:
   maintainer: Alcino Luvualo <aluvualo@example.com>
   target:
