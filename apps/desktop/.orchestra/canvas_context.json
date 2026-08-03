@@ -1,0 +1,32 @@
+{
+  "terminals": [
+    {
+      "sessionId": "term_1786918928359",
+      "agent": "Shell",
+      "cwd": "/home/alcinoo/dev/orchesta-app/apps/desktop",
+      "connectedNotes": [],
+      "connectedPeerAgents": [],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1786918976851",
+      "agent": "Custom Terminal",
+      "cwd": "/home/alcinoo/dev/orchesta-app/apps/desktop",
+      "connectedNotes": [],
+      "connectedPeerAgents": [],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1786919001973",
+      "agent": "Custom Terminal",
+      "cwd": "/home/alcinoo/dev/orchesta-app/apps/desktop",
+      "connectedNotes": [],
+      "connectedPeerAgents": [],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    }
+  ],
+  "updatedAt": "2026-08-16T22:23:26.560Z"
+}
