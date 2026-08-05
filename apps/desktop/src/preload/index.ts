@@ -1,14 +1,36 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
+
+type BridgeEvent = { type?: string; eventId?: string; payload?: Record<string, unknown> }
+type BridgePayload = Record<string, unknown>
+type PortalMotionOptions = { generation?: number; scale?: number; revision?: number }
 
 contextBridge.exposeInMainWorld('orchestra', {
-  invoke: (type: string, payload: any) => ipcRenderer.invoke('orchestra:invoke', { type, payload }),
+  invoke: (type: string, payload: BridgePayload = {}) => ipcRenderer.invoke('orchestra:invoke', { type, payload }),
   detectTools: () => ipcRenderer.invoke('system:detect-tools'),
+  chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
+  filePath: (file: File) => webUtils.getPathForFile(file),
+  openExternalUrl: (url: string) => ipcRenderer.invoke('terminal:open-external', { url }),
+  portal: {
+    ensure: (portalId: string, url: string) => ipcRenderer.invoke('portal:ensure', { portalId, url }),
+    suppress: (reason: string, suppressed: boolean) => ipcRenderer.invoke('portal:suppress', { reason, suppressed }),
+    freeze: (portalId: string, options: PortalMotionOptions = {}) => ipcRenderer.invoke('portal:freeze', { portalId, ...options }),
+    resume: (portalId: string, bounds: { x: number; y: number; width: number; height: number }, options: PortalMotionOptions = {}) => ipcRenderer.invoke('portal:resume', { portalId, bounds, ...options }),
+    setBounds: (portalId: string, bounds: { x: number; y: number; width: number; height: number }, visible: boolean, options: PortalMotionOptions = {}) => ipcRenderer.invoke('portal:bounds', { portalId, bounds, visible, ...options }),
+    navigate: (portalId: string, url: string) => ipcRenderer.invoke('portal:navigate', { portalId, url }),
+    action: (portalId: string, action: 'back' | 'forward' | 'reload' | 'stop') => ipcRenderer.invoke('portal:action', { portalId, action }),
+    destroy: (portalId: string) => ipcRenderer.invoke('portal:destroy', { portalId }),
+    openExternal: (portalId: string) => ipcRenderer.invoke('portal:open-external', { portalId }),
+    inspect: (portalId: string) => ipcRenderer.invoke('portal:inspect', { portalId }),
+    click: (portalId: string, selector: string) => ipcRenderer.invoke('portal:click', { portalId, selector }),
+    type: (portalId: string, selector: string, text: string) => ipcRenderer.invoke('portal:type', { portalId, selector, text }),
+    screenshot: (portalId: string) => ipcRenderer.invoke('portal:screenshot', { portalId })
+  },
   relayTerminal: (fromSessionId: string, toSessionId: string, message: string) =>
     ipcRenderer.invoke('terminal:relay', { fromSessionId, toSessionId, message }),
-  syncCanvasContext: (contextSummary: any) =>
+  syncCanvasContext: (contextSummary: unknown) =>
     ipcRenderer.invoke('canvas:context:sync', { contextSummary }),
-  onEvent: (callback: (event: any) => void) => {
-    const handler = (_: any, data: any) => callback(data)
+  onEvent: (callback: (event: BridgeEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: BridgeEvent) => callback(data)
     ipcRenderer.on('orchestra:event', handler)
     return () => {
       ipcRenderer.removeListener('orchestra:event', handler)
@@ -21,6 +43,5 @@ contextBridge.exposeInMainWorld('windowControls', {
   minimize: () => ipcRenderer.invoke('window:minimize'),
   maximize: () => ipcRenderer.invoke('window:maximize'),
   close: () => ipcRenderer.invoke('window:close'),
-  isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
-  toggleFullscreen: () => ipcRenderer.invoke('window:toggleFullscreen')
+  isMaximized: () => ipcRenderer.invoke('window:isMaximized')
 })
