@@ -1,6 +1,5 @@
 import React, { useEffect, useRef } from 'react';
 import { useReactFlow, useStoreApi } from '@xyflow/react';
-import { viewportManager } from '../CanvasViewport';
 import { useWorkspaceStore } from '../../../store/workspaceStore';
 import { NodeRect, pairedAnchors, getAnchorOnRect, Point } from './AnchorResolver';
 import { routeCable } from './CableRouter';
@@ -42,10 +41,10 @@ export const CableSystem: React.FC<{
         height: n.height || 200,
       }));
       
-      const vp = viewportManager.viewport;
+      const vp = flow.getViewport();
       const transformGroup = svg.querySelector('#cable-transform-group');
       if (transformGroup) {
-        transformGroup.setAttribute('transform', `translate(${vp.panX}, ${vp.panY}) scale(${vp.zoom})`);
+        transformGroup.setAttribute('transform', `translate(${vp.x}, ${vp.y}) scale(${vp.zoom})`);
       }
 
       // Render regular connections
