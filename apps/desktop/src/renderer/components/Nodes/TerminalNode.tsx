@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Handle, Position } from '@xyflow/react'
+import { Handle, Position, NodeResizer } from '@xyflow/react'
 import { Maximize2, Minimize2, X } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -11,7 +11,7 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
   const fitAddonInstance = useRef<FitAddon | null>(null)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
   const [isLifted, setIsLifted] = useState(false)
-  const { deleteNode, setSelectedNodeId, theme } = useWorkspaceStore()
+  const { updateNode, deleteNode, setSelectedNodeId, theme } = useWorkspaceStore()
 
   const props = data.properties || {}
   const agent = props.agent || 'Claude Code'
@@ -33,7 +33,8 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
       fontSize: 11,
       cursorBlink: true,
       cols: 60,
-      rows: 14
+      rows: 14,
+      rightClickSelectsWord: false
     })
 
     const fitAddon = new FitAddon()
@@ -164,6 +165,12 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
       }}
       onClick={() => setSelectedNodeId(id)}
     >
+      <NodeResizer
+        isVisible={data.selected}
+        minWidth={320}
+        minHeight={220}
+        onResize={(_, params) => updateNode(id, { width: params.width, height: params.height })}
+      />
       <Handle type="target" position={Position.Left} className="port left" />
       <Handle type="source" position={Position.Right} className="port right" />
 
@@ -181,7 +188,7 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
           </button>
           <button className="icon-btn mac-action" onClick={(event) => { event.stopPropagation(); deleteNode(id) }} title="Fechar terminal"><X className="icon" /></button>
         </div>
-        <div className="terminal-body" ref={terminalRef} />
+        <div className="terminal-body nodrag" ref={terminalRef} onMouseDown={(e) => e.stopPropagation()} />
         <div className="node-foot terminal-foot">
           <span style={{ color: roleColor, fontWeight: 600 }}>● {role}</span>
           <span>Local · {cwd}</span>

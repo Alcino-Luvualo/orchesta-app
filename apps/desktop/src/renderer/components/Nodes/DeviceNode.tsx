@@ -1,16 +1,21 @@
 import React from 'react'
-import { Handle, Position } from '@xyflow/react'
+import { Handle, Position, NodeResizer } from '@xyflow/react'
 import { X } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 
 export const DeviceNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
-  const { deleteNode, setSelectedNodeId } = useWorkspaceStore()
+  const { updateNode, deleteNode, setSelectedNodeId } = useWorkspaceStore()
   const width = data.width || 250
   const height = data.height || 510
-  // iPhone 14 Pro Max viewport: 430 × 932. The visible phone always keeps that ratio.
   const scale = Math.max(.62, Math.min(1.25, Math.min(width / 235, height / 500)))
 
   return <div className="device-node" style={{ width: '100%', height: '100%', minWidth: 180, minHeight: 330 }} onClick={() => setSelectedNodeId(id)}>
+    <NodeResizer
+      isVisible={data.selected}
+      minWidth={180}
+      minHeight={330}
+      onResize={(_, params) => updateNode(id, { width: params.width, height: params.height })}
+    />
     <Handle type="target" position={Position.Left} className="port left" />
     <Handle type="source" position={Position.Right} className="port right" />
     <button className="device-close nodrag" onClick={(event) => { event.stopPropagation(); deleteNode(id) }} title="Fechar device"><X className="icon" /></button>

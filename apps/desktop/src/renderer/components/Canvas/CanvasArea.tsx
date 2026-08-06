@@ -101,6 +101,28 @@ export const CanvasArea: React.FC = () => {
     return () => window.clearTimeout(timer)
   }, [activeWorkspace?.id, focusSnapshot, storeEdges])
 
+  const workspaceRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = workspaceRef.current
+    if (!el) return
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault()
+        const zoomDelta = e.deltaY < 0 ? 1.06 : 0.94
+        const instance = flowRef.current
+        if (instance) {
+          const currentZoom = instance.getZoom()
+          const nextZoom = Math.max(0.2, Math.min(2.5, currentZoom * zoomDelta))
+          instance.zoomTo(nextZoom, { duration: 40 })
+          setZoomLevel(Math.round(nextZoom * 100))
+        }
+      }
+    }
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [])
+
   // Map Zustand nodes to ReactFlow nodes
   const reactFlowNodes = useMemo(() => {
     return storeNodes.map((n) => ({
@@ -108,10 +130,11 @@ export const CanvasArea: React.FC = () => {
       type: n.kind,
       position: { x: n.x, y: n.y },
       style: { width: n.width, height: n.height },
-      data: { properties: n.properties, width: n.width, height: n.height },
+      selected: selectedNodeId === n.id,
+      data: { properties: n.properties, width: n.width, height: n.height, selected: selectedNodeId === n.id },
       className: focusSnapshot?.id === n.id ? 'canvas-node-focus' : ''
     }))
-  }, [focusSnapshot?.id, storeNodes])
+  }, [focusSnapshot?.id, selectedNodeId, storeNodes])
 
   // Map Zustand edges to ReactFlow edges
   const reactFlowEdges = useMemo(() => {
@@ -349,6 +372,7 @@ export const CanvasArea: React.FC = () => {
   return (
     <div
       id="workspace"
+      ref={workspaceRef}
       onMouseDown={onWorkspaceMouseDown}
       onMouseMove={onWorkspaceMouseMove}
       onMouseUp={onWorkspaceMouseUp}

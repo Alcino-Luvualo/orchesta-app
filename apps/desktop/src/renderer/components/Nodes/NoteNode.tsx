@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Handle, Position } from '@xyflow/react'
+import { Handle, Position, NodeResizer } from '@xyflow/react'
 import { Edit2, Eye, X } from 'lucide-react'
 import { marked } from 'marked'
 import { useWorkspaceStore } from '../../store/workspaceStore'
@@ -11,7 +11,7 @@ export const NoteNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
 
   const props = data.properties || {}
   const title = props.title || 'Sticky Note'
-  const content = props.content || 'Digita aqui as tuas notas em Markdown...'
+  const content = props.content ?? ''
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     updateNode(id, { properties: { ...props, content: e.target.value } })
@@ -58,6 +58,12 @@ export const NoteNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
       }}
       onClick={() => setSelectedNodeId(id)}
     >
+      <NodeResizer
+        isVisible={data.selected}
+        minWidth={200}
+        minHeight={160}
+        onResize={(_, params) => updateNode(id, { width: params.width, height: params.height })}
+      />
       <Handle type="target" position={Position.Left} className="port left" />
       <Handle type="source" position={Position.Right} className="port right" />
 

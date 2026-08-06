@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Handle, Position } from '@xyflow/react'
+import { Handle, Position, NodeResizer } from '@xyflow/react'
 import { ChevronDown, ChevronRight, FileCode2, FileText, Folder, FolderOpen, GitBranch, GitCommitHorizontal, Search, X } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 
@@ -36,7 +36,7 @@ export const FilesNode: React.FC<{ id: string; data: any }> = ({ id, data }) => 
   const [gitStatus, setGitStatus] = useState<any>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [tree, setTree] = useState<TreeItem | null>(null)
-  const { deleteNode, setSelectedNodeId } = useWorkspaceStore()
+  const { updateNode, deleteNode, setSelectedNodeId } = useWorkspaceStore()
   const props = data.properties || {}
   const projectPath = props.path || '/home/user/dev/commerce'
   const isWide = (data.width || 440) >= 580
@@ -58,13 +58,18 @@ export const FilesNode: React.FC<{ id: string; data: any }> = ({ id, data }) => 
     const flattened: Array<{ path: string; fullPath: string; kind: 'file' | 'folder'; depth: number; open: boolean; status?: string }> = []
     const walk = (item: TreeItem, depth: number) => {
       if (depth > 0) flattened.push({ path: item.name, fullPath: item.path, kind: item.is_dir ? 'folder' : 'file', depth: depth - 1, open: item.is_dir })
-      item.children?.forEach((child) => walk(child, depth + 1))
+      if (item.children) item.children.forEach((c) => walk(c, depth + 1))
     }
     walk(tree, 0)
-    return flattened
+    return flattened.length > 0 ? flattened : demoEntries
   }, [tree])
 
-  const visibleEntries = useMemo(() => entries.filter((entry) => entry.path.toLowerCase().includes(searchQuery.toLowerCase())), [entries, searchQuery])
+  const visibleEntries = useMemo(() => {
+    if (!searchQuery.trim()) return entries
+    const q = searchQuery.toLowerCase()
+    return entries.filter((e) => e.path.toLowerCase().includes(q))
+  }, [entries, searchQuery])
+
   const selectFile = (file: string) => {
     setSelectedFile(file.split('/').pop() || file)
     const resolved = file.startsWith('/') ? file : `${projectPath}/${file}`
@@ -76,6 +81,12 @@ export const FilesNode: React.FC<{ id: string; data: any }> = ({ id, data }) => 
 
   return (
     <div className="node files-node" data-kind="files" style={{ width: '100%', height: '100%', minWidth: 330, minHeight: 220 }} onClick={() => setSelectedNodeId(id)}>
+      <NodeResizer
+        isVisible={data.selected}
+        minWidth={330}
+        minHeight={220}
+        onResize={(_, params) => updateNode(id, { width: params.width, height: params.height })}
+      />
       <Handle type="target" position={Position.Left} className="port left" />
       <Handle type="source" position={Position.Right} className="port right" />
 
