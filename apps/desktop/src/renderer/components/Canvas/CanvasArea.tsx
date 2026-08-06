@@ -106,6 +106,7 @@ export const CanvasArea: React.FC = () => {
       id: n.id,
       type: n.kind,
       position: { x: n.x, y: n.y },
+      style: { width: n.width, height: n.height },
       data: { properties: n.properties, width: n.width, height: n.height },
       className: focusSnapshot?.id === n.id ? 'canvas-node-focus' : ''
     }))
@@ -125,21 +126,13 @@ export const CanvasArea: React.FC = () => {
 
   const onNodesChange = useCallback(
     (changes: any) => {
-      // Handle node position changes with immutable updates
+      // Handle node position changes with immutable updates ONLY
       let updated = false
       const newNodes = storeNodes.map((n) => {
-        const change = changes.find((c: any) => c.id === n.id && ((c.type === 'position' && c.position) || (c.type === 'dimensions' && c.dimensions)))
+        const change = changes.find((c: any) => c.id === n.id && c.type === 'position' && c.position)
         if (change?.type === 'position') {
           updated = true
           return { ...n, x: change.position.x, y: change.position.y }
-        }
-        if (change?.type === 'dimensions' && change.dimensions) {
-          const width = Math.round(change.dimensions.width || n.width)
-          const height = Math.round(change.dimensions.height || n.height)
-          if (width !== n.width || height !== n.height) {
-            updated = true
-            return { ...n, width, height }
-          }
         }
         return n
       })

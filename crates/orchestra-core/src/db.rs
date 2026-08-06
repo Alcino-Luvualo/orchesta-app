@@ -256,6 +256,11 @@ impl Database {
         let props_str = serde_json::to_string(&node["properties"]).unwrap_or_else(|_| "{}".to_string());
 
         conn.execute(
+            "INSERT OR IGNORE INTO workspaces (id, name, path, created_at, updated_at) VALUES (?1, ?1, '', ?2, ?2)",
+            params![workspace_id, now],
+        )?;
+
+        conn.execute(
             "INSERT INTO canvas_nodes (id, workspace_id, kind, x, y, width, height, z_index, locked, collapsed, properties_json, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
              ON CONFLICT(id) DO UPDATE SET kind=?3, x=?4, y=?5, width=?6, height=?7, z_index=?8, locked=?9, collapsed=?10, properties_json=?11, updated_at=?12",
@@ -301,6 +306,11 @@ impl Database {
         let target = edge["target"].as_str().unwrap_or("");
         let target_port = edge["targetPort"].as_str();
         let label = edge["label"].as_str();
+
+        conn.execute(
+            "INSERT OR IGNORE INTO workspaces (id, name, path, created_at, updated_at) VALUES (?1, ?1, '', ?2, ?2)",
+            params![workspace_id, now],
+        )?;
 
         conn.execute(
             "INSERT INTO canvas_edges (id, workspace_id, source_id, source_port, target_id, target_port, label, created_at)
