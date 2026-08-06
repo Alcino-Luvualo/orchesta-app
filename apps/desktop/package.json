@@ -8,7 +8,7 @@
     "email": "aluvualo@example.com"
   },
   "private": true,
-  "main": "dist-electron/index.js",
+  "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
