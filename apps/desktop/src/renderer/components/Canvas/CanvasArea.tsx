@@ -107,17 +107,17 @@ export const CanvasArea: React.FC = () => {
     const el = workspaceRef.current
     if (!el) return
     const handleWheel = (e: WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault()
-        const zoomDelta = e.deltaY < 0 ? 1.06 : 0.94
-        const instance = flowRef.current
-        if (instance) {
-          const currentZoom = instance.getZoom()
-          const nextZoom = Math.max(0.2, Math.min(2.5, currentZoom * zoomDelta))
-          instance.zoomTo(nextZoom, { duration: 40 })
-          setZoomLevel(Math.round(nextZoom * 100))
-        }
-      }
+      e.preventDefault()
+      const instance = flowRef.current
+      if (!instance) return
+
+      // Smooth zoom in/out for mouse wheel and trackpad pinch
+      const zoomFactor = e.deltaY < 0 ? 1.09 : 0.91
+      const currentZoom = instance.getZoom()
+      const nextZoom = Math.max(0.15, Math.min(3.0, currentZoom * zoomFactor))
+
+      instance.zoomTo(nextZoom, { duration: 30 })
+      setZoomLevel(Math.round(nextZoom * 100))
     }
     el.addEventListener('wheel', handleWheel, { passive: false })
     return () => el.removeEventListener('wheel', handleWheel)
@@ -387,10 +387,9 @@ export const CanvasArea: React.FC = () => {
         onConnect={onConnect}
         panOnDrag={tool === 'select' ? [0, 1, 2] : false}
         selectionOnDrag={false}
-        panOnScroll={true}
-        panOnScrollMode={PanOnScrollMode.Free}
-        zoomOnScroll={true}
-        zoomOnPinch={true}
+        panOnScroll={false}
+        zoomOnScroll={false}
+        zoomOnPinch={false}
         zoomOnDoubleClick={false}
         preventScrolling={true}
         onMove={(_, viewport) => setZoomLevel(Math.round(viewport.zoom * 100))}
