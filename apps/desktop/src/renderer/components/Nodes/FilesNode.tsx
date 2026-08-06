@@ -75,7 +75,7 @@ export const FilesNode: React.FC<{ id: string; data: any }> = ({ id, data }) => 
   }
 
   return (
-    <div className="node files-node" data-kind="files" style={{ width: data.width || 440, height: data.height || 300, minWidth: 330, minHeight: 220 }} onClick={() => setSelectedNodeId(id)}>
+    <div className="node files-node" data-kind="files" style={{ width: '100%', height: '100%', minWidth: 330, minHeight: 220 }} onClick={() => setSelectedNodeId(id)}>
       <Handle type="target" position={Position.Left} className="port left" />
       <Handle type="source" position={Position.Right} className="port right" />
 

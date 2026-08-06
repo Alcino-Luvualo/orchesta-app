@@ -51,8 +51,8 @@ export const NoteNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
       className="node"
       data-kind="note"
       style={{
-        width: data.width || 320,
-        height: data.height || 240,
+        width: '100%',
+        height: '100%',
         minWidth: 200,
         minHeight: 160
       }}

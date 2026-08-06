@@ -157,8 +157,8 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
     <div
       className={`node ${isLifted ? 'lifted' : ''}`}
       style={{
-        width: isLifted ? 800 : (data.width || 480),
-        height: isLifted ? 520 : (data.height || 280),
+        width: '100%',
+        height: '100%',
         minWidth: 320,
         minHeight: 220
       }}

@@ -10,7 +10,7 @@ export const DeviceNode: React.FC<{ id: string; data: any }> = ({ id, data }) =>
   // iPhone 14 Pro Max viewport: 430 × 932. The visible phone always keeps that ratio.
   const scale = Math.max(.62, Math.min(1.25, Math.min(width / 235, height / 500)))
 
-  return <div className="device-node" style={{ width, height, minWidth: 180, minHeight: 330 }} onClick={() => setSelectedNodeId(id)}>
+  return <div className="device-node" style={{ width: '100%', height: '100%', minWidth: 180, minHeight: 330 }} onClick={() => setSelectedNodeId(id)}>
     <Handle type="target" position={Position.Left} className="port left" />
     <Handle type="source" position={Position.Right} className="port right" />
     <button className="device-close nodrag" onClick={(event) => { event.stopPropagation(); deleteNode(id) }} title="Fechar device"><X className="icon" /></button>

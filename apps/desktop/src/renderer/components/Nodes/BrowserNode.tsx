@@ -13,8 +13,8 @@ export const BrowserNode: React.FC<{ id: string; data: any }> = ({ id, data }) =
       className="node"
       data-kind="browser"
       style={{
-        width: data.width || 400,
-        height: data.height || 280,
+        width: '100%',
+        height: '100%',
         minWidth: 300,
         minHeight: 200
       }}

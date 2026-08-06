@@ -348,8 +348,8 @@ export const CanvasArea: React.FC = () => {
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onConnect={onConnect}
-        panOnDrag={tool === 'select'}
-        selectionOnDrag={tool === 'select'}
+        panOnDrag={tool === 'select' ? [0, 1, 2] : false}
+        selectionOnDrag={false}
         panOnScroll={true}
         zoomOnScroll={false}
         zoomOnPinch={true}
