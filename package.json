@@ -1,0 +1,21 @@
+{
+  "name": "orchestra",
+  "version": "0.1.0",
+  "description": "Orchestra Agent Workspace for Developers",
+  "author": "Alcino Luvualo",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix apps/desktop run dev",
+    "build:core": "cargo build --release",
+    "build:desktop": "npm --prefix apps/desktop run build",
+    "package:deb": "npm --prefix apps/desktop run build && npx electron-builder --config apps/desktop/electron-builder.yml --linux deb",
+    "package:appimage": "npm --prefix apps/desktop run build && npx electron-builder --config apps/desktop/electron-builder.yml --linux AppImage",
+    "package:all": "npm --prefix apps/desktop run build && npx electron-builder --config apps/desktop/electron-builder.yml --linux deb AppImage"
+  },
+  "workspaces": [
+    "apps/*"
+  ],
+  "devDependencies": {
+    "electron": "33.0.0"
+  }
+}

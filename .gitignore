@@ -1,0 +1,10 @@
+node_modules/
+target/
+dist/
+dist-electron/
+release/
+apps/desktop/dist/
+apps/desktop/dist-electron/
+apps/desktop/release/
+*.log
+.DS_Store
