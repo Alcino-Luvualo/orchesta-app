@@ -167,7 +167,46 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setFloors: (floors) => set({ floors }),
   setActiveFloor: (floor) => set({ activeFloor: floor }),
   setNodes: (nodes) => set({ nodes }),
-  addNode: (node) => set((state) => ({ nodes: [...state.nodes, node] })),
+  addNode: (node) =>
+    set((state) => {
+      let targetX = Math.round(node.x)
+      let targetY = Math.round(node.y)
+
+      const rectsTouch = (
+        r1: { x: number; y: number; width: number; height: number },
+        r2: { x: number; y: number; width: number; height: number },
+        gap = 14
+      ) => {
+        return !(
+          r1.x + r1.width + gap <= r2.x ||
+          r1.x >= r2.x + r2.width + gap ||
+          r1.y + r1.height + gap <= r2.y ||
+          r1.y >= r2.y + r2.height + gap
+        )
+      }
+
+      const candidate = { ...node, x: targetX, y: targetY }
+      let hasOverlap = state.nodes.some((other) => rectsTouch(candidate, other))
+
+      if (hasOverlap) {
+        for (let radius = 12; radius <= 480; radius += 12) {
+          for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 8) {
+            const nx = Math.round(node.x + Math.cos(angle) * radius)
+            const ny = Math.round(node.y + Math.sin(angle) * radius)
+            const testCand = { ...node, x: nx, y: ny }
+            if (!state.nodes.some((other) => rectsTouch(testCand, other))) {
+              targetX = nx
+              targetY = ny
+              hasOverlap = false
+              break
+            }
+          }
+          if (!hasOverlap) break
+        }
+      }
+
+      return { nodes: [...state.nodes, { ...node, x: targetX, y: targetY }] }
+    }),
   updateNode: (id, partial) =>
     set((state) => ({
       nodes: state.nodes.map((n) => (n.id === id ? { ...n, ...partial, properties: { ...n.properties, ...partial.properties } } : n))

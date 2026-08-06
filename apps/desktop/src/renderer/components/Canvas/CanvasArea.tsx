@@ -150,13 +150,40 @@ export const CanvasArea: React.FC = () => {
 
   const onNodesChange = useCallback(
     (changes: any) => {
-      // Handle node position changes with immutable updates ONLY
       let updated = false
+      const rectsTouch = (
+        r1: { x: number; y: number; width: number; height: number },
+        r2: { x: number; y: number; width: number; height: number },
+        gap = 8
+      ) => {
+        return !(
+          r1.x + r1.width + gap <= r2.x ||
+          r1.x >= r2.x + r2.width + gap ||
+          r1.y + r1.height + gap <= r2.y ||
+          r1.y >= r2.y + r2.height + gap
+        )
+      }
+
       const newNodes = storeNodes.map((n) => {
         const change = changes.find((c: any) => c.id === n.id && c.type === 'position' && c.position)
         if (change?.type === 'position') {
-          updated = true
-          return { ...n, x: change.position.x, y: change.position.y }
+          const wantedX = Math.round(change.position.x)
+          const wantedY = Math.round(change.position.y)
+
+          // Test horizontal movement
+          const candidateX = { ...n, x: wantedX }
+          const collideX = storeNodes.some((other) => other.id !== n.id && rectsTouch(candidateX, other))
+          const finalX = collideX ? n.x : wantedX
+
+          // Test vertical movement
+          const candidateY = { ...n, x: finalX, y: wantedY }
+          const collideY = storeNodes.some((other) => other.id !== n.id && rectsTouch(candidateY, other))
+          const finalY = collideY ? n.y : wantedY
+
+          if (finalX !== n.x || finalY !== n.y) {
+            updated = true
+            return { ...n, x: finalX, y: finalY }
+          }
         }
         return n
       })
