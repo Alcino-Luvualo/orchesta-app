@@ -1,0 +1,27 @@
+appId: com.orchestra.desktop
+productName: Orchestra
+electronVersion: 33.0.0
+directories:
+  output: release
+  buildResources: resources
+files:
+  - dist/**/*
+  - dist-electron/**/*
+extraResources:
+  - from: ../../target/release/orchestra-core
+    to: bin/orchestra-core
+  - from: ../../target/release/orchestra-cli
+    to: bin/orchestra
+linux:
+  maintainer: Alcino Luvualo <aluvualo@example.com>
+  target:
+    - target: deb
+      arch:
+        - x64
+    - target: AppImage
+      arch:
+        - x64
+  category: Development
+  synopsis: Orchestra Agent Workspace for Developers
+  description: Infinite canvas desktop workspace powered by Electron, React and Rust core.
+  icon: resources/icon.png
