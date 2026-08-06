@@ -1130,6 +1130,20 @@ main {
   width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden;
   border-radius: inherit; background: #0c0e10;
 }
+.xterm-viewport::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 4px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}
 .mac-chrome {
   height: 35px; flex: 0 0 35px; display: flex; align-items: center; gap: 6px; padding: 0 10px;
   border-bottom: 1px solid rgba(255,255,255,.07); background: #191c20; cursor: default;

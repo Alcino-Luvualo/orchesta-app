@@ -27,7 +27,7 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
       theme: theme === 'light' ? {
         background: '#f7f8f5', foreground: '#273029', cursor: '#718d27', selectionBackground: 'rgba(130, 169, 28, .22)'
       } : {
-        background: '#0c0e10', foreground: '#b8c1ba', cursor: '#c8f169', selectionBackground: 'rgba(200, 241, 105, .3)'
+        background: '#0c0e10', foreground: '#d4dcd6', cursor: '#c8f169', selectionBackground: 'rgba(200, 241, 105, .22)', selectionForeground: '#ffffff'
       },
       fontFamily: 'JetBrains Mono, monospace',
       fontSize: 11,
@@ -140,7 +140,7 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
     if (!xtermInstance.current) return
     xtermInstance.current.options.theme = theme === 'light'
       ? { background: '#f7f8f5', foreground: '#273029', cursor: '#718d27', selectionBackground: 'rgba(130, 169, 28, .22)' }
-      : { background: '#0c0e10', foreground: '#b8c1ba', cursor: '#c8f169', selectionBackground: 'rgba(200, 241, 105, .3)' }
+      : { background: '#0c0e10', foreground: '#d4dcd6', cursor: '#c8f169', selectionBackground: 'rgba(200, 241, 105, .22)', selectionForeground: '#ffffff' }
   }, [theme])
 
   // Re-fit terminal when lifted/collapsed
