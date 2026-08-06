@@ -104,6 +104,9 @@ function createWindow() {
     width: 1400,
     height: 900,
     backgroundColor: '#0b0c0e',
+    icon: fs.existsSync(path.join(__dirname, '../resources/icon.png'))
+      ? path.join(__dirname, '../resources/icon.png')
+      : path.join(process.resourcesPath, 'icon.png'),
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 12, y: 12 },
     webPreferences: {

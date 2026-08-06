@@ -16,10 +16,7 @@ export const TopBar: React.FC = () => {
   return (
     <header className="topbar">
       <div className="brand">
-        <svg className="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 3v18M3 12h18M7.5 7.5l9 9M16.5 7.5l-9 9" />
-        </svg>
+        <img src="/icon.png" className="logo" alt="Orchestra" style={{ width: '24px', height: '24px', borderRadius: '5px', objectFit: 'contain' }} />
       </div>
 
       <div className="workspace-head">
