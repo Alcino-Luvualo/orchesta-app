@@ -1,6 +1,18 @@
 import React from 'react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import { Sun, Moon, Plus, Layers, Sparkles, Terminal } from 'lucide-react'
+import { Sun, Moon, Plus, Sparkles, Terminal, Minus, Square, X, Maximize } from 'lucide-react'
+
+declare global {
+  interface Window {
+    windowControls?: {
+      minimize: () => void
+      maximize: () => void
+      close: () => void
+      isMaximized: () => Promise<boolean>
+      toggleFullscreen: () => void
+    }
+  }
+}
 
 export const TopBar: React.FC = () => {
   const {
@@ -56,6 +68,40 @@ export const TopBar: React.FC = () => {
       <div className="avatar" style={{ marginLeft: 8 }} title="Perfil Alcino Luvualo">
         AL
       </div>
+
+      {/* Window controls for frameless window on Linux */}
+      {window.windowControls && (
+        <div className="window-controls no-drag">
+          <button
+            className="window-btn"
+            onClick={() => window.windowControls?.minimize()}
+            title="Minimizar"
+          >
+            <Minus style={{ width: 14, height: 14 }} />
+          </button>
+          <button
+            className="window-btn"
+            onClick={() => window.windowControls?.maximize()}
+            title="Maximizar"
+          >
+            <Square style={{ width: 12, height: 12 }} />
+          </button>
+          <button
+            className="window-btn"
+            onClick={() => window.windowControls?.toggleFullscreen()}
+            title="Tela Cheia (F11)"
+          >
+            <Maximize style={{ width: 12, height: 12 }} />
+          </button>
+          <button
+            className="window-btn window-btn-close"
+            onClick={() => window.windowControls?.close()}
+            title="Fechar"
+          >
+            <X style={{ width: 14, height: 14 }} />
+          </button>
+        </div>
+      )}
     </header>
   )
 }

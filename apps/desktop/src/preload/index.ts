@@ -10,3 +10,12 @@ contextBridge.exposeInMainWorld('orchestra', {
     }
   }
 })
+
+// Expose window controls for frameless window on Linux
+contextBridge.exposeInMainWorld('windowControls', {
+  minimize: () => ipcRenderer.invoke('window:minimize'),
+  maximize: () => ipcRenderer.invoke('window:maximize'),
+  close: () => ipcRenderer.invoke('window:close'),
+  isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  toggleFullscreen: () => ipcRenderer.invoke('window:toggleFullscreen')
+})

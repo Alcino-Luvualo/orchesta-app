@@ -55,18 +55,21 @@ export const CanvasArea: React.FC = () => {
 
   const onNodesChange = useCallback(
     (changes: any) => {
-      // Handle node position changes
-      changes.forEach((change: any) => {
-        if (change.type === 'position' && change.position) {
-          const node = storeNodes.find((n) => n.id === change.id)
-          if (node) {
-            node.x = change.position.x
-            node.y = change.position.y
-          }
+      // Handle node position changes with immutable updates
+      let updated = false
+      const newNodes = storeNodes.map((n) => {
+        const change = changes.find((c: any) => c.type === 'position' && c.position && c.id === n.id)
+        if (change) {
+          updated = true
+          return { ...n, x: change.position.x, y: change.position.y }
         }
+        return n
       })
+      if (updated) {
+        setNodes(newNodes)
+      }
     },
-    [storeNodes]
+    [storeNodes, setNodes]
   )
 
   const onConnect = useCallback(

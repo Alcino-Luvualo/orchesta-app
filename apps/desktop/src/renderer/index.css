@@ -186,6 +186,38 @@ button {
   border: 1px solid var(--line2);
 }
 
+/* Window controls for frameless window on Linux */
+.window-controls {
+  display: flex;
+  align-items: center;
+  margin-left: 8px;
+  gap: 2px;
+}
+
+.window-btn {
+  width: 32px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.window-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.window-btn-close:hover {
+  background: var(--danger);
+  color: white;
+}
+
 .sidebar {
   grid-row: 2;
   z-index: 20;
@@ -801,3 +833,390 @@ main {
   background: #f7f8f9;
   border-color: #dfe2e5;
 }
+
+/* ============================================
+   MISSING CSS - Identified by bug scanner
+   ============================================ */
+
+/* Lifted Node (Focus/Expand mode) */
+.node.lifted {
+  z-index: 100;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 2px var(--primary);
+}
+
+/* Canvas Toolbar - tip labels */
+.canvas-toolbar .tip {
+  font-size: 9px;
+  opacity: 0;
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  color: var(--muted);
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+.canvas-toolbar .tool:hover .tip {
+  opacity: 1;
+}
+
+.canvas-toolbar .tool {
+  position: relative;
+}
+
+/* NoteNode Styles */
+.markdown-note {
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 36px);
+  overflow: hidden;
+}
+
+.note-source {
+  flex: 1;
+  overflow: auto;
+}
+
+.note-source textarea {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 8px 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  resize: none;
+}
+
+.note-preview {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.note-preview h1, .note-preview h2, .note-preview h3 {
+  color: var(--primary);
+  margin: 6px 0 4px;
+}
+
+.note-preview h1 { font-size: 16px; }
+.note-preview h2 { font-size: 14px; }
+.note-preview h3 { font-size: 13px; }
+
+.note-preview ul, .note-preview ol {
+  padding-left: 16px;
+  margin: 4px 0;
+}
+
+.note-preview li {
+  margin: 2px 0;
+}
+
+.note-preview code {
+  background: var(--panel2);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.note-preview blockquote {
+  border-left: 3px solid var(--primary);
+  margin: 6px 0;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.note-preview input[type="checkbox"] {
+  margin-right: 4px;
+}
+
+/* BrowserNode Chrome Shell */
+.chrome-shell {
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 36px);
+  overflow: hidden;
+  border-radius: 0 0 var(--r) var(--r);
+}
+
+.chrome-toolbar {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  background: #1a1d21;
+  border-bottom: 1px solid var(--line);
+}
+
+.chrome-toolbar .dots {
+  display: flex;
+  gap: 4px;
+}
+
+.chrome-toolbar .dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.chrome-toolbar .dots span:nth-child(1) { background: #f07878; }
+.chrome-toolbar .dots span:nth-child(2) { background: #f2c46d; }
+.chrome-toolbar .dots span:nth-child(3) { background: #63d694; }
+
+.chrome-address {
+  flex: 1;
+  height: 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0 8px;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+}
+
+.chrome-content {
+  flex: 1;
+  overflow: auto;
+  background: #0d0e10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.chrome-content iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* Command Palette */
+.palette {
+  width: 560px;
+  max-height: 400px;
+  background: #141619;
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  box-shadow: 0 30px 90px #000;
+  overflow: hidden;
+}
+
+.command-input {
+  width: 100%;
+  height: 48px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  outline: none;
+  padding: 0 16px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.command-input::placeholder {
+  color: var(--dim);
+}
+
+.command-list {
+  max-height: 320px;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.command-item {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  transition: background 0.12s;
+}
+
+.command-item:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.command-item .kbd {
+  margin-left: auto;
+  font-size: 9px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  color: var(--dim);
+}
+
+/* Provider Grid (Recruit Agent Modal) */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.provider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.provider:hover {
+  background: var(--hover);
+  border-color: var(--primary);
+}
+
+.provider.selected {
+  border-color: var(--primary);
+  background: var(--primary-muted);
+}
+
+/* Environment Cards */
+.env-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.env-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.env-card:hover {
+  border-color: var(--primary);
+}
+
+.env-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.env-top strong {
+  flex: 1;
+}
+
+.stats {
+  display: flex;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.stats span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Settings Screen */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 20px;
+  height: 100%;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--line);
+  padding-right: 16px;
+}
+
+.settings-nav button {
+  text-align: left;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.settings-nav button:hover,
+.settings-nav button.active {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* Home Screen */
+.templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.template {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--panel);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.template:hover {
+  border-color: var(--primary);
+  background: var(--hover);
+}
+
+.activity {
+  margin-top: 16px;
+}
+
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.activity-row:hover {
+  background: var(--hover);
+}
+

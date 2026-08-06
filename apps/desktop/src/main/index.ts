@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, screen } from 'electron'
 import path from 'path'
 import net from 'net'
 import { spawn, ChildProcess } from 'child_process'
@@ -7,6 +7,8 @@ import fs from 'fs'
 let mainWindow: BrowserWindow | null = null
 let coreProcess: ChildProcess | null = null
 let socketClient: net.Socket | null = null
+let socketRetryTimer: ReturnType<typeof setTimeout> | null = null
+const MAX_SOCKET_RETRIES = 10
 const pendingRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void }>()
 
 function getSocketPath(): string {
@@ -23,12 +25,12 @@ function ensureCoreDaemonRunning() {
     console.log('Orchestra core socket not found. Spawning orchestra-core daemon...')
     let binPath = path.join(__dirname, '../../target/release/orchestra-core')
     if (!fs.existsSync(binPath)) {
-      binPath = path.join(process.resourcesPath, 'bin/orchestra-core')
+      binPath = path.join(process.resourcesPath || '', 'bin/orchestra-core')
     }
     if (fs.existsSync(binPath)) {
       coreProcess = spawn(binPath, [], {
         detached: true,
-        stdio: 'inherit'
+        stdio: 'ignore'
       })
       coreProcess.unref()
     } else {
@@ -38,10 +40,15 @@ function ensureCoreDaemonRunning() {
 }
 
 function connectToSocket(retryCount = 0) {
+  if (retryCount >= MAX_SOCKET_RETRIES) {
+    console.log('Max socket retry attempts reached. Orchestra core daemon not available.')
+    return
+  }
+
   const sockPath = getSocketPath()
   if (!fs.existsSync(sockPath)) {
-    if (retryCount < 20) {
-      setTimeout(() => connectToSocket(retryCount + 1), 300)
+    if (retryCount < MAX_SOCKET_RETRIES) {
+      socketRetryTimer = setTimeout(() => connectToSocket(retryCount + 1), 500)
     }
     return
   }
@@ -86,10 +93,11 @@ function connectToSocket(retryCount = 0) {
   })
 
   socketClient.on('error', (err) => {
-    console.error('Socket client error:', err)
+    console.error('Socket client error:', (err as Error).message)
     socketClient = null
-    if (retryCount < 20) {
-      setTimeout(() => connectToSocket(retryCount + 1), 1000)
+    // Only retry a few times, don't flood
+    if (retryCount < MAX_SOCKET_RETRIES) {
+      socketRetryTimer = setTimeout(() => connectToSocket(retryCount + 1), 2000)
     }
   })
 
@@ -99,22 +107,71 @@ function connectToSocket(retryCount = 0) {
   })
 }
 
+function getIconPath(): string | undefined {
+  // In development
+  const devIcon = path.join(__dirname, '../resources/icon.png')
+  if (fs.existsSync(devIcon)) return devIcon
+
+  // In packaged app
+  try {
+    const prodIcon = path.join(process.resourcesPath || '', 'icon.png')
+    if (fs.existsSync(prodIcon)) return prodIcon
+  } catch (_) {}
+
+  return undefined
+}
+
 function createWindow() {
+  const isLinux = process.platform === 'linux'
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    minWidth: 800,
+    minHeight: 600,
     backgroundColor: '#0b0c0e',
-    icon: fs.existsSync(path.join(__dirname, '../resources/icon.png'))
-      ? path.join(__dirname, '../resources/icon.png')
-      : path.join(process.resourcesPath, 'icon.png'),
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 12, y: 12 },
+    icon: getIconPath(),
+    // On Linux, 'hidden' titleBarStyle causes fullscreen crashes.
+    // Use frameless + custom titlebar instead on Linux, standard on other platforms.
+    frame: !isLinux,
+    titleBarStyle: isLinux ? undefined : 'hidden',
+    trafficLightPosition: isLinux ? undefined : { x: 12, y: 12 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
     }
+  })
+
+  // Handle fullscreen transitions gracefully
+  mainWindow.on('enter-full-screen', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('orchestra:event', { type: 'window.fullscreen', payload: { isFullscreen: true } })
+    }
+  })
+
+  mainWindow.on('leave-full-screen', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('orchestra:event', { type: 'window.fullscreen', payload: { isFullscreen: false } })
+    }
+  })
+
+  // Prevent unhandled errors from crashing the app
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('Renderer process gone:', details.reason)
+    if (details.reason !== 'clean-exit') {
+      // Recreate the window
+      createWindow()
+    }
+  })
+
+  mainWindow.webContents.on('unresponsive', () => {
+    console.warn('Window became unresponsive')
+  })
+
+  mainWindow.webContents.on('responsive', () => {
+    console.log('Window became responsive again')
   })
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -127,6 +184,33 @@ function createWindow() {
 app.whenReady().then(() => {
   ensureCoreDaemonRunning()
   connectToSocket()
+
+  // Window control IPC handlers for frameless window on Linux
+  ipcMain.handle('window:minimize', () => {
+    mainWindow?.minimize()
+  })
+
+  ipcMain.handle('window:maximize', () => {
+    if (mainWindow?.isMaximized()) {
+      mainWindow.unmaximize()
+    } else {
+      mainWindow?.maximize()
+    }
+  })
+
+  ipcMain.handle('window:close', () => {
+    mainWindow?.close()
+  })
+
+  ipcMain.handle('window:isMaximized', () => {
+    return mainWindow?.isMaximized() ?? false
+  })
+
+  ipcMain.handle('window:toggleFullscreen', () => {
+    if (mainWindow) {
+      mainWindow.setFullScreen(!mainWindow.isFullScreen())
+    }
+  })
 
   ipcMain.handle('orchestra:invoke', async (_, { type, payload }) => {
     return new Promise((resolve, reject) => {
@@ -141,6 +225,14 @@ app.whenReady().then(() => {
 
       const requestId = 'req_' + Math.random().toString(36).substring(2, 10)
       pendingRequests.set(requestId, { resolve, reject })
+
+      // Set a timeout so pending requests don't hang forever
+      setTimeout(() => {
+        if (pendingRequests.has(requestId)) {
+          pendingRequests.delete(requestId)
+          reject(new Error('Request timed out'))
+        }
+      }, 10000)
 
       const msg = JSON.stringify({
         protocolVersion: 1,
@@ -170,5 +262,19 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  // Clear socket retry timer
+  if (socketRetryTimer) {
+    clearTimeout(socketRetryTimer)
+    socketRetryTimer = null
+  }
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Catch unhandled errors at the process level
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception in main process:', err)
+})
+
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection in main process:', err)
 })

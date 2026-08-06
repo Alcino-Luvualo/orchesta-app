@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Handle, Position } from '@xyflow/react'
-import { Terminal as TerminalIcon, Maximize2, Minimize2, X, Play, Shield } from 'lucide-react'
+import { Terminal as TerminalIcon, Maximize2, Minimize2, X } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { useWorkspaceStore } from '../../store/workspaceStore'
@@ -9,6 +9,7 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
   const terminalRef = useRef<HTMLDivElement>(null)
   const xtermInstance = useRef<Terminal | null>(null)
   const fitAddonInstance = useRef<FitAddon | null>(null)
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
   const [isLifted, setIsLifted] = useState(false)
   const { deleteNode, setSelectedNodeId } = useWorkspaceStore()
 
@@ -39,10 +40,23 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(terminalRef.current)
-    fitAddon.fit()
+
+    // Delay initial fit to ensure DOM is laid out
+    requestAnimationFrame(() => {
+      try { fitAddon.fit() } catch (_) {}
+    })
 
     xtermInstance.current = term
     fitAddonInstance.current = fitAddon
+
+    // Watch for container resize and re-fit terminal
+    const observer = new ResizeObserver(() => {
+      requestAnimationFrame(() => {
+        try { fitAddon.fit() } catch (_) {}
+      })
+    })
+    observer.observe(terminalRef.current)
+    resizeObserverRef.current = observer
 
     // Initial greeting / prompt
     term.writeln(`\x1b[32m[Orchestra PTY · zsh]\x1b[0m Started session \x1b[1m${id}\x1b[0m`)
@@ -76,6 +90,10 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
 
       return () => {
         unsubscribe()
+        observer.disconnect()
+        resizeObserverRef.current = null
+        // Kill the PTY session on cleanup
+        window.orchestra.invoke('terminal.kill', { sessionId: id }).catch(() => {})
         term.dispose()
       }
     } else {
@@ -88,9 +106,24 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
           term.write(text)
         }
       })
-      return () => term.dispose()
+      return () => {
+        observer.disconnect()
+        resizeObserverRef.current = null
+        term.dispose()
+      }
     }
   }, [id])
+
+  // Re-fit terminal when lifted/collapsed
+  useEffect(() => {
+    if (fitAddonInstance.current) {
+      // Give DOM time to resize
+      const timer = setTimeout(() => {
+        try { fitAddonInstance.current?.fit() } catch (_) {}
+      }, 100)
+      return () => clearTimeout(timer)
+    }
+  }, [isLifted])
 
   return (
     <div
