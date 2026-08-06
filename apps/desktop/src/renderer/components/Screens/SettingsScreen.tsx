@@ -29,6 +29,13 @@ export const SettingsScreen: React.FC = () => {
       permissions: ['read']
     }
   ])
+  const [editingRoleId, setEditingRoleId] = useState<string | null>(null)
+
+  const createRole = () => {
+    const id = `role_${Date.now()}`
+    setRoles((current) => [...current, { id, name: 'New Role', description: 'Descrição do papel do agente', color: '#a989f5', instructions: 'Define as instruções deste agente.', permissions: ['read'] }])
+    setEditingRoleId(id)
+  }
 
   return (
     <div className="panel-screen">
@@ -54,7 +61,7 @@ export const SettingsScreen: React.FC = () => {
             <div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                 <h3>Biblioteca de Roles de Agentes</h3>
-                <button className="btn primary" style={{ height: 28, fontSize: 9 }} onClick={() => alert('Criar novo Role')}>
+                <button className="btn primary" style={{ height: 28, fontSize: 9 }} onClick={createRole}>
                   <Plus className="icon" style={{ width: 12, height: 12 }} /> Criar Role
                 </button>
               </div>
@@ -68,7 +75,7 @@ export const SettingsScreen: React.FC = () => {
                         <b style={{ fontSize: 13 }}>{r.name}</b>
                       </div>
                       <div>
-                        <button className="icon-btn" onClick={() => alert(`Editar ${r.name}`)}><Edit2 className="icon" /></button>
+                        <button className="icon-btn" onClick={() => setEditingRoleId(editingRoleId === r.id ? null : r.id)} title="Editar role"><Edit2 className="icon" /></button>
                       </div>
                     </div>
 
@@ -84,6 +91,11 @@ export const SettingsScreen: React.FC = () => {
                         </span>
                       ))}
                     </div>
+                    {editingRoleId === r.id && <div className="role-editor">
+                      <input value={r.name} onChange={(event) => setRoles((current) => current.map((role) => role.id === r.id ? { ...role, name: event.target.value } : role))} aria-label="Nome da role" />
+                      <textarea value={r.instructions} onChange={(event) => setRoles((current) => current.map((role) => role.id === r.id ? { ...role, instructions: event.target.value } : role))} aria-label="Instruções da role" />
+                      <button className="btn primary" onClick={() => setEditingRoleId(null)}>Guardar role</button>
+                    </div>}
                   </div>
                 ))}
               </div>

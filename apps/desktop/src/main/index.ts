@@ -11,6 +11,11 @@ let socketRetryTimer: ReturnType<typeof setTimeout> | null = null
 const MAX_SOCKET_RETRIES = 10
 const pendingRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void }>()
 
+if (process.env.VITE_DEV_SERVER_URL) {
+  // Development-only inspection port; never enabled in packaged builds.
+  app.commandLine.appendSwitch('remote-debugging-port', '9231')
+}
+
 function getSocketPath(): string {
   const runtimeDir = process.env.XDG_RUNTIME_DIR
   if (runtimeDir) {
@@ -19,14 +24,16 @@ function getSocketPath(): string {
   return '/tmp/orchestra.sock'
 }
 
-function ensureCoreDaemonRunning() {
+function ensureCoreDaemonRunning(forceSpawn = false) {
   const sockPath = getSocketPath()
-  if (!fs.existsSync(sockPath)) {
+  if (forceSpawn || !fs.existsSync(sockPath)) {
     console.log('Orchestra core socket not found. Spawning orchestra-core daemon...')
-    let binPath = path.join(__dirname, '../../target/release/orchestra-core')
-    if (!fs.existsSync(binPath)) {
-      binPath = path.join(process.resourcesPath || '', 'bin/orchestra-core')
-    }
+    const devCandidates = [
+      // Vite Electron emits main.js to apps/desktop/dist-electron.
+      path.resolve(__dirname, '../../../target/release/orchestra-core'),
+      path.resolve(process.cwd(), '../../target/release/orchestra-core')
+    ]
+    let binPath = devCandidates.find((candidate) => fs.existsSync(candidate)) || path.join(process.resourcesPath || '', 'bin/orchestra-core')
     if (fs.existsSync(binPath)) {
       coreProcess = spawn(binPath, [], {
         detached: true,
@@ -95,6 +102,11 @@ function connectToSocket(retryCount = 0) {
   socketClient.on('error', (err) => {
     console.error('Socket client error:', (err as Error).message)
     socketClient = null
+    if ((err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
+      // A stale Unix-socket file can survive an unclean shutdown. Start a new
+      // core instance instead of leaving the renderer permanently in fallback.
+      ensureCoreDaemonRunning(true)
+    }
     // Only retry a few times, don't flood
     if (retryCount < MAX_SOCKET_RETRIES) {
       socketRetryTimer = setTimeout(() => connectToSocket(retryCount + 1), 2000)

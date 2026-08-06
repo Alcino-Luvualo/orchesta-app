@@ -1,18 +1,23 @@
 import React from 'react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import { Plus, Folder, Layers, Sparkles, Clock, CheckCircle } from 'lucide-react'
+import { Plus, Folder } from 'lucide-react'
 
 export const HomeScreen: React.FC = () => {
-  const { workspaces, setActiveWorkspace, setScreen } = useWorkspaceStore()
+  const { workspaces, setActiveWorkspace, setScreen, createWorkspace } = useWorkspaceStore()
+  const createNewWorkspace = () => {
+    const name = window.prompt('Nome do novo workspace')
+    if (name === null) return
+    createWorkspace(name)
+  }
 
   return (
     <div className="panel-screen">
       <div className="page-head">
         <div>
-          <h1>Workspaces & Projetos</h1>
-          <p>Gere os teus ambientes de trabalho, Partituras e projetos ativos.</p>
+          <h1>Workspaces</h1>
+          <p>Abre um projeto recente ou cria um espaço novo.</p>
         </div>
-        <button className="btn primary" onClick={() => alert('Criar novo Workspace')}>
+        <button className="btn primary" onClick={createNewWorkspace}>
           <Plus className="icon" /> Novo Workspace
         </button>
       </div>
@@ -42,14 +47,14 @@ export const HomeScreen: React.FC = () => {
             ))}
           </div>
 
-          <div className="section-title" style={{ marginTop: 28 }}>Partituras (Templates Reutilizáveis)</div>
+          <div className="section-title" style={{ marginTop: 28 }}>Começar com um template</div>
           <div className="templates">
             <div className="template" style={{ cursor: 'pointer' }} onClick={() => setScreen('canvas')}>
-              <b style={{ color: 'var(--primary)', display: 'block', marginBottom: 4 }}>Fullstack Dev Stack</b>
+              <b style={{ color: 'var(--primary)', display: 'block', marginBottom: 4 }}>Feature development</b>
               <p>Terminal Lead + Frontend + Files + Browser Portal local.</p>
             </div>
             <div className="template" style={{ cursor: 'pointer' }} onClick={() => setScreen('canvas')}>
-              <b style={{ color: 'var(--info)', display: 'block', marginBottom: 4 }}>Code Review & Audit</b>
+              <b style={{ color: 'var(--info)', display: 'block', marginBottom: 4 }}>Code review</b>
               <p>Terminal Reviewer + Sticky Notes + Git Diff visualizer.</p>
             </div>
           </div>

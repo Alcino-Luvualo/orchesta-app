@@ -1,7 +1,8 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Cpu, Terminal, Server, Shield, Plus, CheckCircle } from 'lucide-react'
 
 export const EnvironmentsScreen: React.FC = () => {
+  const [showConnect, setShowConnect] = useState(false)
   return (
     <div className="panel-screen">
       <div className="page-head">
@@ -9,10 +10,18 @@ export const EnvironmentsScreen: React.FC = () => {
           <h1>Ambientes de Execução</h1>
           <p>Configura o isolamento de terminais em ambientes Locais, Docker, Podman ou SSH.</p>
         </div>
-        <button className="btn primary" onClick={() => alert('Adicionar novo ambiente')}>
+        <button className="btn primary" onClick={() => setShowConnect(true)}>
           <Plus className="icon" /> Conectar Ambiente
         </button>
       </div>
+
+      {showConnect && <div className="environment-connect">
+        <b>Adicionar ambiente</b>
+        <select defaultValue="ssh"><option value="ssh">SSH</option><option value="docker">Docker</option><option value="podman">Podman</option></select>
+        <input placeholder="Host ou socket" aria-label="Host ou socket" />
+        <button className="btn primary" onClick={() => setShowConnect(false)}>Guardar ambiente</button>
+        <button className="btn" onClick={() => setShowConnect(false)}>Cancelar</button>
+      </div>}
 
       <div className="env-grid">
         <div className="env-card">

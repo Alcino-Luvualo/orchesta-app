@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Handle, Position } from '@xyflow/react'
-import { Terminal as TerminalIcon, Maximize2, Minimize2, X } from 'lucide-react'
+import { Maximize2, Minimize2, X } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { useWorkspaceStore } from '../../store/workspaceStore'
@@ -11,7 +11,7 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
   const fitAddonInstance = useRef<FitAddon | null>(null)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
   const [isLifted, setIsLifted] = useState(false)
-  const { deleteNode, setSelectedNodeId } = useWorkspaceStore()
+  const { deleteNode, setSelectedNodeId, theme } = useWorkspaceStore()
 
   const props = data.properties || {}
   const agent = props.agent || 'Claude Code'
@@ -24,11 +24,10 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
     if (!terminalRef.current) return
 
     const term = new Terminal({
-      theme: {
-        background: '#0c0e10',
-        foreground: '#aeb7af',
-        cursor: '#c8f169',
-        selectionBackground: 'rgba(200, 241, 105, 0.3)'
+      theme: theme === 'light' ? {
+        background: '#f7f8f5', foreground: '#273029', cursor: '#718d27', selectionBackground: 'rgba(130, 169, 28, .22)'
+      } : {
+        background: '#0c0e10', foreground: '#b8c1ba', cursor: '#c8f169', selectionBackground: 'rgba(200, 241, 105, .3)'
       },
       fontFamily: 'JetBrains Mono, monospace',
       fontSize: 11,
@@ -41,9 +40,29 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
     term.loadAddon(fitAddon)
     term.open(terminalRef.current)
 
+    let lastWidth = 0
+    let lastHeight = 0
+    let lastSize = ''
+    const fitTerminal = () => {
+      if (!terminalRef.current) return
+      const width = terminalRef.current.clientWidth
+      const height = terminalRef.current.clientHeight
+      if (Math.abs(width - lastWidth) <= 2 && Math.abs(height - lastHeight) <= 2) return
+      lastWidth = width
+      lastHeight = height
+      try {
+        fitAddon.fit()
+        const size = `${term.cols}x${term.rows}`
+        if (size !== lastSize && window.orchestra?.invoke) {
+          lastSize = size
+          window.orchestra.invoke('terminal.resize', { sessionId: id, cols: term.cols, rows: term.rows }).catch(() => undefined)
+        }
+      } catch (_) {}
+    }
+
     // Delay initial fit to ensure DOM is laid out
     requestAnimationFrame(() => {
-      try { fitAddon.fit() } catch (_) {}
+      fitTerminal()
     })
 
     xtermInstance.current = term
@@ -52,7 +71,7 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
     // Watch for container resize and re-fit terminal
     const observer = new ResizeObserver(() => {
       requestAnimationFrame(() => {
-        try { fitAddon.fit() } catch (_) {}
+        fitTerminal()
       })
     })
     observer.observe(terminalRef.current)
@@ -68,7 +87,9 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
     if (window.orchestra?.invoke) {
       window.orchestra.invoke('terminal.spawn', {
         sessionId: id,
-        cwd: cwd === '~/dev/project' ? undefined : cwd,
+        // Do not send shell-style paths such as ~/dev/project to Rust: CommandBuilder
+        // does not expand a tilde, so the shell should inherit a valid working directory.
+        cwd: cwd.startsWith('/') && !cwd.startsWith('/home/user/') ? cwd : undefined,
         cols: 60,
         rows: 14
       }).catch(err => console.error('Failed to spawn PTY:', err))
@@ -114,6 +135,13 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
     }
   }, [id])
 
+  useEffect(() => {
+    if (!xtermInstance.current) return
+    xtermInstance.current.options.theme = theme === 'light'
+      ? { background: '#f7f8f5', foreground: '#273029', cursor: '#718d27', selectionBackground: 'rgba(130, 169, 28, .22)' }
+      : { background: '#0c0e10', foreground: '#b8c1ba', cursor: '#c8f169', selectionBackground: 'rgba(200, 241, 105, .3)' }
+  }, [theme])
+
   // Re-fit terminal when lifted/collapsed
   useEffect(() => {
     if (fitAddonInstance.current) {
@@ -139,35 +167,26 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
       <Handle type="target" position={Position.Left} className="port left" />
       <Handle type="source" position={Position.Right} className="port right" />
 
-      {/* Terminal Title Bar */}
-      <div className="node-head">
-        <div className="node-icon" style={{ color: roleColor, background: 'rgba(200,241,105,0.12)' }}>
-          <TerminalIcon className="icon" />
-        </div>
-        <div className="node-title">
-          <strong>{agent}</strong>
-          <span>{role} · {cwd}</span>
-        </div>
-
-        <div className={`status ${status === 'running' ? '' : 'wait'}`} title={status} />
-
-        <button className="icon-btn" onClick={() => setIsLifted(!isLifted)} title="Focus / Lift Node">
+      <div className="mac-terminal">
+        <div className="mac-chrome">
+          <span className="mac-dot red" />
+          <span className="mac-dot yellow" />
+          <span className="mac-dot green" />
+          <div className="mac-title">
+            <strong>{agent}</strong><span>— {role} · zsh</span>
+          </div>
+          <span className={`status ${status === 'running' ? '' : 'wait'}`} title={status} />
+          <button className="icon-btn mac-action" onClick={(event) => { event.stopPropagation(); setIsLifted(!isLifted) }} title="Focar terminal">
           {isLifted ? <Minimize2 className="icon" /> : <Maximize2 className="icon" />}
-        </button>
-
-        <button className="icon-btn" onClick={() => deleteNode(id)} title="Fechar Terminal">
-          <X className="icon" />
-        </button>
-      </div>
-
-      {/* xterm Container */}
-      <div className="terminal-body" ref={terminalRef} style={{ height: 'calc(100% - 66px)' }} />
-
-      {/* Terminal Permanent Identity Status Bar */}
-      <div className="node-foot">
-        <span style={{ color: roleColor, fontWeight: 600 }}>● {role}</span>
-        <span>Local · {cwd}</span>
-        <span>{status}</span>
+          </button>
+          <button className="icon-btn mac-action" onClick={(event) => { event.stopPropagation(); deleteNode(id) }} title="Fechar terminal"><X className="icon" /></button>
+        </div>
+        <div className="terminal-body" ref={terminalRef} />
+        <div className="node-foot terminal-foot">
+          <span style={{ color: roleColor, fontWeight: 600 }}>● {role}</span>
+          <span>Local · {cwd}</span>
+          <span>{status}</span>
+        </div>
       </div>
     </div>
   )

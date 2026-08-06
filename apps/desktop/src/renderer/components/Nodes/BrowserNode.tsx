@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { Handle, Position } from '@xyflow/react'
-import { Globe, RefreshCw, Lock, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, MoreVertical, RefreshCw, ShieldCheck, X } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 
 export const BrowserNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
@@ -23,42 +23,32 @@ export const BrowserNode: React.FC<{ id: string; data: any }> = ({ id, data }) =
       <Handle type="target" position={Position.Left} className="port left" />
       <Handle type="source" position={Position.Right} className="port right" />
 
-      {/* Chrome address bar header */}
       <div className="chrome-shell">
         <div className="chrome-toolbar">
-          <div className="mac-dot red" style={{ width: 8, height: 8, borderRadius: '50%', background: '#ff5f57' }} />
-          <div className="mac-dot yellow" style={{ width: 8, height: 8, borderRadius: '50%', background: '#febc2e' }} />
-          <div className="mac-dot green" style={{ width: 8, height: 8, borderRadius: '50%', background: '#28c840' }} />
-          
-          <button className="icon-btn" style={{ marginLeft: 6 }}>
-            <RefreshCw className="icon" style={{ width: 12, height: 12 }} />
-          </button>
-
+          <span className="mac-dot red" /><span className="mac-dot yellow" /><span className="mac-dot green" />
+          <span className="chrome-divider" />
+          <button className="icon-btn chrome-nav" title="Voltar"><ArrowLeft className="icon" /></button>
+          <button className="icon-btn chrome-nav" title="Avançar"><ArrowRight className="icon" /></button>
+          <button className="icon-btn chrome-nav" title="Recarregar"><RefreshCw className="icon" /></button>
           <div className="chrome-address">
-            <Lock className="icon" style={{ width: 10, height: 10, marginRight: 5, color: 'var(--success)' }} />
+            <ShieldCheck className="icon" />
             <input
               type="text"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              style={{ border: 0, background: 'transparent', outline: 0, width: '100%', font: 'inherit', color: 'inherit' }}
             />
           </div>
-
-          <button className="icon-btn" onClick={() => deleteNode(id)}>
-            <X className="icon" />
-          </button>
+          <button className="icon-btn chrome-nav" title="Mais"><MoreVertical className="icon" /></button>
+          <button className="icon-btn chrome-nav" onClick={(event) => { event.stopPropagation(); deleteNode(id) }} title="Fechar portal"><X className="icon" /></button>
         </div>
 
-        {/* Embedded Browser Web Content Surface */}
-        <div className="chrome-content" style={{ height: 'calc(100% - 34px)', padding: 14, overflow: 'auto' }}>
-          <div className="web-card" style={{ padding: 12, background: 'var(--panel2)', borderRadius: 8, textAlign: 'center' }}>
-            <b style={{ fontSize: 11, display: 'block' }}>Orchestra Portal Preview</b>
-            <p style={{ fontSize: 9, color: 'var(--dim)', margin: '6px 0 10px' }}>
-              Sessão Chromium isolada. Controlada por agentes via CDP.
-            </p>
-            <div style={{ height: 28, background: 'var(--primary)', color: '#111', borderRadius: 6, display: 'grid', placeItems: 'center', fontWeight: 600, fontSize: 10 }}>
-              App React Localhost Vivo
-            </div>
+        <div className="chrome-content">
+          <div className="portal-page">
+            <span className="portal-kicker">localhost:3000</span>
+            <h3>Welcome back</h3>
+            <p>Portal Chromium isolado. O agente Tester pode navegar, preencher e inspecionar esta página.</p>
+            <label>Email<input value="developer@orchestra.dev" readOnly /></label>
+            <button>Continue</button>
           </div>
         </div>
       </div>

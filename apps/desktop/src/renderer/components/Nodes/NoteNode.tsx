@@ -1,11 +1,12 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Handle, Position } from '@xyflow/react'
-import { FileText, Edit2, Eye, X } from 'lucide-react'
+import { Edit2, Eye, X } from 'lucide-react'
 import { marked } from 'marked'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 
 export const NoteNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
   const [isEditing, setIsEditing] = useState(false)
+  const editorRef = useRef<HTMLTextAreaElement>(null)
   const { updateNode, deleteNode, setSelectedNodeId } = useWorkspaceStore()
 
   const props = data.properties || {}
@@ -15,6 +16,26 @@ export const NoteNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     updateNode(id, { properties: { ...props, content: e.target.value } })
   }
+
+  useEffect(() => {
+    const receiveAction = (event: Event) => {
+      const command = (event as CustomEvent<'bold' | 'italic' | 'list' | 'check'>).detail
+      if (!command) return
+      const marker = command === 'bold' ? '**texto**' : command === 'italic' ? '*texto*' : command === 'list' ? '- item' : '- [ ] tarefa'
+      const input = editorRef.current
+      const start = input?.selectionStart ?? content.length
+      const end = input?.selectionEnd ?? content.length
+      const selected = content.slice(start, end) || marker
+      const wrapped = command === 'bold' ? `**${selected === marker ? 'texto' : selected}**`
+        : command === 'italic' ? `*${selected === marker ? 'texto' : selected}*`
+        : selected
+      updateNode(id, { properties: { ...props, content: `${content.slice(0, start)}${wrapped}${content.slice(end)}` } })
+      setIsEditing(true)
+      requestAnimationFrame(() => input?.focus())
+    }
+    window.addEventListener('orchestra:note-action', receiveAction)
+    return () => window.removeEventListener('orchestra:note-action', receiveAction)
+  }, [content, id, props, updateNode])
 
   const renderMarkdown = () => {
     try {
@@ -40,27 +61,20 @@ export const NoteNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
       <Handle type="target" position={Position.Left} className="port left" />
       <Handle type="source" position={Position.Right} className="port right" />
 
-      <div className="node-head">
-        <div className="node-icon">
-          <FileText className="icon" />
-        </div>
-        <div className="node-title">
-          <strong>{title}</strong>
-          <span>Nota Markdown</span>
-        </div>
-
-        <button className="icon-btn" onClick={() => setIsEditing(!isEditing)} title={isEditing ? 'Preview' : 'Editar'}>
+      <div className="sticky-note-head">
+        <span className="sticky-note-title">{title}</span>
+        <button className="icon-btn" onClick={(event) => { event.stopPropagation(); setIsEditing(!isEditing) }} title={isEditing ? 'Pré-visualizar' : 'Editar'}>
           {isEditing ? <Eye className="icon" /> : <Edit2 className="icon" />}
         </button>
-
-        <button className="icon-btn" onClick={() => deleteNode(id)} title="Eliminar Nota">
+        <button className="icon-btn" onClick={(event) => { event.stopPropagation(); deleteNode(id) }} title="Eliminar nota">
           <X className="icon" />
         </button>
       </div>
 
-      <div className="markdown-note" style={{ height: 'calc(100% - 33px)' }}>
+      <div className="markdown-note">
         {isEditing ? (
           <textarea
+            ref={editorRef}
             className="note-source"
             value={content}
             onChange={handleContentChange}

@@ -2,7 +2,7 @@ import { create } from 'zustand'
 
 export interface CanvasNodeData {
   id: string
-  kind: 'terminal' | 'note' | 'files' | 'browser' | 'device' | 'routine' | 'text' | 'shape'
+  kind: 'terminal' | 'note' | 'files' | 'browser' | 'device' | 'text' | 'shape'
   x: number
   y: number
   width: number
@@ -33,7 +33,7 @@ export interface Floor {
 }
 
 interface WorkspaceState {
-  currentScreen: 'canvas' | 'home' | 'environments' | 'settings' | 'routines'
+  currentScreen: 'canvas' | 'home' | 'environments' | 'settings'
   theme: 'dark' | 'light'
   activeWorkspace: Workspace | null
   workspaces: Workspace[]
@@ -48,10 +48,11 @@ interface WorkspaceState {
   isFloorModalOpen: boolean
 
   // Actions
-  setScreen: (screen: 'canvas' | 'home' | 'environments' | 'settings' | 'routines') => void
+  setScreen: (screen: 'canvas' | 'home' | 'environments' | 'settings') => void
   toggleTheme: () => void
   setActiveWorkspace: (ws: Workspace) => void
   setWorkspaces: (ws: Workspace[]) => void
+  createWorkspace: (name?: string) => Workspace
   setFloors: (floors: Floor[]) => void
   setActiveFloor: (floor: Floor) => void
   setNodes: (nodes: CanvasNodeData[]) => void
@@ -85,10 +86,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     {
       id: 'term_lead',
       kind: 'terminal',
-      x: 80,
-      y: 100,
-      width: 480,
-      height: 280,
+      x: 60,
+      y: 70,
+      width: 420,
+      height: 250,
       properties: {
         title: 'Claude Code',
         agent: 'Claude Code',
@@ -101,10 +102,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     {
       id: 'note_tasks',
       kind: 'note',
-      x: 600,
-      y: 100,
-      width: 320,
-      height: 260,
+      x: 520,
+      y: 70,
+      width: 280,
+      height: 230,
       properties: {
         title: 'Especificação Auth',
         content: '# Tarefas de Autenticação\n\n- [x] Criar schema OAuth2\n- [ ] Implementar JWT refresh token\n- [ ] Testar rotas com Playwright\n\n> Agentes conectados têm permissão de leitura neste documento.'
@@ -113,9 +114,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     {
       id: 'files_tree',
       kind: 'files',
-      x: 80,
-      y: 420,
-      width: 440,
+      x: 850,
+      y: 65,
+      width: 380,
       height: 300,
       properties: {
         title: 'Estrutura do Projeto',
@@ -125,10 +126,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     {
       id: 'browser_portal',
       kind: 'browser',
-      x: 560,
-      y: 400,
-      width: 400,
-      height: 280,
+      x: 770,
+      y: 410,
+      width: 360,
+      height: 260,
       properties: {
         title: 'Localhost Preview',
         url: 'http://localhost:3000'
@@ -153,6 +154,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
   setActiveWorkspace: (ws) => set({ activeWorkspace: ws }),
   setWorkspaces: (ws) => set({ workspaces: ws }),
+  createWorkspace: (name) => {
+    const index = get().workspaces.length + 1
+    const workspace: Workspace = {
+      id: `ws_${Date.now()}`,
+      name: name?.trim() || `Workspace ${index}`,
+      path: `/home/user/dev/workspace-${index}`
+    }
+    set((state) => ({ workspaces: [...state.workspaces, workspace], activeWorkspace: workspace, currentScreen: 'canvas', nodes: [], edges: [], selectedNodeId: null }))
+    return workspace
+  },
   setFloors: (floors) => set({ floors }),
   setActiveFloor: (floor) => set({ activeFloor: floor }),
   setNodes: (nodes) => set({ nodes }),

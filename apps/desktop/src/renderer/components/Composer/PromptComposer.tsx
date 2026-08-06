@@ -1,28 +1,51 @@
-import React, { useState } from 'react'
-import { Send, Paperclip, Sparkles, Terminal, FileText } from 'lucide-react'
+import React, { useEffect, useMemo, useState } from 'react'
+import { Send, Terminal, FileText, Check, X } from 'lucide-react'
+import { useWorkspaceStore } from '../../store/workspaceStore'
 
 export const PromptComposer: React.FC = () => {
   const [promptText, setPromptText] = useState('')
+  const [sent, setSent] = useState(false)
+  const [isOpen, setIsOpen] = useState(false)
+  const { nodes, selectedNodeId } = useWorkspaceStore()
+  const target = useMemo(() => {
+    const selected = nodes.find((node) => node.id === selectedNodeId && node.kind === 'terminal')
+    return selected || nodes.find((node) => node.kind === 'terminal') || null
+  }, [nodes, selectedNodeId])
 
   const handleSend = () => {
     if (!promptText.trim()) return
+    if (!target) return
+    const message = `${promptText}\r`
     if (window.orchestra?.invoke) {
-      window.orchestra.invoke('agent.message.send', {
-        agent: 'Claude Code',
-        message: promptText
-      })
+      window.orchestra.invoke('terminal.input', { sessionId: target.id, data: message }).catch(console.error)
     }
-    alert(`Prompt enviado para os Agentes do Canvas: "${promptText}"`)
     setPromptText('')
+    setSent(true)
+    window.setTimeout(() => { setSent(false); setIsOpen(false) }, 650)
   }
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'p') {
+        event.preventDefault()
+        setIsOpen((open) => !open)
+      }
+      if (event.key === 'Escape') setIsOpen(false)
+    }
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [])
+
+  if (!isOpen) return null
 
   return (
     <div className="composer">
       <div className="composer-chips">
         <div className="chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <Terminal className="icon" style={{ width: 10, height: 10, color: 'var(--primary)' }} />
-          Claude Code (Lead)
+          {target?.properties.agent || 'Sem terminal selecionado'}
         </div>
+        <button className="icon-btn composer-close" onClick={() => setIsOpen(false)} title="Fechar composer"><X className="icon" /></button>
         <div className="chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <FileText className="icon" style={{ width: 10, height: 10 }} />
           Especificação Auth
@@ -47,8 +70,9 @@ export const PromptComposer: React.FC = () => {
           <option value="reviewer">Code Reviewer</option>
         </select>
 
-        <button className="btn primary" onClick={handleSend}>
-          <Send className="icon" style={{ width: 12, height: 12 }} /> Enviar Prompt (Ctrl+Enter)
+        <button className="btn primary" onClick={handleSend} disabled={!target || !promptText.trim()}>
+          {sent ? <Check className="icon" style={{ width: 12, height: 12 }} /> : <Send className="icon" style={{ width: 12, height: 12 }} />}
+          {sent ? 'Enviado' : 'Enviar · Ctrl+Enter'}
         </button>
       </div>
     </div>

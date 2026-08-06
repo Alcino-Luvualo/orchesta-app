@@ -4,10 +4,8 @@ import { TopBar } from './components/Navigation/TopBar'
 import { Sidebar } from './components/Navigation/Sidebar'
 import { CanvasArea } from './components/Canvas/CanvasArea'
 import { HomeScreen } from './components/Screens/HomeScreen'
-import { RoutinesScreen } from './components/Screens/RoutinesScreen'
 import { EnvironmentsScreen } from './components/Screens/EnvironmentsScreen'
 import { SettingsScreen } from './components/Screens/SettingsScreen'
-import { InspectorPanel } from './components/Inspector/InspectorPanel'
 import { PromptComposer } from './components/Composer/PromptComposer'
 import { RecruitAgentModal } from './components/Modals/RecruitAgentModal'
 import { FloorModal } from './components/Modals/FloorModal'
@@ -24,13 +22,11 @@ export const App: React.FC = () => {
       <main style={{ position: 'relative' }}>
         {currentScreen === 'canvas' && <CanvasArea />}
         {currentScreen === 'home' && <HomeScreen />}
-        {currentScreen === 'routines' && <RoutinesScreen />}
         {currentScreen === 'environments' && <EnvironmentsScreen />}
         {currentScreen === 'settings' && <SettingsScreen />}
 
-        {/* Floating Context Composer & Inspector on Canvas Screen */}
+        {/* The compact action strip above the canvas toolbar replaces a persistent inspector. */}
         {currentScreen === 'canvas' && <PromptComposer />}
-        <InspectorPanel />
       </main>
 
       {/* Global Modals */}
