@@ -5,7 +5,8 @@ import {
   Controls,
   MiniMap,
   Connection,
-  ReactFlowInstance
+  ReactFlowInstance,
+  PanOnScrollMode
 } from '@xyflow/react'
 import { useWorkspaceStore, CanvasNodeData } from '../../store/workspaceStore'
 import { TerminalNode } from '../Nodes/TerminalNode'
@@ -333,6 +334,18 @@ export const CanvasArea: React.FC = () => {
   }
   const toolLabel: Record<typeof tool, string> = { select: 'Selecionar', terminal: 'Terminal', note: 'Nota', files: 'File Tree', browser: 'Portal', device: 'Device Portal', text: 'Texto', shape: 'Forma', draw: 'Desenhar' }
 
+  const [zoomLevel, setZoomLevel] = useState(100)
+
+  const handleZoomIn = () => {
+    flowRef.current?.zoomIn({ duration: 200 })
+  }
+  const handleZoomOut = () => {
+    flowRef.current?.zoomOut({ duration: 200 })
+  }
+  const handleFitView = () => {
+    flowRef.current?.fitView({ padding: 0.18, duration: 250 })
+  }
+
   return (
     <div
       id="workspace"
@@ -351,9 +364,12 @@ export const CanvasArea: React.FC = () => {
         panOnDrag={tool === 'select' ? [0, 1, 2] : false}
         selectionOnDrag={false}
         panOnScroll={true}
-        zoomOnScroll={false}
+        panOnScrollMode={PanOnScrollMode.Free}
+        zoomOnScroll={true}
         zoomOnPinch={true}
+        zoomOnDoubleClick={false}
         preventScrolling={true}
+        onMove={(_, viewport) => setZoomLevel(Math.round(viewport.zoom * 100))}
         onNodeClick={(_, node) => {
           if (connectMode && connectionSourceId && connectionSourceId !== node.id) {
             const exists = storeEdges.some((edge) => edge.source === connectionSourceId && edge.target === node.id)
@@ -367,7 +383,10 @@ export const CanvasArea: React.FC = () => {
         onNodeMouseEnter={(_, node) => { if (connectMode) setConnectionHoverId(node.id) }}
         onNodeMouseLeave={() => setConnectionHoverId(null)}
         onEdgeClick={(_, edge) => { setSelectedNodeId(null); setSelectedEdgeId(edge.id) }}
-        onInit={(instance) => { flowRef.current = instance }}
+        onInit={(instance) => {
+          flowRef.current = instance
+          setZoomLevel(Math.round(instance.getZoom() * 100))
+        }}
         onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); setConnectMode(false); setConnectionSourceId(null); setConnectionPointer(null) }}
         fitView
         fitViewOptions={{ padding: 0.18, maxZoom: 1 }}
@@ -382,6 +401,14 @@ export const CanvasArea: React.FC = () => {
           pannable
         />}
       </ReactFlow>
+
+      {/* Floating Zoom Bar (Bottom Right) */}
+      <div className="zoom" aria-label="Controlo de Zoom">
+        <button onClick={handleZoomOut} title="Diminuir Zoom (-)">−</button>
+        <span>{zoomLevel}%</span>
+        <button onClick={handleZoomIn} title="Aumentar Zoom (+)">+</button>
+        <button onClick={handleFitView} title="Ajustar ao ecrã (Fit)">Fit</button>
+      </div>
 
       {drawRect && <div className="canvas-draw-rect" style={{ left: drawRect.left, top: drawRect.top, width: drawRect.width, height: drawRect.height }} />}
       {pendingRope && <svg className="pending-rope" aria-hidden="true"><path d={pendingRope.d} /></svg>}

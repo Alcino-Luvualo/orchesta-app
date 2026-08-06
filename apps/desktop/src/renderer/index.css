@@ -683,13 +683,23 @@ main {
   border: 0;
   background: transparent;
   color: var(--muted);
-  padding: 5px;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 5px;
+  font-size: 11px;
+  transition: background .12s, color .12s;
+}
+
+.zoom button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.09);
 }
 
 .zoom span {
-  font: 9px var(--mono);
-  width: 38px;
+  font: 10px var(--mono);
+  width: 42px;
   text-align: center;
+  color: var(--muted);
 }
 
 /* Right Inspector Panel */
