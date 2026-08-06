@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, screen, session } from 'electron'
 import path from 'path'
 import net from 'net'
 import { spawn, ChildProcess } from 'child_process'
@@ -194,6 +194,15 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const responseHeaders = { ...details.responseHeaders }
+    delete responseHeaders['x-frame-options']
+    delete responseHeaders['X-Frame-Options']
+    delete responseHeaders['content-security-policy']
+    delete responseHeaders['Content-Security-Policy']
+    callback({ cancel: false, responseHeaders })
+  })
+
   ensureCoreDaemonRunning()
   connectToSocket()
 
