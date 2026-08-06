@@ -41,6 +41,8 @@ export const BrowserNode: React.FC<{ id: string; data: any }> = ({ id, data }) =
         isVisible={data.selected}
         minWidth={300}
         minHeight={200}
+        handleClassName="nodrag nopan canvas-resize-handle"
+        lineClassName="nodrag nopan canvas-resize-line"
         onResize={(_, params) => updateNode(id, { width: params.width, height: params.height })}
       />
       <Handle type="target" position={Position.Left} className="port left" />

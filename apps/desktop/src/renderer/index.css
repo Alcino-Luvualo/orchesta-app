@@ -364,16 +364,20 @@ main {
   opacity: 1;
 }
 
-.react-flow__resize-control.handle {
-  width: 9px !important;
-  height: 9px !important;
+.react-flow__resize-control.handle,
+.canvas-resize-handle {
+  width: 10px !important;
+  height: 10px !important;
   border-radius: 2px !important;
   background: var(--primary) !important;
   border: 1.5px solid #000 !important;
-  box-shadow: 0 0 4px rgba(200, 241, 105, 0.4) !important;
+  box-shadow: 0 0 5px rgba(200, 241, 105, 0.5) !important;
+  z-index: 100 !important;
 }
-.react-flow__resize-control.line {
-  border-color: rgba(200, 241, 105, 0.45) !important;
+.react-flow__resize-control.line,
+.canvas-resize-line {
+  border-color: rgba(200, 241, 105, 0.5) !important;
+  z-index: 99 !important;
 }
 
 .rope-edge-shadow {
