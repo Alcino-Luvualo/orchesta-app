@@ -314,6 +314,14 @@ main {
   background-color: var(--canvas) !important;
 }
 
+/* Cursor refinement: default arrow cursor everywhere on workspace, grab/grabbing only on active drag */
+.react-flow__pane {
+  cursor: default !important;
+}
+.react-flow__pane.dragging {
+  cursor: grabbing !important;
+}
+
 .react-flow__node {
   /* React Flow may retain an inline hidden state after an async controlled-node
      hydration. The node dimensions are already measured by our components. */
@@ -326,6 +334,7 @@ main {
   color: var(--text);
   font-family: var(--ui);
   padding: 0;
+  cursor: default !important;
 }
 
 .react-flow__node.selected, .react-flow__node:focus {
@@ -1123,8 +1132,10 @@ main {
 }
 .mac-chrome {
   height: 35px; flex: 0 0 35px; display: flex; align-items: center; gap: 6px; padding: 0 10px;
-  border-bottom: 1px solid rgba(255,255,255,.07); background: #191c20; cursor: grab;
+  border-bottom: 1px solid rgba(255,255,255,.07); background: #191c20; cursor: default;
 }
+.mac-chrome:hover { cursor: grab; }
+.mac-chrome:active { cursor: grabbing !important; }
 .mac-dot { width: 10px; height: 10px; border-radius: 999px; flex: 0 0 auto; }
 .mac-dot.red { background: #ff605c; }.mac-dot.yellow { background: #ffbd44; }.mac-dot.green { background: #00ca4e; }
 .mac-title { min-width: 0; flex: 1; padding-left: 5px; color: #f1f3f4; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1138,7 +1149,9 @@ main {
 
 /* File tree: compact Finder-like tree, with the editor earned by width. */
 .files-node { display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; }
-.files-head { height: 38px; flex: 0 0 38px; display: flex; align-items: center; gap: 7px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--panel); cursor: grab; }
+.files-head { height: 38px; flex: 0 0 38px; display: flex; align-items: center; gap: 7px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--panel); cursor: default; }
+.files-head:hover { cursor: grab; }
+.files-head:active { cursor: grabbing !important; }
 .files-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .files-head-spacer { flex: 1; }
 .files-nav { display: flex; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; }
@@ -1222,7 +1235,9 @@ main {
 
 /* Portal chrome follows the node material instead of staying permanently black. */
 .chrome-shell { height: 100%; border-radius: inherit; background: #f7f8fa; }
-.chrome-toolbar { height: 39px; flex: 0 0 39px; gap: 5px; padding: 0 9px; background: #e9ecef; border-bottom-color: #cdd2d7; cursor: grab; }
+.chrome-toolbar { height: 39px; flex: 0 0 39px; gap: 5px; padding: 0 9px; background: #e9ecef; border-bottom-color: #cdd2d7; cursor: default; }
+.chrome-toolbar:hover { cursor: grab; }
+.chrome-toolbar:active { cursor: grabbing !important; }
 .chrome-toolbar .mac-dot { width: 10px; height: 10px; }
 .chrome-divider { width: 1px; height: 17px; margin: 0 3px; background: #c6cbd0; }
 .chrome-nav { width: 23px; height: 23px; padding: 0; color: #57606a; }.chrome-nav .icon { width: 13px; height: 13px; }
