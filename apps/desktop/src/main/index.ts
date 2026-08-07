@@ -264,6 +264,24 @@ app.whenReady().then(() => {
     })
   })
 
+  ipcMain.handle('terminal:relay', async (_, { fromSessionId, toSessionId, message }) => {
+    if (socketClient && !socketClient.destroyed) {
+      const requestId = 'req_' + Math.random().toString(36).substring(2, 10)
+      const msg = JSON.stringify({
+        protocolVersion: 1,
+        requestId,
+        type: 'terminal.input',
+        payload: { sessionId: toSessionId, data: `${message}\r` }
+      })
+      const msgBuf = Buffer.from(msg, 'utf-8')
+      const lenBuf = Buffer.alloc(4)
+      lenBuf.writeUInt32BE(msgBuf.length, 0)
+      socketClient.write(Buffer.concat([lenBuf, msgBuf]))
+      return { ok: true }
+    }
+    return { ok: false, error: 'Socket disconnected' }
+  })
+
   ipcMain.handle('window:toggleFullscreen', () => {
     if (mainWindow) {
       mainWindow.setFullScreen(!mainWindow.isFullScreen())

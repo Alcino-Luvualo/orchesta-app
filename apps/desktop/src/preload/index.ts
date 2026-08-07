@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('orchestra', {
   invoke: (type: string, payload: any) => ipcRenderer.invoke('orchestra:invoke', { type, payload }),
   detectTools: () => ipcRenderer.invoke('system:detect-tools'),
+  relayTerminal: (fromSessionId: string, toSessionId: string, message: string) =>
+    ipcRenderer.invoke('terminal:relay', { fromSessionId, toSessionId, message }),
   onEvent: (callback: (event: any) => void) => {
     const handler = (_: any, data: any) => callback(data)
     ipcRenderer.on('orchestra:event', handler)
