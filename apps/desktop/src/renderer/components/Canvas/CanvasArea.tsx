@@ -101,6 +101,39 @@ export const CanvasArea: React.FC = () => {
     return () => window.clearTimeout(timer)
   }, [activeWorkspace?.id, focusSnapshot, storeEdges])
 
+  // Real-time canvas context sync for terminal agents & notes
+  useEffect(() => {
+    const terminalNodes = storeNodes.filter((n) => n.kind === 'terminal')
+    if (terminalNodes.length === 0) return
+
+    terminalNodes.forEach((termNode) => {
+      const connectedEdges = storeEdges.filter((e) => e.source === termNode.id || e.target === termNode.id)
+      const connectedNodeIds = connectedEdges.map((e) => (e.source === termNode.id ? e.target : e.source))
+      const connectedNodes = storeNodes.filter((n) => connectedNodeIds.includes(n.id))
+
+      const noteNodes = connectedNodes.filter((n) => n.kind === 'note')
+      const peerTerminals = connectedNodes.filter((n) => n.kind === 'terminal')
+
+      const contextSummary = {
+        sessionId: termNode.id,
+        terminalTitle: termNode.properties.title || 'Terminal',
+        connectedNotes: noteNodes.map((n) => ({
+          id: n.id,
+          title: n.properties.title || 'NOTE',
+          content: n.properties.content || ''
+        })),
+        connectedPeerAgents: peerTerminals.map((n) => ({
+          id: n.id,
+          title: n.properties.title || n.properties.agent || 'Agente'
+        }))
+      }
+
+      if ((window as any).orchestra?.syncCanvasContext) {
+        ;(window as any).orchestra.syncCanvasContext(contextSummary).catch(() => {})
+      }
+    })
+  }, [storeNodes, storeEdges])
+
   const workspaceRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {

@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('orchestra', {
   detectTools: () => ipcRenderer.invoke('system:detect-tools'),
   relayTerminal: (fromSessionId: string, toSessionId: string, message: string) =>
     ipcRenderer.invoke('terminal:relay', { fromSessionId, toSessionId, message }),
+  syncCanvasContext: (contextSummary: any) =>
+    ipcRenderer.invoke('canvas:context:sync', { contextSummary }),
   onEvent: (callback: (event: any) => void) => {
     const handler = (_: any, data: any) => callback(data)
     ipcRenderer.on('orchestra:event', handler)

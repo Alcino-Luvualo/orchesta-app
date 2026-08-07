@@ -275,11 +275,43 @@ app.whenReady().then(() => {
       })
       const msgBuf = Buffer.from(msg, 'utf-8')
       const lenBuf = Buffer.alloc(4)
-      lenBuf.writeUInt32BE(msgBuf.length, 0)
       socketClient.write(Buffer.concat([lenBuf, msgBuf]))
       return { ok: true }
     }
     return { ok: false, error: 'Socket disconnected' }
+  })
+
+  ipcMain.handle('canvas:context:sync', async (_, { contextSummary }) => {
+    try {
+      const userHome = process.env.HOME || '/home/alcinoo'
+      const targetDir = path.join(userHome, 'dev/orchesta-app/.orchestra')
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true })
+      }
+
+      // Write canvas_context.json
+      const jsonPath = path.join(targetDir, 'canvas_context.json')
+      fs.writeFileSync(jsonPath, JSON.stringify(contextSummary, null, 2), 'utf-8')
+
+      // Write connected_notes.md
+      const notes = contextSummary?.connectedNotes || []
+      let mdContent = `# Orchestra Canvas - Contexto Conectado\n\n`
+      if (notes.length > 0) {
+        notes.forEach((n: any) => {
+          mdContent += `## Nota: ${n.title || 'Nota'}\n${n.content || ''}\n\n`
+        })
+      } else {
+        mdContent += `*Nenhuma nota conectada a este terminal no momento.*\n`
+      }
+
+      const mdPath = path.join(targetDir, 'connected_notes.md')
+      fs.writeFileSync(mdPath, mdContent, 'utf-8')
+
+      return { ok: true }
+    } catch (err) {
+      console.error('Failed to sync canvas context:', err)
+      return { ok: false, error: (err as Error).message }
+    }
   })
 
   ipcMain.handle('window:toggleFullscreen', () => {
