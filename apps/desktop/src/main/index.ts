@@ -227,6 +227,43 @@ app.whenReady().then(() => {
     return mainWindow?.isMaximized() ?? false
   })
 
+  ipcMain.handle('system:detect-tools', async () => {
+    const tools = [
+      { id: 'claude', name: 'Claude Code', cmd: 'claude', description: 'Anthropic Agentic Coding CLI' },
+      { id: 'agy', name: 'Antigravity CLI', cmd: 'agy', description: 'Google Antigravity Agent Runtime' },
+      { id: 'codex', name: 'Codex CLI', cmd: 'codex', description: 'OpenAI Codex Terminal' },
+      { id: 'opencode', name: 'OpenCode', cmd: 'opencode', description: 'Open-source Multi-Agent Engine' },
+      { id: 'zsh', name: 'Zsh Shell', cmd: 'zsh', description: 'Standard System Shell' },
+      { id: 'bash', name: 'Bash Shell', cmd: 'bash', description: 'GNU Bash Terminal Shell' }
+    ]
+
+    const pathEnv = process.env.PATH || ''
+    const userHome = process.env.HOME || '/home/alcinoo'
+    const extraPaths = [
+      path.join(userHome, '.local/bin'),
+      path.join(userHome, '.nvm/versions/node/v26.7.0/bin'),
+      '/usr/local/bin',
+      '/usr/bin',
+      '/bin'
+    ]
+    const searchDirs = [...new Set([...pathEnv.split(path.delimiter), ...extraPaths])]
+
+    return tools.map((t) => {
+      let installed = false
+      let binPath = ''
+      for (const dir of searchDirs) {
+        if (!dir) continue
+        const candidate = path.join(dir, t.cmd)
+        if (fs.existsSync(candidate)) {
+          installed = true
+          binPath = candidate
+          break
+        }
+      }
+      return { ...t, installed, path: binPath }
+    })
+  })
+
   ipcMain.handle('window:toggleFullscreen', () => {
     if (mainWindow) {
       mainWindow.setFullScreen(!mainWindow.isFullScreen())

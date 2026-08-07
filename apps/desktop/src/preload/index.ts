@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('orchestra', {
   invoke: (type: string, payload: any) => ipcRenderer.invoke('orchestra:invoke', { type, payload }),
+  detectTools: () => ipcRenderer.invoke('system:detect-tools'),
   onEvent: (callback: (event: any) => void) => {
     const handler = (_: any, data: any) => callback(data)
     ipcRenderer.on('orchestra:event', handler)

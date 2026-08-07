@@ -88,11 +88,19 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
     if (window.orchestra?.invoke) {
       window.orchestra.invoke('terminal.spawn', {
         sessionId: id,
-        // Do not send shell-style paths such as ~/dev/project to Rust: CommandBuilder
-        // does not expand a tilde, so the shell should inherit a valid working directory.
         cwd: cwd.startsWith('/') && !cwd.startsWith('/home/user/') ? cwd : undefined,
         cols: 60,
         rows: 14
+      }).then(() => {
+        const cmd = props.command || (agent && agent !== 'Terminal' && agent !== 'Shell zsh' ? agent.toLowerCase().replace(/\s+/g, '') : undefined)
+        if (cmd && cmd !== 'zsh' && cmd !== 'bash') {
+          setTimeout(() => {
+            window.orchestra?.invoke('terminal.input', {
+              sessionId: id,
+              data: `${cmd}\r`
+            }).catch(() => {})
+          }, 350)
+        }
       }).catch(err => console.error('Failed to spawn PTY:', err))
 
       // Listen for PTY output events

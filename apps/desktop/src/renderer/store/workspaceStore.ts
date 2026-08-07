@@ -7,6 +7,8 @@ export interface CanvasNodeData {
   y: number
   width: number
   height: number
+  zIndex?: number
+  locked?: boolean
   properties: Record<string, any>
 }
 
@@ -42,6 +44,7 @@ interface WorkspaceState {
   nodes: CanvasNodeData[]
   edges: CanvasEdgeData[]
   selectedNodeId: string | null
+  pendingTerminalRect: { x: number; y: number; width: number; height: number } | null
   isInspectorOpen: boolean
   isCommandPaletteOpen: boolean
   isRecruitModalOpen: boolean
@@ -63,6 +66,7 @@ interface WorkspaceState {
   addEdge: (edge: CanvasEdgeData) => void
   deleteEdge: (id: string) => void
   setSelectedNodeId: (id: string | null) => void
+  setPendingTerminalRect: (rect: { x: number; y: number; width: number; height: number } | null) => void
   toggleInspector: () => void
   setCommandPaletteOpen: (open: boolean) => void
   setRecruitModalOpen: (open: boolean) => void
@@ -220,6 +224,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setEdges: (edges) => set({ edges }),
   addEdge: (edge) => set((state) => ({ edges: [...state.edges, edge] })),
   deleteEdge: (id) => set((state) => ({ edges: state.edges.filter((e) => e.id !== id) })),
+  pendingTerminalRect: null,
+  setPendingTerminalRect: (rect) => set({ pendingTerminalRect: rect }),
   setSelectedNodeId: (id) => set({ selectedNodeId: id, isInspectorOpen: id !== null }),
   toggleInspector: () => set((state) => ({ isInspectorOpen: !state.isInspectorOpen })),
   setCommandPaletteOpen: (open) => set({ isCommandPaletteOpen: open }),

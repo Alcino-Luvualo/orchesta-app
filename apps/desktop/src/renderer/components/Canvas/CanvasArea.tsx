@@ -20,7 +20,7 @@ import { Terminal, FileText, FolderTree, Globe, Smartphone, MousePointer, Cable,
 import { RopeEdge } from './RopeEdge'
 
 export const CanvasArea: React.FC = () => {
-  const { nodes: storeNodes, edges: storeEdges, addNode, setNodes, setEdges, setSelectedNodeId, selectedNodeId, deleteNode, deleteEdge, activeWorkspace } = useWorkspaceStore()
+  const { nodes: storeNodes, edges: storeEdges, addNode, setNodes, setEdges, setSelectedNodeId, selectedNodeId, deleteNode, deleteEdge, activeWorkspace, setPendingTerminalRect, setRecruitModalOpen } = useWorkspaceStore()
   const [connectMode, setConnectMode] = useState(false)
   const [connectionSourceId, setConnectionSourceId] = useState<string | null>(null)
   const [connectionPointer, setConnectionPointer] = useState<{ x: number; y: number } | null>(null)
@@ -346,7 +346,10 @@ export const CanvasArea: React.FC = () => {
       ? { x: Math.min(drawStart.flowX, target.x), y: Math.min(drawStart.flowY, target.y) }
       : { x: drawStart.flowX - width / 2, y: drawStart.flowY - height / 2 }
 
-    if (tool === 'draw') {
+    if (tool === 'terminal') {
+      setPendingTerminalRect({ x: position.x, y: position.y, width, height })
+      setRecruitModalOpen(true)
+    } else if (tool === 'draw') {
       const id = `shape_${Date.now()}`
       const points = [...drawPointsRef.current, target].map((point) => ({ x: point.x - position.x, y: point.y - position.y }))
       addNode({ id, kind: 'shape', ...position, width, height, properties: { drawing: true, points } })
