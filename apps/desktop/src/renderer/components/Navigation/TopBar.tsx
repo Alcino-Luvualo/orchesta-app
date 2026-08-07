@@ -1,6 +1,6 @@
 import React from 'react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import { Sun, Moon, Search, Terminal, Minus, Square, X, Maximize, Settings } from 'lucide-react'
+import { Sun, Moon, Terminal, Minus, Square, X } from 'lucide-react'
 
 declare global {
   interface Window {
@@ -9,7 +9,6 @@ declare global {
       maximize: () => void
       close: () => void
       isMaximized: () => Promise<boolean>
-      toggleFullscreen: () => void
     }
   }
 }
@@ -17,10 +16,9 @@ declare global {
 export const TopBar: React.FC = () => {
   const {
     activeWorkspace,
+    nodes,
     theme,
-    toggleTheme,
-    setCommandPaletteOpen,
-    setScreen
+      toggleTheme
   } = useWorkspaceStore()
 
   return (
@@ -33,17 +31,13 @@ export const TopBar: React.FC = () => {
 
       <div className="top-spacer" />
 
-      <button className="top-action icon-only" onClick={() => setCommandPaletteOpen(true)} title="Pesquisar · Ctrl + K"><Search className="icon" /></button>
-
-      <div className="active-badge compact" title="2 agentes ativos">
-        <Terminal className="icon" /> <span>2</span>
+      <div className="active-badge compact" title={`${nodes.filter((node) => node.kind === 'terminal').length} agentes no canvas`}>
+        <Terminal className="icon" /> <span>{nodes.filter((node) => node.kind === 'terminal').length}</span>
       </div>
 
       <button className="top-action theme-toggle" onClick={toggleTheme} title="Alternar tema claro/escuro">
         {theme === 'dark' ? <Sun className="icon" /> : <Moon className="icon" />}
       </button>
-
-      <button className="top-action icon-only" onClick={() => setScreen('settings')} title="Definições"><Settings className="icon" /></button>
 
       {/* Window controls for frameless window on Linux */}
       {window.windowControls && (
@@ -61,13 +55,6 @@ export const TopBar: React.FC = () => {
             title="Maximizar"
           >
             <Square style={{ width: 12, height: 12 }} />
-          </button>
-          <button
-            className="window-btn"
-            onClick={() => window.windowControls?.toggleFullscreen()}
-            title="Tela Cheia (F11)"
-          >
-            <Maximize style={{ width: 12, height: 12 }} />
           </button>
           <button
             className="window-btn window-btn-close"
