@@ -2,11 +2,11 @@ import React, { useMemo, useCallback, useEffect, useRef, useState } from 'react'
 import {
   ReactFlow,
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   Connection,
-  ReactFlowInstance,
-  PanOnScrollMode
+  ReactFlowInstance
 } from '@xyflow/react'
 import { useWorkspaceStore, CanvasNodeData } from '../../store/workspaceStore'
 import { TerminalNode } from '../Nodes/TerminalNode'
@@ -17,10 +17,11 @@ import { DeviceNode } from '../Nodes/DeviceNode'
 import { TextNode } from '../Nodes/TextNode'
 import { ShapeNode } from '../Nodes/ShapeNode'
 import { Terminal, FileText, FolderTree, Globe, Smartphone, MousePointer, Cable, Copy, Trash2, Pencil, RotateCw, Bold, Italic, List, CheckSquare, PenLine, Square, Type } from 'lucide-react'
-import { RopeEdge } from './RopeEdge'
+import { CableSystem } from './CableSystem/CableSystem'
+import { viewportManager } from './CanvasViewport'
 
 export const CanvasArea: React.FC = () => {
-  const { nodes: storeNodes, edges: storeEdges, addNode, setNodes, setEdges, setSelectedNodeId, selectedNodeId, deleteNode, deleteEdge, activeWorkspace, setPendingTerminalRect, setRecruitModalOpen } = useWorkspaceStore()
+  const { nodes: storeNodes, edges: storeEdges, addNode, setNodes, setEdges, setSelectedNodeId, selectedNodeId, deleteNode, deleteEdge, activeWorkspace, setPendingTerminalRect, setRecruitModalOpen, updateNode } = useWorkspaceStore()
   const [connectMode, setConnectMode] = useState(false)
   const [connectionSourceId, setConnectionSourceId] = useState<string | null>(null)
   const [connectionPointer, setConnectionPointer] = useState<{ x: number; y: number } | null>(null)
@@ -36,6 +37,22 @@ export const CanvasArea: React.FC = () => {
   const persistedNodeIdsRef = useRef<Set<string>>(new Set())
   const persistedEdgeIdsRef = useRef<Set<string>>(new Set())
   const fittedWorkspaceRef = useRef<string | null>(null)
+  
+  const gestureState = useRef<{
+    type: 'idle' | 'pan' | 'nodeDrag';
+    startX: number;
+    startY: number;
+    startPanX: number;
+    startPanY: number;
+    nodeId: string | null;
+    startNodeX: number;
+    startNodeY: number;
+    startWorldX: number;
+    startWorldY: number;
+  }>({
+    type: 'idle', startX: 0, startY: 0, startPanX: 0, startPanY: 0,
+    nodeId: null, startNodeX: 0, startNodeY: 0, startWorldX: 0, startWorldY: 0
+  })
 
   const nodeTypes = useMemo(() => ({
     terminal: TerminalNode,
@@ -46,8 +63,6 @@ export const CanvasArea: React.FC = () => {
     text: TextNode,
     shape: ShapeNode
   }), [])
-
-  const edgeTypes = useMemo(() => ({ rope: RopeEdge }), [])
 
   useEffect(() => {
     const workspaceId = activeWorkspace?.id
@@ -68,7 +83,7 @@ export const CanvasArea: React.FC = () => {
       if (Array.isArray(storedNodes) && storedNodes.length) {
         window.setTimeout(() => {
           if (!cancelled && fittedWorkspaceRef.current !== workspaceId) {
-            flowRef.current?.fitView({ padding: .18, duration: 220 })
+            viewportManager.fitView(storedNodes as CanvasNodeData[])
             fittedWorkspaceRef.current = workspaceId
           }
         }, 70)
@@ -103,54 +118,103 @@ export const CanvasArea: React.FC = () => {
 
   // Real-time canvas context sync for terminal agents & notes
   useEffect(() => {
-    const terminalNodes = storeNodes.filter((n) => n.kind === 'terminal')
-    if (terminalNodes.length === 0) return
+    const timer = window.setTimeout(() => {
+      const terminalNodes = storeNodes.filter((n) => n.kind === 'terminal')
+      if (terminalNodes.length === 0) return
 
-    terminalNodes.forEach((termNode) => {
-      const connectedEdges = storeEdges.filter((e) => e.source === termNode.id || e.target === termNode.id)
-      const connectedNodeIds = connectedEdges.map((e) => (e.source === termNode.id ? e.target : e.source))
-      const connectedNodes = storeNodes.filter((n) => connectedNodeIds.includes(n.id))
+      // Build a unified context for ALL terminals
+      const allTerminals = terminalNodes.map((termNode) => {
+        const connectedEdges = storeEdges.filter((e) => e.source === termNode.id || e.target === termNode.id)
+        const connectedNodeIds = connectedEdges.map((e) => (e.source === termNode.id ? e.target : e.source))
+        const connectedNodes = storeNodes.filter((n) => connectedNodeIds.includes(n.id))
 
-      const noteNodes = connectedNodes.filter((n) => n.kind === 'note')
-      const peerTerminals = connectedNodes.filter((n) => n.kind === 'terminal')
-
-      const contextSummary = {
-        sessionId: termNode.id,
-        terminalTitle: termNode.properties.title || 'Terminal',
-        connectedNotes: noteNodes.map((n) => ({
-          id: n.id,
-          title: n.properties.title || 'NOTE',
-          content: n.properties.content || ''
-        })),
-        connectedPeerAgents: peerTerminals.map((n) => ({
-          id: n.id,
-          title: n.properties.title || n.properties.agent || 'Agente'
-        }))
-      }
+        return {
+          sessionId: termNode.id,
+          agent: termNode.properties.agent || termNode.properties.title || 'Terminal',
+          role: termNode.properties.role || '',
+          cwd: termNode.properties.cwd || '',
+          connectedNotes: connectedNodes.filter((n) => n.kind === 'note').map((n) => ({
+            id: n.id,
+            title: n.properties.title || 'NOTE',
+            content: n.properties.content || ''
+          })),
+          connectedPeerAgents: connectedNodes.filter((n) => n.kind === 'terminal').map((n) => ({
+            id: n.id,
+            agent: n.properties.agent || n.properties.title || 'Agent',
+            role: n.properties.role || ''
+          })),
+          connectedBrowsers: connectedNodes.filter((n) => n.kind === 'browser').map((n) => ({
+            id: n.id,
+            title: n.properties.title || 'Browser',
+            url: n.properties.url || ''
+          })),
+          connectedFileTrees: connectedNodes.filter((n) => n.kind === 'files').map((n) => ({
+            id: n.id,
+            title: n.properties.title || 'File Tree',
+            path: n.properties.path || ''
+          }))
+        }
+      })
 
       if ((window as any).orchestra?.syncCanvasContext) {
-        ;(window as any).orchestra.syncCanvasContext(contextSummary).catch(() => {})
+        ;(window as any).orchestra.syncCanvasContext(allTerminals).catch(() => {})
       }
-    })
+    }, 500)
+    return () => window.clearTimeout(timer)
   }, [storeNodes, storeEdges])
 
+  // Listen for live external note updates (e.g. from AI agents writing to .orchestra/canvas_context.json)
+  useEffect(() => {
+    if (!(window as any).orchestra?.onEvent) return
+    const cleanup = (window as any).orchestra.onEvent((event: any) => {
+      if (event?.type === 'orchestra:canvas-external-update' && event.payload?.terminals) {
+        const terminals = event.payload.terminals
+        terminals.forEach((term: any) => {
+          if (term.connectedNotes && Array.isArray(term.connectedNotes)) {
+            term.connectedNotes.forEach((n: any) => {
+              if (n.id && typeof n.content === 'string') {
+                const existingNode = storeNodes.find((node) => node.id === n.id)
+                if (existingNode && existingNode.properties.content !== n.content) {
+                  updateNode(n.id, {
+                    properties: {
+                      ...existingNode.properties,
+                      content: n.content,
+                      title: n.title || existingNode.properties.title
+                    }
+                  })
+                }
+              }
+            })
+          }
+        })
+      }
+    })
+    return () => cleanup()
+  }, [storeNodes, updateNode])
+
+
   const workspaceRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (workspaceRef.current) {
+      viewportManager.init(
+        workspaceRef.current,
+        (z) => {
+          const zLabel = document.getElementById('zoom-label');
+          if (zLabel) zLabel.innerText = `${Math.round(z * 100)}%`;
+        },
+        (vp) => {
+          flowRef.current?.setViewport({ x: vp.panX, y: vp.panY, zoom: vp.zoom });
+        }
+      );
+    }
+  }, []);
 
   useEffect(() => {
     const el = workspaceRef.current
     if (!el) return
     const handleWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      const instance = flowRef.current
-      if (!instance) return
-
-      // Smooth zoom in/out for mouse wheel and trackpad pinch
-      const zoomFactor = e.deltaY < 0 ? 1.09 : 0.91
-      const currentZoom = instance.getZoom()
-      const nextZoom = Math.max(0.15, Math.min(3.0, currentZoom * zoomFactor))
-
-      instance.zoomTo(nextZoom, { duration: 30 })
-      setZoomLevel(Math.round(nextZoom * 100))
+      viewportManager.handleWheel(e)
     }
     el.addEventListener('wheel', handleWheel, { passive: false })
     return () => el.removeEventListener('wheel', handleWheel)
@@ -162,9 +226,13 @@ export const CanvasArea: React.FC = () => {
       id: n.id,
       type: n.kind,
       position: { x: n.x, y: n.y },
-      style: { width: n.width, height: n.height },
+      width: n.width || 300,
+      height: n.height || 200,
+      initialWidth: n.width || 300,
+      initialHeight: n.height || 200,
+      style: { width: n.width || 300, height: n.height || 200 },
       selected: selectedNodeId === n.id,
-      data: { properties: n.properties, width: n.width, height: n.height, selected: selectedNodeId === n.id },
+      data: { properties: n.properties || {}, width: n.width || 300, height: n.height || 200, selected: selectedNodeId === n.id },
       className: focusSnapshot?.id === n.id ? 'canvas-node-focus' : ''
     }))
   }, [focusSnapshot?.id, selectedNodeId, storeNodes])
@@ -324,10 +392,50 @@ export const CanvasArea: React.FC = () => {
   }, [restoreFocus])
 
   const onWorkspaceMouseDown = (event: React.MouseEvent) => {
-    if (tool === 'select' || event.button !== 0 || !flowRef.current) return
+    if (event.button !== 0 || !flowRef.current) return
     const targetEl = event.target as HTMLElement
+    
+    // Ignore if clicking on a resize handle
+    if (targetEl.closest('.react-flow__resize-control') || targetEl.closest('.resize-handle')) {
+      return
+    }
+
+    // Node Drag intercept
+    const nodeEl = targetEl.closest('.react-flow__node')
+    if (nodeEl) {
+      const nodeId = nodeEl.getAttribute('data-id')
+      if (nodeId && tool === 'select') {
+        const node = storeNodes.find(n => n.id === nodeId)
+        if (node) {
+          setSelectedNodeId(nodeId)
+          const startWorld = viewportManager.screenToWorld(event.clientX, event.clientY)
+          gestureState.current = {
+            type: 'nodeDrag',
+            startX: event.clientX, startY: event.clientY,
+            startPanX: viewportManager.viewport.panX, startPanY: viewportManager.viewport.panY,
+            nodeId,
+            startNodeX: node.x, startNodeY: node.y,
+            startWorldX: startWorld.x, startWorldY: startWorld.y
+          }
+        }
+      }
+      return
+    }
+
     // Only capture on canvas pane or background
-    if (targetEl.closest('.react-flow__node') || targetEl.closest('.canvas-toolbar') || targetEl.closest('.canvas-context-toolbar')) return
+    if (targetEl.closest('.canvas-toolbar') || targetEl.closest('.canvas-context-toolbar') || targetEl.closest('.zoom')) return
+
+    if (tool === 'select') {
+      gestureState.current = {
+        type: 'pan',
+        startX: event.clientX, startY: event.clientY,
+        startPanX: viewportManager.viewport.panX, startPanY: viewportManager.viewport.panY,
+        nodeId: null, startNodeX: 0, startNodeY: 0, startWorldX: 0, startWorldY: 0
+      }
+      document.body.style.cursor = 'grabbing'
+      return
+    }
+
     const flow = flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY })
     drawPointsRef.current = tool === 'draw' ? [{ x: flow.x, y: flow.y }] : []
     setDrawStart({ x: event.clientX, y: event.clientY, flowX: flow.x, flowY: flow.y })
@@ -336,6 +444,53 @@ export const CanvasArea: React.FC = () => {
 
   const onWorkspaceMouseMove = (event: React.MouseEvent) => {
     if (connectMode && connectionSourceId) setConnectionPointer({ x: event.clientX, y: event.clientY })
+    
+    const state = gestureState.current
+    if (state.type === 'pan') {
+      viewportManager.viewport.panX = state.startPanX + event.clientX - state.startX
+      viewportManager.viewport.panY = state.startPanY + event.clientY - state.startY
+      viewportManager.scheduleViewportUpdate()
+      viewportManager.syncPersistentState()
+      return
+    }
+
+    if (state.type === 'nodeDrag' && state.nodeId) {
+      const currentWorld = viewportManager.screenToWorld(event.clientX, event.clientY)
+      const wantedX = Math.round(state.startNodeX + currentWorld.x - state.startWorldX)
+      const wantedY = Math.round(state.startNodeY + currentWorld.y - state.startWorldY)
+      
+      const rectsTouch = (
+        r1: { x: number; y: number; width: number; height: number },
+        r2: { x: number; y: number; width: number; height: number },
+        gap = 8
+      ) => {
+        return !(
+          r1.x + r1.width + gap <= r2.x ||
+          r1.x >= r2.x + r2.width + gap ||
+          r1.y + r1.height + gap <= r2.y ||
+          r1.y >= r2.y + r2.height + gap
+        )
+      }
+      
+      const n = storeNodes.find(item => item.id === state.nodeId)
+      if (n) {
+        // Test horizontal movement
+        const candidateX = { ...n, x: wantedX }
+        const collideX = storeNodes.some((other) => other.id !== n.id && rectsTouch(candidateX as any, other as any))
+        const finalX = collideX ? n.x : wantedX
+
+        // Test vertical movement
+        const candidateY = { ...n, x: finalX, y: wantedY }
+        const collideY = storeNodes.some((other) => other.id !== n.id && rectsTouch(candidateY as any, other as any))
+        const finalY = collideY ? n.y : wantedY
+
+        if (finalX !== n.x || finalY !== n.y) {
+          setNodes(storeNodes.map(item => item.id === state.nodeId ? { ...item, x: finalX, y: finalY } : item))
+        }
+      }
+      return
+    }
+
     if (!drawStart) return
     if (tool === 'draw' && flowRef.current) {
       drawPointsRef.current.push(flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }))
@@ -349,6 +504,16 @@ export const CanvasArea: React.FC = () => {
   }
 
   const onWorkspaceMouseUp = (event: React.MouseEvent) => {
+    if (gestureState.current.type === 'pan') {
+      gestureState.current.type = 'idle'
+      document.body.style.cursor = ''
+      return
+    }
+    if (gestureState.current.type === 'nodeDrag') {
+      gestureState.current.type = 'idle'
+      return
+    }
+
     if (!drawStart || !flowRef.current) return
     const target = flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY })
     const draggedWidth = Math.abs(target.x - drawStart.flowX)
@@ -397,13 +562,7 @@ export const CanvasArea: React.FC = () => {
   }
 
   const selectedNode = storeNodes.find((node) => node.id === selectedNodeId)
-  const pendingRope = useMemo(() => {
-    const source = storeNodes.find((node) => node.id === connectionSourceId)
-    if (!source || !connectionPointer || !flowRef.current) return null
-    const start = flowRef.current.flowToScreenPosition({ x: source.x + source.width, y: source.y + source.height / 2 })
-    const sag = Math.max(18, Math.abs(connectionPointer.x - start.x) * .16)
-    return { start, end: connectionPointer, d: `M ${start.x} ${start.y} C ${start.x + sag} ${start.y + 24}, ${connectionPointer.x - sag} ${connectionPointer.y + 24}, ${connectionPointer.x} ${connectionPointer.y}` }
-  }, [storeNodes, connectionPointer, connectionSourceId])
+  const pendingRope = null
   const duplicateSelected = () => {
     if (!selectedNode) return
     addNode({
@@ -420,16 +579,14 @@ export const CanvasArea: React.FC = () => {
   }
   const toolLabel: Record<typeof tool, string> = { select: 'Selecionar', terminal: 'Terminal', note: 'Nota', files: 'File Tree', browser: 'Portal', device: 'Device Portal', text: 'Texto', shape: 'Forma', draw: 'Desenhar' }
 
-  const [zoomLevel, setZoomLevel] = useState(100)
-
   const handleZoomIn = () => {
-    flowRef.current?.zoomIn({ duration: 200 })
+    viewportManager.handleZoomIn()
   }
   const handleZoomOut = () => {
-    flowRef.current?.zoomOut({ duration: 200 })
+    viewportManager.handleZoomOut()
   }
   const handleFitView = () => {
-    flowRef.current?.fitView({ padding: 0.18, duration: 250 })
+    viewportManager.fitView(storeNodes)
   }
 
   return (
@@ -443,19 +600,19 @@ export const CanvasArea: React.FC = () => {
     >
       <ReactFlow
         nodes={reactFlowNodes}
-        edges={reactFlowEdges}
         nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onConnect={onConnect}
-        panOnDrag={tool === 'select' ? [0, 1, 2] : false}
+        panOnDrag={false}
         selectionOnDrag={false}
         panOnScroll={false}
+        panOnScrollMode={'free' as any}
         zoomOnScroll={false}
         zoomOnPinch={false}
         zoomOnDoubleClick={false}
-        preventScrolling={true}
-        onMove={(_, viewport) => setZoomLevel(Math.round(viewport.zoom * 100))}
+        preventScrolling={false}
+        nodesDraggable={false}
+        elementsSelectable={false}
         onNodeClick={(_, node) => {
           if (connectMode && connectionSourceId && connectionSourceId !== node.id) {
             const exists = storeEdges.some((edge) => edge.source === connectionSourceId && edge.target === node.id)
@@ -471,27 +628,48 @@ export const CanvasArea: React.FC = () => {
         onEdgeClick={(_, edge) => { setSelectedNodeId(null); setSelectedEdgeId(edge.id) }}
         onInit={(instance) => {
           flowRef.current = instance
-          setZoomLevel(Math.round(instance.getZoom() * 100))
+          const worldEl = workspaceRef.current?.querySelector('.react-flow__viewport') as HTMLElement;
+          if (worldEl) {
+            viewportManager.setWorldElement(worldEl);
+            const vp = instance.getViewport();
+            viewportManager.viewport.panX = vp.x;
+            viewportManager.viewport.panY = vp.y;
+            viewportManager.viewport.zoom = vp.zoom;
+            viewportManager.scheduleViewportUpdate();
+            
+            // Re-assign ID to .react-flow__viewport if possible
+            worldEl.id = 'world';
+          }
         }}
         onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); setConnectMode(false); setConnectionSourceId(null); setConnectionPointer(null) }}
-        fitView
-        fitViewOptions={{ padding: 0.18, maxZoom: 1 }}
         connectionLineStyle={{ stroke: 'var(--primary)', strokeWidth: 2, strokeDasharray: '6 7' }}
         className={`${connectMode ? 'canvas-connecting' : ''} ${tool !== 'select' ? 'canvas-draw-mode' : ''}`}
       >
-        <Background color="#333840" gap={24} size={1} />
+        <Background id="grid-lines" variant={BackgroundVariant.Lines} color="#272c37" gap={24} size={1} />
+        <Background id="grid-dots" variant={BackgroundVariant.Dots} color="#485266" gap={24} size={1.5} />
         {storeNodes.length > 0 && <MiniMap
           style={{ width: 128, height: 78, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, opacity: .92 }}
           nodeColor={() => '#505762'}
           maskColor="rgba(11, 12, 14, .55)"
           pannable
         />}
+        <CableSystem
+          connectMode={connectMode}
+          connectionSourceId={connectionSourceId}
+          connectionPointer={connectionPointer}
+          connectionHoverId={connectionHoverId}
+          selectedEdgeId={selectedEdgeId}
+          onEdgeClick={(id) => {
+            setSelectedNodeId(null);
+            setSelectedEdgeId(id);
+          }}
+        />
       </ReactFlow>
 
       {/* Floating Zoom Bar (Bottom Right) */}
       <div className="zoom" aria-label="Controlo de Zoom">
         <button onClick={handleZoomOut} title="Diminuir Zoom (-)">−</button>
-        <span>{zoomLevel}%</span>
+        <span id="zoom-label">100%</span>
         <button onClick={handleZoomIn} title="Aumentar Zoom (+)">+</button>
         <button onClick={handleFitView} title="Ajustar ao ecrã (Fit)">Fit</button>
       </div>
