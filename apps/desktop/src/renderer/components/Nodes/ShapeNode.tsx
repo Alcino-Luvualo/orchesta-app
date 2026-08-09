@@ -1,11 +1,11 @@
 import React from 'react'
 import { Handle, Position, NodeResizer } from '@xyflow/react'
-import { useWorkspaceStore } from '../../store/workspaceStore'
+import { CanvasComponentData, useWorkspaceStore } from '../../store/workspaceStore'
 
-export const ShapeNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
-  const { updateNode, setSelectedNodeId } = useWorkspaceStore()
+export const ShapeNode: React.FC<{ id: string; data: CanvasComponentData }> = ({ id, data }) => {
+  const { updateNode, setSelectedNodeId, commitHistory } = useWorkspaceStore()
   const drawing = data.properties?.drawing === true
-  const points = data.properties?.points as Array<{ x: number; y: number }> | undefined
+  const points = data.properties?.points
   return <div className={`canvas-shape-node ${drawing ? 'drawing' : ''}`} style={{ width: '100%', height: '100%' }} onClick={() => setSelectedNodeId(id)}>
     <NodeResizer
       isVisible={data.selected}
@@ -13,6 +13,7 @@ export const ShapeNode: React.FC<{ id: string; data: any }> = ({ id, data }) => 
       minHeight={80}
       handleClassName="nodrag nopan canvas-resize-handle"
       lineClassName="nodrag nopan canvas-resize-line"
+      onResizeStart={commitHistory}
       onResize={(_, params) => updateNode(id, { width: params.width, height: params.height })}
     />
     <Handle type="target" position={Position.Left} className="port left" />
