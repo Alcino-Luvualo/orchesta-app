@@ -395,17 +395,23 @@ impl Database {
     pub fn connected_nodes(&self, node_id: &str) -> Result<Vec<serde_json::Value>> {
         let conn = self.get_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, source_id, target_id, label FROM canvas_edges
-             WHERE source_id = ?1 OR target_id = ?1"
+            "SELECT e.id, e.source_id, e.target_id, e.label, p.permissions_json
+             FROM canvas_edges e
+             LEFT JOIN connection_permissions p ON p.edge_id = e.id
+             WHERE e.source_id = ?1 OR e.target_id = ?1"
         )?;
         let rows = stmt.query_map(params![node_id], |row| {
             let source: String = row.get(1)?;
             let target: String = row.get(2)?;
             let peer = if source == node_id { target } else { source };
+            let permissions = row.get::<_, Option<String>>(4)?
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .unwrap_or_else(|| serde_json::json!(["read", "write", "send_prompt", "receive_response", "control", "share_context"]));
             Ok(serde_json::json!({
                 "edgeId": row.get::<_, String>(0)?,
                 "nodeId": peer,
                 "label": row.get::<_, Option<String>>(3)?,
+                "permissions": permissions,
             }))
         })?;
         let mut items = Vec::new();
