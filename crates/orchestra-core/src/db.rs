@@ -327,6 +327,41 @@ impl Database {
         Ok(())
     }
 
+    pub fn nodes_are_connected(&self, first: &str, second: &str) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM canvas_edges
+             WHERE (source_id = ?1 AND target_id = ?2)
+                OR (source_id = ?2 AND target_id = ?1)",
+            params![first, second],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn connected_nodes(&self, node_id: &str) -> Result<Vec<serde_json::Value>> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, source_id, target_id, label FROM canvas_edges
+             WHERE source_id = ?1 OR target_id = ?1"
+        )?;
+        let rows = stmt.query_map(params![node_id], |row| {
+            let source: String = row.get(1)?;
+            let target: String = row.get(2)?;
+            let peer = if source == node_id { target } else { source };
+            Ok(serde_json::json!({
+                "edgeId": row.get::<_, String>(0)?,
+                "nodeId": peer,
+                "label": row.get::<_, Option<String>>(3)?,
+            }))
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
+    }
+
     // Roles
     pub fn get_roles(&self) -> Result<Vec<serde_json::Value>> {
         let conn = self.get_conn()?;
