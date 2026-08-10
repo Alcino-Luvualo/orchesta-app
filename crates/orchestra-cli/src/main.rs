@@ -33,6 +33,11 @@ enum Commands {
         #[arg(long, default_value_t = 90)]
         timeout_secs: u64,
     },
+    /// Show locally recorded agent request history
+    RequestHistory {
+        #[arg(long, default_value_t = 50)]
+        limit: u64,
+    },
     /// Read a sticky note
     NoteRead {
         title: String,
@@ -110,6 +115,13 @@ async fn main() -> Result<()> {
                 }),
             )
         },
+        Commands::RequestHistory { limit } => {
+            let (session_id, token) = terminal_auth()?;
+            (
+                "agent.request-audit.list",
+                json!({ "sessionId": session_id, "token": token, "limit": limit }),
+            )
+        }
         Commands::NoteRead { title } => {
             let (session_id, token) = terminal_auth()?;
             ("note.read", json!({ "sessionId": session_id, "token": token, "noteId": title }))
