@@ -1,38 +1,49 @@
 ---
 name: orchestra-canvas
-description: Enables AI coding agents (Claude Code, Antigravity, Codex, OpenCode) to discover canvas connections, inspect connected Markdown notes, manipulate browser portals, read/write project file trees, and orchestrate peer agent terminals.
+description: Enables agents running inside Orchestra terminals to discover and safely use canvas connections.
 ---
 
-# Orchestra Canvas Context & Multi-Agent Skill
+# Orchestra Canvas
 
-When running inside an Orchestra Desktop terminal node, your session is part of a spatial 2D canvas workspace. You may be connected via physical cables (ropes) to other nodes such as Markdown Notes, File Trees, Browser Portals, or Peer Agent Terminals.
+You are running in an Orchestra terminal. The visible cable graph is also an access-control graph: you may only use nodes connected to your terminal.
 
-## 1. Discovering Connected Nodes
-Orchestra exposes connection state via environment variables, specifically `$ORCHESTRA_CONTEXT_DIR`, and the Orchestra daemon Unix socket:
-- **Session ID**: `ORCHESTRA_SESSION_ID` (e.g. `term_lead`, `term_178602...`)
-- **Context Directory**: `ORCHESTRA_CONTEXT_DIR` (Always read files from this directory to see YOUR specific connections).
-- **Unix Socket**: `/tmp/orchestra.sock`
+## Required checks
 
-You can inspect connected notes/files by reading the files in your `$ORCHESTRA_CONTEXT_DIR`:
-- **Connected Notes**: Read `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` (updates live whenever a note is edited on the canvas).
-- **Canvas Context**: Read `$ORCHESTRA_CONTEXT_DIR/context.json` (contains all connected nodes, browser URLs, and peer agent IDs).
+Run these first:
 
-## 2. Interacting with Connected Markdown Notes
-Sticky notes on the canvas are Markdown files readable and writable by agents:
-- **Reading a note**: Read `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` to retrieve tasks, specifications, or reviewer feedback.
-- **Updating a note**: When completing a task or milestone, update the connected Markdown file (e.g., mark `- [x] Task complete` or append progress logs). The canvas re-renders your edits live in real time!
+```bash
+orchestra doctor
+orchestra connections
+orchestra agents
+```
 
-## 3. Orchestrating Peer Terminals & Agents
-If your terminal node is connected to a peer agent terminal (e.g., `Reviewer`, `Frontend Architect`, `Backend Core`):
-- You can send instructions, diffs, or review requests to peer agents over PTY relay or socket.
-- **Delegating Subtasks**: Write subtask specs into a shared connected note and notify the peer terminal.
+- `ORCHESTRA_SESSION_ID` identifies this terminal.
+- `ORCHESTRA_TOKEN` is injected by Orchestra. Never print, copy or expose it.
+- `ORCHESTRA_CONTEXT_DIR` contains local connection metadata.
+- `orchestra connections` is the authoritative list of nodes accessible to you.
 
-## 4. Manipulating Connected Browser Portals & File Trees
-- **Browser Portals (Canvas Browsers)**: Portals render live web apps (e.g. `http://localhost:3000` or Google Search). When connected to a Portal:
-  - **Navegar / Trocar URL**: O agente pode atualizar a URL do portal conectado no `.orchestra/canvas_context.json` ou via IPC socket `browser.navigate`.
-  - **Inspeção & Testes E2E**: Agentes podem inspecionar a interface da aplicação local, preencher formulários, simular testes e verificar rotas.
-  - **Pesquisa na Web**: O agente pode aceder ao portal para realizar pesquisas e inspecionar documentação técnica online.
-- **File Trees**: Refletem os ficheiros do projeto e estado do Git em tempo real.
+## Connected notes
 
----
-*Use this skill whenever working within Orchestra canvas workspaces to maintain spatial awareness and seamless multi-agent coordination.*
+Each connected note is a real Markdown file. Use its node ID from `orchestra connections`:
+
+```bash
+orchestra note-read <note-id>
+orchestra note-write <note-id> "# New content"
+orchestra note-append <note-id> $'\n- [x] Done'
+```
+
+Do not write to arbitrary filesystem paths to change a canvas note.
+
+## Connected agents
+
+Only target an active terminal returned by `orchestra agents` that is connected to this terminal:
+
+```bash
+orchestra send <terminal-id> "Review the authentication implementation and report findings."
+```
+
+Orchestra delivers prompts with bracketed paste. Do not claim a response was received unless it appears in the originating terminal; asynchronous response capture is not available yet.
+
+## Boundaries
+
+Browser and device control commands are unavailable until their portal bridge is installed. Do not edit `canvas_context.json` directly: use the CLI commands above.
