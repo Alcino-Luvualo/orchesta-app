@@ -53,6 +53,7 @@ async fn main() -> Result<()> {
     let mut stream = UnixStream::connect(&socket_path).await?;
     let req_id = format!("cli_{}", uuid::Uuid::new_v4());
 
+    let is_doctor = matches!(&cli.command, Commands::Doctor);
     let (type_name, payload) = match cli.command {
         Commands::Agents => ("roles.list", json!({})),
         Commands::Send { agent, message } => (
@@ -94,7 +95,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    if matches!(cli.command, Commands::Doctor) {
+    if is_doctor {
         let context_dir = std::env::var("ORCHESTRA_CONTEXT_DIR").ok();
         println!(
             "{}",
