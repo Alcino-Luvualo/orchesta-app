@@ -3,7 +3,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::thread;
 use tokio::sync::broadcast;
 use tracing::{error, info};
