@@ -82,11 +82,17 @@ async fn main() -> Result<()> {
                 json!({ "sessionId": session_id, "token": token, "agent": agent, "message": message }),
             )
         },
-        Commands::NoteRead { title } => ("note.read", json!({ "title": title })),
-        Commands::NoteAppend { title, content } => (
-            "note.append",
-            json!({ "title": title, "content": content }),
-        ),
+        Commands::NoteRead { title } => {
+            let (session_id, token) = terminal_auth()?;
+            ("note.read", json!({ "sessionId": session_id, "token": token, "noteId": title }))
+        }
+        Commands::NoteAppend { title, content } => {
+            let (session_id, token) = terminal_auth()?;
+            (
+                "note.append",
+                json!({ "sessionId": session_id, "token": token, "noteId": title, "content": content }),
+            )
+        },
         Commands::Status | Commands::Doctor => ("system.hello", json!({})),
     };
 
