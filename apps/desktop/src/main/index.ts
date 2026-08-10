@@ -45,6 +45,21 @@ function setupOrchestraWatcher(orchestraDir: string) {
         } catch (err) {
           console.error('Failed to process watched canvas_context.json:', err)
         }
+      } else if (filename.startsWith('notes') && filename.endsWith('.md')) {
+        try {
+          const filePath = path.join(orchestraDir, filename)
+          if (!fs.existsSync(filePath)) return
+          const noteId = path.basename(filename, '.md')
+          const content = fs.readFileSync(filePath, 'utf-8')
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('orchestra:event', {
+              type: 'orchestra:note-external-update',
+              payload: { id: noteId, content }
+            })
+          }
+        } catch (err) {
+          console.error('Failed to process watched note:', err)
+        }
       }
     })
   } catch (err) {
@@ -399,19 +414,31 @@ app.whenReady().then(() => {
           // Keep the resolved path if it does not exist yet.
         }
 
+        const localOrchestraDir = path.join(terminalProjectDir, '.orchestra')
+        const notesDir = path.join(localOrchestraDir, 'notes')
+        fs.mkdirSync(notesDir, { recursive: true })
+
+        // A note has one canonical Markdown file. Both the canvas and agents use it.
+        const notes = (term.connectedNotes || []).map((note: any) => {
+          const notePath = path.join(notesDir, `${note.id}.md`)
+          const content = typeof note.content === 'string' ? note.content : ''
+          if (!fs.existsSync(notePath) || fs.readFileSync(notePath, 'utf-8') !== content) {
+            fs.writeFileSync(notePath, content, 'utf-8')
+          }
+          return { ...note, content, filePath: notePath }
+        })
+
         // Per-terminal directory
-        const termDir = path.join(terminalProjectDir, '.orchestra', 'terminals', term.sessionId)
+        const termDir = path.join(localOrchestraDir, 'terminals', term.sessionId)
         if (!fs.existsSync(termDir)) {
           fs.mkdirSync(termDir, { recursive: true })
         }
         fs.writeFileSync(
           path.join(termDir, 'context.json'),
-          JSON.stringify(term, null, 2),
+          JSON.stringify({ ...term, connectedNotes: notes }, null, 2),
           'utf-8'
         )
 
-        // Per-terminal notes.md
-        const notes = term.connectedNotes || []
         let notesMd = `# Notas Conectadas ao Terminal: ${term.agent}\n\n`
         if (notes.length > 0) {
           notes.forEach((n: any) => {
