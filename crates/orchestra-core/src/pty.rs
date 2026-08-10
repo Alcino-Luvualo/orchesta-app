@@ -3,6 +3,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
 use std::thread;
 use tokio::sync::broadcast;
 use tracing::{error, info};
@@ -17,6 +18,26 @@ pub struct PtySession {
 #[derive(Clone)]
 pub struct PtyManager {
     sessions: Arc<Mutex<HashMap<String, PtySession>>>,
+}
+
+fn resolve_working_dir(cwd: Option<&str>) -> Result<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let raw = cwd.unwrap_or(&home);
+    let expanded = if raw == "~" {
+        PathBuf::from(home)
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        PathBuf::from(home).join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()?.join(expanded)
+    };
+
+    Ok(std::fs::canonicalize(&absolute).unwrap_or(absolute))
 }
 
 impl PtyManager {
@@ -57,9 +78,11 @@ impl PtyManager {
         cmd.env("ORCHESTRA_SESSION_ID", &session_id);
         cmd.env("ORCHESTRA", "1");
 
-        let working_dir = cwd.as_deref().unwrap_or("/home/alcinoo");
-        let context_dir = format!("{}/.orchestra/terminals/{}", working_dir, session_id);
+        let working_dir = resolve_working_dir(cwd.as_deref())?;
+        let context_dir = working_dir.join(".orchestra").join("terminals").join(&session_id);
+        std::fs::create_dir_all(&context_dir)?;
         cmd.env("ORCHESTRA_CONTEXT_DIR", &context_dir);
+        cmd.env("ORCHESTRA_WORKSPACE_DIR", &working_dir);
 
         if let Some(vars) = env_vars {
             for (key, val) in vars {
@@ -67,9 +90,7 @@ impl PtyManager {
             }
         }
 
-        if let Some(dir) = cwd {
-            cmd.cwd(dir);
-        }
+        cmd.cwd(&working_dir);
 
 
         let child = pair.slave.spawn_command(cmd)?;
