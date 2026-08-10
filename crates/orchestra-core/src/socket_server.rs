@@ -265,10 +265,11 @@ impl SocketServer {
                                     return Err(anyhow::anyhow!("Agent response exceeded 1 MiB"));
                                 }
                                 if response.contains(&done_marker) {
+                                    let clean_response = response.replace(&done_marker, "").trim().to_string();
                                     return Ok(json!({
                                         "requestId": request_id,
                                         "status": "completed",
-                                        "response": response.replace(&done_marker, "").trim(),
+                                        "response": clean_response,
                                     }));
                                 }
                             }
