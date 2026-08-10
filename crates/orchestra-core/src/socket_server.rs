@@ -168,6 +168,9 @@ impl SocketServer {
                 if !pty.authorizes(session_id, token) {
                     return Err(anyhow::anyhow!("Unauthorized terminal request"));
                 }
+                if !db.has_connection_permission(session_id, note_id, "read")? {
+                    return Err(anyhow::anyhow!("The note connection does not grant read permission"));
+                }
                 Ok(json!({ "id": note_id, "content": pty.read_note(session_id, note_id)? }))
             }
             "note.write" => {
@@ -177,6 +180,9 @@ impl SocketServer {
                 let content = payload["content"].as_str().ok_or_else(|| anyhow::anyhow!("Missing content"))?;
                 if !pty.authorizes(session_id, token) {
                     return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                if !db.has_connection_permission(session_id, note_id, "write")? {
+                    return Err(anyhow::anyhow!("The note connection does not grant write permission"));
                 }
                 pty.write_note(session_id, note_id, content)?;
                 Ok(json!({ "success": true, "id": note_id }))
@@ -188,6 +194,9 @@ impl SocketServer {
                 let content = payload["content"].as_str().ok_or_else(|| anyhow::anyhow!("Missing content"))?;
                 if !pty.authorizes(session_id, token) {
                     return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                if !db.has_connection_permission(session_id, note_id, "write")? {
+                    return Err(anyhow::anyhow!("The note connection does not grant write permission"));
                 }
                 let mut existing = pty.read_note(session_id, note_id)?;
                 existing.push_str(content);
@@ -206,6 +215,9 @@ impl SocketServer {
                 }
                 if !db.nodes_are_connected(source, target)? {
                     return Err(anyhow::anyhow!("The terminal is not connected to that agent"));
+                }
+                if !db.has_connection_permission(source, target, "send_prompt")? {
+                    return Err(anyhow::anyhow!("The terminal connection does not grant send_prompt permission"));
                 }
                 if !pty.list_sessions().iter().any(|id| id == target) {
                     return Err(anyhow::anyhow!("Target terminal is not running"));
