@@ -592,6 +592,18 @@ export const CanvasArea: React.FC = () => {
   }
 
   const selectedNode = storeNodes.find((node) => node.id === selectedNodeId)
+  const connectionCapabilities = ['read', 'write', 'send_prompt', 'receive_response', 'control', 'share_context']
+  const toggleEdgePermission = (permission: string) => {
+    if (!selectedEdgeId) return
+    setEdges(storeEdges.map((edge) => {
+      if (edge.id !== selectedEdgeId) return edge
+      const current = edge.permissions || connectionCapabilities
+      const permissions = current.includes(permission)
+        ? current.filter((value) => value !== permission)
+        : [...current, permission]
+      return { ...edge, permissions }
+    }))
+  }
   const pendingRope = null
   const duplicateSelected = () => {
     if (!selectedNode) return
@@ -725,6 +737,20 @@ export const CanvasArea: React.FC = () => {
         <div className="canvas-context-toolbar" aria-label={selectedEdgeId ? 'Ações da conexão' : `Ações para ${selectedNode?.kind}`}>
           {selectedEdgeId && <>
             <span className="connection-selection">Conexão selecionada</span>
+            {connectionCapabilities.map((permission) => {
+              const edge = storeEdges.find((item) => item.id === selectedEdgeId)
+              const enabled = (edge?.permissions || connectionCapabilities).includes(permission)
+              return (
+                <button
+                  key={permission}
+                  className={enabled ? 'active' : ''}
+                  onClick={() => toggleEdgePermission(permission)}
+                  title={enabled ? `Remover permissão: ${permission}` : `Permitir: ${permission}`}
+                >
+                  {permission}
+                </button>
+              )
+            })}
             <button className="danger" onClick={() => { deleteEdge(selectedEdgeId); setSelectedEdgeId(null) }} title="Desconectar"><Trash2 className="icon" /></button>
           </>}
           {selectedNode && <>
