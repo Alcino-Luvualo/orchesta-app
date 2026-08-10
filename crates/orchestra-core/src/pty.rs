@@ -11,6 +11,7 @@ use tracing::{error, info};
 pub struct PtySession {
     pub id: String,
     token: String,
+    context_dir: PathBuf,
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     pub output_tx: broadcast::Sender<Vec<u8>>,
@@ -136,6 +137,7 @@ impl PtyManager {
         let session = PtySession {
             id: session_id.clone(),
             token,
+            context_dir: context_dir.clone(),
             writer: writer_arc,
             master: master_arc,
             output_tx: tx,
@@ -196,5 +198,34 @@ impl PtyManager {
     pub fn send_prompt(&self, session_id: &str, prompt: &str) -> Result<()> {
         let pasted = format!("\x1b[200~{}\x1b[201~\r", prompt);
         self.write_input(session_id, pasted.as_bytes())
+    }
+
+    fn connected_note_path(&self, session_id: &str, note_id: &str) -> Result<PathBuf> {
+        let lock = self.sessions.lock().unwrap();
+        let session = lock
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Terminal is not running"))?;
+        let raw = std::fs::read_to_string(session.context_dir.join("context.json"))?;
+        let context: serde_json::Value = serde_json::from_str(&raw)?;
+        let is_connected = context["connectedNotes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|note| note["id"].as_str() == Some(note_id)));
+        if !is_connected {
+            return Err(anyhow::anyhow!("That note is not connected to this terminal"));
+        }
+
+        let orchestra_dir = session.context_dir.parent().and_then(|dir| dir.parent())
+            .ok_or_else(|| anyhow::anyhow!("Invalid Orchestra context directory"))?;
+        Ok(orchestra_dir.join("notes").join(format!("{}.md", note_id)))
+    }
+
+    pub fn read_note(&self, session_id: &str, note_id: &str) -> Result<String> {
+        std::fs::read_to_string(self.connected_note_path(session_id, note_id)?).map_err(Into::into)
+    }
+
+    pub fn write_note(&self, session_id: &str, note_id: &str, content: &str) -> Result<()> {
+        let note_path = self.connected_note_path(session_id, note_id)?;
+        std::fs::write(note_path, content)?;
+        Ok(())
     }
 }
