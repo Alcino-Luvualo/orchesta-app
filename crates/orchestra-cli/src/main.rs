@@ -28,6 +28,11 @@ enum Commands {
     NoteRead {
         title: String,
     },
+    /// Replace the full content of a sticky note
+    NoteWrite {
+        title: String,
+        content: String,
+    },
     /// Append content to a sticky note
     NoteAppend {
         title: String,
@@ -85,6 +90,13 @@ async fn main() -> Result<()> {
         Commands::NoteRead { title } => {
             let (session_id, token) = terminal_auth()?;
             ("note.read", json!({ "sessionId": session_id, "token": token, "noteId": title }))
+        }
+        Commands::NoteWrite { title, content } => {
+            let (session_id, token) = terminal_auth()?;
+            (
+                "note.write",
+                json!({ "sessionId": session_id, "token": token, "noteId": title, "content": content }),
+            )
         }
         Commands::NoteAppend { title, content } => {
             let (session_id, token) = terminal_auth()?;
