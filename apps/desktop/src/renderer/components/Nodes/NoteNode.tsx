@@ -83,16 +83,19 @@ export const NoteNode: React.FC<{ id: string; data: any }> = ({ id, data }) => {
         {isEditing ? (
           <textarea
             ref={editorRef}
-            className="note-source"
+            className="note-source nodrag nowheel"
             value={content}
             onChange={handleContentChange}
-            placeholder="Digita em Markdown..."
+            placeholder="Escreve a tua nota (Markdown)..."
+            onPointerDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
             style={{ display: 'block' }}
           />
         ) : (
           <div
-            className="note-preview"
+            className="note-preview nodrag nowheel"
             dangerouslySetInnerHTML={renderMarkdown()}
+            onPointerDown={(e) => e.stopPropagation()}
             onDoubleClick={() => setIsEditing(true)}
           />
         )}

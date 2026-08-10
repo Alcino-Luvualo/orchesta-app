@@ -213,11 +213,27 @@ export const CanvasArea: React.FC = () => {
   useEffect(() => {
     const el = workspaceRef.current
     if (!el) return
-    const handleWheel = (e: WheelEvent) => {
-      viewportManager.handleWheel(e)
+    const handleWheel = (event: WheelEvent) => {
+      // Stop React Flow (d3-zoom) from intercepting and breaking our custom logic
+      event.stopPropagation();
+      console.log('TRACKPAD EVENT ' + JSON.stringify({
+        deltaX: event.deltaX,
+        deltaY: event.deltaY,
+        deltaZ: event.deltaZ,
+        deltaMode: event.deltaMode,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        cancelable: event.cancelable,
+        defaultPrevented: event.defaultPrevented
+      }));
+      viewportManager.handleWheel(event)
     }
-    el.addEventListener('wheel', handleWheel, { passive: false })
-    return () => el.removeEventListener('wheel', handleWheel)
+    el.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+    return () => el.removeEventListener('wheel', handleWheel, { capture: true })
   }, [])
 
   // Map Zustand nodes to ReactFlow nodes
@@ -383,6 +399,10 @@ export const CanvasArea: React.FC = () => {
   }, [focusSnapshot, restoreFocus, setNodes, storeNodes])
 
   useEffect(() => {
+    viewportManager.isLocked = !!focusSnapshot;
+  }, [focusSnapshot]);
+
+  useEffect(() => {
     const exitOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       restoreFocus(); setTool('select'); setConnectMode(false); setConnectionSourceId(null); setConnectionPointer(null)
@@ -425,7 +445,7 @@ export const CanvasArea: React.FC = () => {
     // Only capture on canvas pane or background
     if (targetEl.closest('.canvas-toolbar') || targetEl.closest('.canvas-context-toolbar') || targetEl.closest('.zoom')) return
 
-    if (tool === 'select') {
+    if (tool === 'select' && !focusSnapshot) {
       gestureState.current = {
         type: 'pan',
         startX: event.clientX, startY: event.clientY,

@@ -4,6 +4,7 @@ use crate::pty::PtyManager;
 use crate::workspace::WorkspaceManager;
 use anyhow::Result;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -194,7 +195,11 @@ impl SocketServer {
                 let cols = payload["cols"].as_u64().unwrap_or(80) as u16;
                 let rows = payload["rows"].as_u64().unwrap_or(24) as u16;
 
-                let mut rx = pty.spawn_terminal(session_id.clone(), cwd, cols, rows)?;
+                let env_vars: Option<HashMap<String, String>> = payload["env"].as_object().map(|obj| {
+                    obj.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()
+                });
+
+                let mut rx = pty.spawn_terminal(session_id.clone(), cwd, cols, rows, env_vars)?;
 
                 // Stream terminal output events back to client
                 let writer_tx = writer.clone();

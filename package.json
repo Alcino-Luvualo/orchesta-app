@@ -16,6 +16,10 @@
     "apps/*"
   ],
   "devDependencies": {
-    "electron": "33.0.0"
+    "electron": "^33.0.0"
+  },
+  "allowScripts": {
+    "electron@33.0.0": true,
+    "esbuild": true
   }
 }

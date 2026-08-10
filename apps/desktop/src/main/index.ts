@@ -11,6 +11,49 @@ let socketRetryTimer: ReturnType<typeof setTimeout> | null = null
 const MAX_SOCKET_RETRIES = 10
 const pendingRequests = new Map<string, { resolve: (val: any) => void; reject: (err: any) => void }>()
 
+let activeWatcher: fs.FSWatcher | null = null
+let activeWatcherPath: string | null = null
+let lastSyncedJsonString: string = ''
+
+function setupOrchestraWatcher(orchestraDir: string) {
+  if (activeWatcherPath === orchestraDir) return
+  if (activeWatcher) {
+    activeWatcher.close()
+    activeWatcher = null
+  }
+  activeWatcherPath = orchestraDir
+
+  try {
+    activeWatcher = fs.watch(orchestraDir, { recursive: true }, (_eventType, filename) => {
+      if (!filename) return
+      if (filename.includes('canvas_context.json')) {
+        try {
+          const filePath = path.join(orchestraDir, 'canvas_context.json')
+          if (!fs.existsSync(filePath)) return
+          const raw = fs.readFileSync(filePath, 'utf-8')
+          if (raw === lastSyncedJsonString) return
+
+          const parsed = JSON.parse(raw)
+          lastSyncedJsonString = raw
+
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('orchestra:event', {
+              type: 'orchestra:canvas-external-update',
+              payload: parsed
+            })
+          }
+        } catch (err) {
+          console.error('Failed to process watched canvas_context.json:', err)
+        }
+      }
+    })
+  } catch (err) {
+    console.error('Failed to setup fs.watch on .orchestra:', err)
+  }
+}
+
+
+
 if (process.env.VITE_DEV_SERVER_URL) {
   // Development-only inspection port; never enabled in packaged builds.
   app.commandLine.appendSwitch('remote-debugging-port', '9231')
@@ -152,7 +195,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      webviewTag: true
     }
   })
 
@@ -169,9 +213,17 @@ function createWindow() {
     }
   })
 
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    console.log(`[Renderer Console] [level ${level}] ${message} (${sourceId}:${line})`)
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error(`[Renderer Failed Load] Code: ${errorCode}, Desc: ${errorDescription}, URL: ${validatedURL}`)
+  })
+
   // Prevent unhandled errors from crashing the app
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    console.error('Renderer process gone:', details.reason)
+    console.error('Renderer process gone:', details.reason, details.exitCode)
     if (details.reason !== 'clean-exit') {
       // Recreate the window
       createWindow()
@@ -281,31 +333,82 @@ app.whenReady().then(() => {
     return { ok: false, error: 'Socket disconnected' }
   })
 
-  ipcMain.handle('canvas:context:sync', async (_, { contextSummary }) => {
+  ipcMain.handle('canvas:context:sync', async (_, { contextSummary, cwd }) => {
     try {
+      const terminals = Array.isArray(contextSummary) ? contextSummary : [contextSummary]
+
       const userHome = process.env.HOME || '/home/alcinoo'
-      const targetDir = path.join(userHome, 'dev/orchesta-app/.orchestra')
-      if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true })
+      const payloadCwd = cwd || (terminals.length > 0 ? terminals[0].cwd : null)
+      let projectDir = userHome
+      if (payloadCwd) {
+        projectDir = payloadCwd.startsWith('~/') ? path.join(userHome, payloadCwd.slice(2)) : payloadCwd
+      } else {
+        projectDir = process.cwd()
       }
 
-      // Write canvas_context.json
-      const jsonPath = path.join(targetDir, 'canvas_context.json')
-      fs.writeFileSync(jsonPath, JSON.stringify(contextSummary, null, 2), 'utf-8')
+      const orchestraDir = path.join(projectDir, '.orchestra')
+      if (!fs.existsSync(orchestraDir)) {
+        fs.mkdirSync(orchestraDir, { recursive: true })
+      }
 
-      // Write connected_notes.md
-      const notes = contextSummary?.connectedNotes || []
-      let mdContent = `# Orchestra Canvas - Contexto Conectado\n\n`
-      if (notes.length > 0) {
-        notes.forEach((n: any) => {
-          mdContent += `## Nota: ${n.title || 'Nota'}\n${n.content || ''}\n\n`
+      const jsonStr = JSON.stringify({ terminals, updatedAt: new Date().toISOString() }, null, 2)
+      lastSyncedJsonString = jsonStr
+
+      // Write unified canvas_context.json
+      fs.writeFileSync(
+        path.join(orchestraDir, 'canvas_context.json'),
+        jsonStr,
+        'utf-8'
+      )
+
+      setupOrchestraWatcher(orchestraDir)
+
+
+      // Collect ALL connected notes from ALL terminals
+      const allNotes: any[] = []
+      const allBrowsers: any[] = []
+      const allPeers: any[] = []
+
+      for (const term of terminals) {
+        // Per-terminal directory
+        const termDir = path.join(orchestraDir, 'terminals', term.sessionId)
+        if (!fs.existsSync(termDir)) {
+          fs.mkdirSync(termDir, { recursive: true })
+        }
+        fs.writeFileSync(
+          path.join(termDir, 'context.json'),
+          JSON.stringify(term, null, 2),
+          'utf-8'
+        )
+
+        // Per-terminal notes.md
+        const notes = term.connectedNotes || []
+        let notesMd = `# Notas Conectadas ao Terminal: ${term.agent}\n\n`
+        if (notes.length > 0) {
+          notes.forEach((n: any) => {
+            notesMd += `## ${n.title || 'Nota'}\n${n.content || ''}\n\n`
+            allNotes.push({ ...n, fromAgent: term.agent })
+          })
+        } else {
+          notesMd += `*Nenhuma nota conectada.*\n`
+        }
+        fs.writeFileSync(path.join(termDir, 'connected_notes.md'), notesMd, 'utf-8')
+
+        // Collect browsers and peers
+        ;(term.connectedBrowsers || []).forEach((b: any) => allBrowsers.push({ ...b, fromAgent: term.agent }))
+        ;(term.connectedPeerAgents || []).forEach((p: any) => allPeers.push({ ...p, fromAgent: term.agent }))
+      }
+
+      // Write unified connected_notes.md
+      let unifiedMd = `# Orchestra Canvas - Contexto Conectado\n\n`
+      if (allNotes.length > 0) {
+        allNotes.forEach((n: any) => {
+          unifiedMd += `## Nota: ${n.title || 'Nota'} (conectada a ${n.fromAgent})\n${n.content || ''}\n\n`
         })
       } else {
-        mdContent += `*Nenhuma nota conectada a este terminal no momento.*\n`
+        unifiedMd += `*Nenhuma nota conectada a nenhum terminal no momento.*\n`
       }
-
-      const mdPath = path.join(targetDir, 'connected_notes.md')
-      fs.writeFileSync(mdPath, mdContent, 'utf-8')
+      fs.writeFileSync(path.join(orchestraDir, 'connected_notes.md'), unifiedMd, 'utf-8')
 
       return { ok: true }
     } catch (err) {

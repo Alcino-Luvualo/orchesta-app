@@ -97,7 +97,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       properties: {
         title: 'Claude Code',
         agent: 'Claude Code',
-        role: 'Lead Developer',
+        role: '',
         roleColor: '#c8f169',
         cwd: '~/dev/commerce',
         status: 'running'

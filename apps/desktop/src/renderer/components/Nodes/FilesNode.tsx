@@ -108,7 +108,7 @@ export const FilesNode: React.FC<{ id: string; data: any }> = ({ id, data }) => 
       <div className={`files-body ${isWide ? 'wide' : ''}`}>
         <section className="files-tree-pane">
           {viewMode === 'list' && <>
-            <div className="file-tree-list">
+            <div className="file-tree-list nodrag nowheel">
               {visibleEntries.map((entry, index) => {
                 const isFolder = entry.kind === 'folder'
                 const Icon = isFolder ? (entry.open ? FolderOpen : Folder) : entry.path.endsWith('.md') ? FileText : FileCode2
@@ -141,7 +141,7 @@ export const FilesNode: React.FC<{ id: string; data: any }> = ({ id, data }) => 
 
         {isWide && <section className="files-editor-pane">
           <div className="editor-tab"><FileCode2 className="icon" /><span>{selectedFile}</span><span>×</span></div>
-          <textarea className="editor-source nodrag" value={fileContent} spellCheck={false} onChange={(event) => setFileContent(event.target.value)} onBlur={() => {
+          <textarea className="editor-source nodrag nowheel" value={fileContent} spellCheck={false} onChange={(event) => setFileContent(event.target.value)} onBlur={() => {
             window.orchestra?.invoke?.('workspace.write_file', { path: selectedFilePath, content: fileContent }).catch(() => undefined)
           }} aria-label={`Editar ${selectedFile}`} />
           <footer>Ln 1, Col 1 <span>TypeScript</span></footer>

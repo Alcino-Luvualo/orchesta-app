@@ -1,11 +1,6 @@
 {
-  "sessionId": "term_1786092123083",
-  "terminalTitle": "Codex CLI",
+  "sessionId": "term_1786115982071",
+  "terminalTitle": "Antigravity CLI",
   "connectedNotes": [],
-  "connectedPeerAgents": [
-    {
-      "id": "term_1786090881031",
-      "title": "Antigravity CLI"
-    }
-  ]
+  "connectedPeerAgents": []
 }

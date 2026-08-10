@@ -8,17 +8,18 @@ description: Enables AI coding agents (Claude Code, Antigravity, Codex, OpenCode
 When running inside an Orchestra Desktop terminal node, your session is part of a spatial 2D canvas workspace. You may be connected via physical cables (ropes) to other nodes such as Markdown Notes, File Trees, Browser Portals, or Peer Agent Terminals.
 
 ## 1. Discovering Connected Nodes
-Orchestra exposes connection state via environment variables, `.orchestra/canvas_context.json`, `.orchestra/connected_notes.md`, and the Orchestra daemon Unix socket:
-- **Session ID**: `ORCHESTRA_SESSION_ID` or terminal node ID (e.g. `term_lead`, `term_178602...`)
-- **Unix Socket**: `/tmp/orchestra.sock` (or `$XDG_RUNTIME_DIR/orchestra/orchestra.sock`)
+Orchestra exposes connection state via environment variables, specifically `$ORCHESTRA_CONTEXT_DIR`, and the Orchestra daemon Unix socket:
+- **Session ID**: `ORCHESTRA_SESSION_ID` (e.g. `term_lead`, `term_178602...`)
+- **Context Directory**: `ORCHESTRA_CONTEXT_DIR` (Always read files from this directory to see YOUR specific connections).
+- **Unix Socket**: `/tmp/orchestra.sock`
 
-You can query the daemon over socket or inspect connected notes/files in `.orchestra/`:
-- **Connected Notes**: `.orchestra/connected_notes.md` (updates live whenever a note is edited on the canvas).
-- **Canvas Context**: `.orchestra/canvas_context.json` (contains all connected nodes, browser URLs, and peer agent IDs).
+You can inspect connected notes/files by reading the files in your `$ORCHESTRA_CONTEXT_DIR`:
+- **Connected Notes**: Read `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` (updates live whenever a note is edited on the canvas).
+- **Canvas Context**: Read `$ORCHESTRA_CONTEXT_DIR/context.json` (contains all connected nodes, browser URLs, and peer agent IDs).
 
 ## 2. Interacting with Connected Markdown Notes
 Sticky notes on the canvas are Markdown files readable and writable by agents:
-- **Reading a note**: Read `.orchestra/connected_notes.md` or note Markdown files directly to retrieve tasks, specifications, or reviewer feedback.
+- **Reading a note**: Read `$ORCHESTRA_CONTEXT_DIR/connected_notes.md` to retrieve tasks, specifications, or reviewer feedback.
 - **Updating a note**: When completing a task or milestone, update the connected Markdown file (e.g., mark `- [x] Task complete` or append progress logs). The canvas re-renders your edits live in real time!
 
 ## 3. Orchestrating Peer Terminals & Agents

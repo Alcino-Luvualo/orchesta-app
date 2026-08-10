@@ -2,18 +2,18 @@
 @import '@xterm/xterm/css/xterm.css';
 
 :root {
-  --bg: #0b0c0e;
-  --canvas: #0d0f12;
-  --panel: #141619;
-  --panel2: #191c20;
-  --active: #20242a;
-  --hover: #252a31;
-  --line: #2b3037;
-  --line2: #3a414a;
+  --bg: #15171b;
+  --canvas: #181a1f;
+  --panel: #1f2229;
+  --panel2: #252932;
+  --active: #2d323e;
+  --hover: #333946;
+  --line: #363d4b;
+  --line2: #464f62;
   --text: #f3f4f6;
-  --muted: #a9afb8;
-  --dim: #717985;
-  --off: #505761;
+  --muted: #9ea6b5;
+  --dim: #747d8c;
+  --off: #555d6b;
   --primary: #c8f169;
   --primary2: #d6fa82;
   --primary-muted: rgba(200, 241, 105, 0.14);
@@ -26,7 +26,7 @@
   --tooltip-bg: #f3f4f6;
   --tooltip-text: #15181b;
   --r: 10px;
-  --shadow: 0 16px 42px rgba(0, 0, 0, 0.3);
+  --shadow: 0 16px 42px rgba(0, 0, 0, 0.45);
   --ui: Inter, "IBM Plex Sans", system-ui, sans-serif;
   --mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
 }
@@ -80,8 +80,8 @@ button {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  border-bottom: 1px solid #202328;
-  background: #0d0e10;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
   padding: 0 10px;
   z-index: 30;
   -webkit-app-region: drag;
@@ -228,8 +228,8 @@ button {
 .sidebar {
   grid-row: 2;
   z-index: 20;
-  background: #0e1012;
-  border-right: 1px solid #202328;
+  background: var(--bg);
+  border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -301,8 +301,6 @@ main {
 
 #workspace {
   background-color: var(--canvas);
-  background-image: radial-gradient(circle, #333840 1px, transparent 1px);
-  background-size: 24px 24px;
   overflow: hidden;
   width: 100%;
   height: 100%;
@@ -359,10 +357,20 @@ main {
   transition: opacity .12s, border-color .12s;
 }
 
+.react-flow__node:hover .react-flow__handle.port,
 .react-flow__node.selected .react-flow__handle.port,
 .canvas-connecting .react-flow__handle.port {
-  opacity: 1;
+  opacity: 1 !important;
+  z-index: 100 !important;
 }
+
+
+.canvas-connecting webview,
+.canvas-connecting iframe,
+.canvas-connecting .chrome-content {
+  pointer-events: none !important;
+}
+
 
 .react-flow__resize-control.handle,
 .canvas-resize-handle {
@@ -380,32 +388,79 @@ main {
   z-index: 99 !important;
 }
 
-.rope-edge-shadow {
-  fill: none;
-  stroke: rgba(0, 0, 0, .24);
-  stroke-width: 4px;
-  stroke-linecap: round;
+.rope-edge-group path {
+  fill: none !important;
 }
 
-.rope-edge {
-  fill: none;
-  stroke: #89919b;
-  stroke-width: 2px;
+.wire, .wire.active {
+  fill: none !important;
+  stroke: #89919b !important;
+  opacity: 0.9;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-dasharray: 7 7;
-  filter: drop-shadow(0 2px 1px rgba(0,0,0,.22));
-  animation: rope-energy 4.8s linear infinite;
+  stroke-width: 2px !important;
+  stroke-dasharray: 7 7 !important;
+  pointer-events: none;
+  animation: none !important;
 }
 
-.rope-edge.selected {
-  stroke: var(--primary);
-  stroke-width: 2.4px;
-  animation-duration: 1.45s;
+.wire.active {
+  opacity: 1;
 }
 
-@keyframes rope-energy { to { stroke-dashoffset: -56; } }
-@media (prefers-reduced-motion: reduce) { .rope-edge { animation: none; } }
+.wire-hit, .wire.hit {
+  fill: none !important;
+  stroke: transparent !important;
+  stroke-width: 18px !important;
+  pointer-events: stroke !important;
+}
+
+.wire.selected {
+  stroke: var(--primary) !important;
+  stroke-width: 2.4px !important;
+  filter: drop-shadow(0 0 6px rgba(200, 241, 105, 0.7));
+}
+
+.rope-shadow {
+  fill: none !important;
+  stroke: rgba(0, 0, 0, 0.28) !important;
+  stroke-width: 3.4px !important;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: blur(0.8px);
+  pointer-events: none;
+}
+
+.rope-anchor {
+  fill: var(--panel) !important;
+  stroke: #89919b !important;
+  stroke-width: 2px !important;
+  pointer-events: none;
+}
+
+[data-theme="light"] .wire,
+[data-theme="light"] .wire.active {
+  stroke: #68717b !important;
+  opacity: 0.84;
+}
+
+[data-theme="light"] .rope-anchor {
+  stroke: #68717b !important;
+}
+
+[data-theme="light"] .rope-shadow {
+  stroke: rgba(30, 38, 46, 0.15) !important;
+}
+
+
+[data-theme="light"] .rope-anchor {
+  stroke: #68717b;
+}
+
+[data-theme="light"] .rope-shadow {
+  stroke: rgba(30, 38, 46, .12);
+}
+
 
 .rope-label {
   position: absolute;

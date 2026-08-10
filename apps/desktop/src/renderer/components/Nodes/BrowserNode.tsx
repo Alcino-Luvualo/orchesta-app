@@ -78,11 +78,11 @@ export const BrowserNode: React.FC<{ id: string; data: any }> = ({ id, data }) =
               <button>Continue</button>
             </div>
           ) : (
-            <iframe
+            <webview
               src={currentUrl}
-              className="chrome-iframe nodrag"
-              title="Browser Preview"
+              className="chrome-iframe nodrag nowheel"
               style={{ width: '100%', height: '100%', border: 0, background: '#fff' }}
+              allowpopups="true"
             />
           )}
         </div>

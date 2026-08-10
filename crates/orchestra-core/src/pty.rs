@@ -32,6 +32,7 @@ impl PtyManager {
         cwd: Option<String>,
         cols: u16,
         rows: u16,
+        env_vars: Option<HashMap<String, String>>,
     ) -> Result<broadcast::Receiver<Vec<u8>>> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
@@ -51,9 +52,25 @@ impl PtyManager {
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
+        
+        // Inject Orchestra environment variables
+        cmd.env("ORCHESTRA_SESSION_ID", &session_id);
+        cmd.env("ORCHESTRA", "1");
+
+        let working_dir = cwd.as_deref().unwrap_or("/home/alcinoo");
+        let context_dir = format!("{}/.orchestra/terminals/{}", working_dir, session_id);
+        cmd.env("ORCHESTRA_CONTEXT_DIR", &context_dir);
+
+        if let Some(vars) = env_vars {
+            for (key, val) in vars {
+                cmd.env(&key, &val);
+            }
+        }
+
         if let Some(dir) = cwd {
             cmd.cwd(dir);
         }
+
 
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);

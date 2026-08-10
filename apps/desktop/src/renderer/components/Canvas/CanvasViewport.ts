@@ -14,6 +14,7 @@ export function clamp(value: number, min: number, max: number) {
 
 export class CanvasViewportManager {
   public viewport: Viewport = { panX: 0, panY: 0, zoom: 1 };
+  public isLocked: boolean = false;
   private worldElement: HTMLElement | null = null;
   public workspaceElement: HTMLElement | null = null;
   private viewportFrame: number | null = null;
@@ -154,6 +155,8 @@ export class CanvasViewportManager {
   }
 
   public handleWheel = (event: WheelEvent) => {
+    if (this.isLocked) return;
+    
     // Check if the scroll should be consumed by an internal scrollable element
     if (this.shouldAllowNativeScroll(event.target as HTMLElement, event)) {
       return;
@@ -170,6 +173,10 @@ export class CanvasViewportManager {
   };
 
   private shouldAllowNativeScroll(target: HTMLElement, event: WheelEvent): boolean {
+    if (target.closest('.nowheel')) {
+      return true;
+    }
+    
     let el: HTMLElement | null = target;
     while (el && el !== this.workspaceElement) {
       const style = window.getComputedStyle(el);
