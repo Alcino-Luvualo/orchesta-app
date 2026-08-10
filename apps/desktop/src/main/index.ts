@@ -382,8 +382,25 @@ app.whenReady().then(() => {
       const allPeers: any[] = []
 
       for (const term of terminals) {
+        // Keep each terminal's context next to the PTY workspace selected for it.
+        // The Rust core uses the same resolution rules before it launches the shell.
+        const rawTerminalCwd = typeof term.cwd === 'string' && term.cwd.trim()
+          ? term.cwd.trim()
+          : projectDir
+        const expandedTerminalCwd = rawTerminalCwd === '~'
+          ? userHome
+          : rawTerminalCwd.startsWith('~/')
+            ? path.join(userHome, rawTerminalCwd.slice(2))
+            : rawTerminalCwd
+        let terminalProjectDir = path.resolve(expandedTerminalCwd)
+        try {
+          terminalProjectDir = fs.realpathSync(terminalProjectDir)
+        } catch {
+          // Keep the resolved path if it does not exist yet.
+        }
+
         // Per-terminal directory
-        const termDir = path.join(orchestraDir, 'terminals', term.sessionId)
+        const termDir = path.join(terminalProjectDir, '.orchestra', 'terminals', term.sessionId)
         if (!fs.existsSync(termDir)) {
           fs.mkdirSync(termDir, { recursive: true })
         }
