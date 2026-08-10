@@ -31,8 +31,10 @@ enum Commands {
         title: String,
         content: String,
     },
-    /// Status of orchestra core daemon
+    /// Status of Orchestra core daemon
     Status,
+    /// Verify the terminal-to-daemon bridge and report its capabilities
+    Doctor,
 }
 
 #[tokio::main]
@@ -62,7 +64,7 @@ async fn main() -> Result<()> {
             "note.append",
             json!({ "title": title, "content": content }),
         ),
-        Commands::Status => ("workspace.list", json!({})),
+        Commands::Status | Commands::Doctor => ("system.hello", json!({})),
     };
 
     let req = json!({
@@ -85,7 +87,27 @@ async fn main() -> Result<()> {
     stream.read_exact(&mut resp_buf).await?;
 
     let resp: Value = serde_json::from_slice(&resp_buf)?;
-    println!("{}", serde_json::to_string_pretty(&resp["result"]).unwrap_or_default());
+    if resp["ok"].as_bool() != Some(true) {
+        anyhow::bail!(
+            "Orchestra daemon rejected the request: {}",
+            resp["error"].as_str().unwrap_or("unknown error")
+        );
+    }
+
+    if matches!(cli.command, Commands::Doctor) {
+        let context_dir = std::env::var("ORCHESTRA_CONTEXT_DIR").ok();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "daemon": resp["result"],
+                "terminalSessionId": std::env::var("ORCHESTRA_SESSION_ID").ok(),
+                "contextDir": context_dir,
+                "contextDirExists": context_dir.as_ref().is_some_and(|dir| std::path::Path::new(dir).is_dir())
+            }))?
+        );
+    } else {
+        println!("{}", serde_json::to_string_pretty(&resp["result"]).unwrap_or_default());
+    }
 
     Ok(())
 }
