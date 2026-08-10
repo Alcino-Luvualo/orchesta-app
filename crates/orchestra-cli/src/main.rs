@@ -17,7 +17,9 @@ struct Cli {
 enum Commands {
     /// List registered agents and terminals
     Agents,
-    /// Send a prompt/message to an agent
+    /// Show only the nodes connected to this terminal
+    Connections,
+    /// Send a prompt/message to a connected agent
     Send {
         agent: String,
         message: String,
@@ -58,12 +60,28 @@ async fn main() -> Result<()> {
     let req_id = format!("cli_{}", uuid::Uuid::new_v4());
 
     let is_doctor = matches!(&cli.command, Commands::Doctor);
+    let session_id = std::env::var("ORCHESTRA_SESSION_ID").ok();
+    let token = std::env::var("ORCHESTRA_TOKEN").ok();
+    let terminal_auth = || -> Result<(String, String)> {
+        Ok((
+            session_id.clone().ok_or_else(|| anyhow::anyhow!("This command must run inside an Orchestra terminal"))?,
+            token.clone().ok_or_else(|| anyhow::anyhow!("Missing ORCHESTRA_TOKEN; restart the terminal from Orchestra"))?,
+        ))
+    };
+
     let (type_name, payload) = match cli.command {
-        Commands::Agents => ("roles.list", json!({})),
-        Commands::Send { agent, message } => (
-            "agent.message.send",
-            json!({ "agent": agent, "message": message }),
-        ),
+        Commands::Agents => ("agent.list", json!({})),
+        Commands::Connections => {
+            let (session_id, token) = terminal_auth()?;
+            ("connection.list", json!({ "sessionId": session_id, "token": token }))
+        }
+        Commands::Send { agent, message } => {
+            let (session_id, token) = terminal_auth()?;
+            (
+                "agent.message.send",
+                json!({ "sessionId": session_id, "token": token, "agent": agent, "message": message }),
+            )
+        },
         Commands::NoteRead { title } => ("note.read", json!({ "title": title })),
         Commands::NoteAppend { title, content } => (
             "note.append",
