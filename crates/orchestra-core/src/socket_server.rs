@@ -161,6 +161,40 @@ impl SocketServer {
                 }
                 Ok(json!(db.connected_nodes(session_id)?))
             }
+            "note.read" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let note_id = payload["noteId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing noteId"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                Ok(json!({ "id": note_id, "content": pty.read_note(session_id, note_id)? }))
+            }
+            "note.write" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let note_id = payload["noteId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing noteId"))?;
+                let content = payload["content"].as_str().ok_or_else(|| anyhow::anyhow!("Missing content"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                pty.write_note(session_id, note_id, content)?;
+                Ok(json!({ "success": true, "id": note_id }))
+            }
+            "note.append" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let note_id = payload["noteId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing noteId"))?;
+                let content = payload["content"].as_str().ok_or_else(|| anyhow::anyhow!("Missing content"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                let mut existing = pty.read_note(session_id, note_id)?;
+                existing.push_str(content);
+                pty.write_note(session_id, note_id, &existing)?;
+                Ok(json!({ "success": true, "id": note_id }))
+            }
+
             "agent.message.send" => {
                 let source = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing source sessionId"))?;
                 let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
