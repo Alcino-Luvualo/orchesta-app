@@ -323,10 +323,11 @@ app.whenReady().then(() => {
         protocolVersion: 1,
         requestId,
         type: 'terminal.input',
-        payload: { sessionId: toSessionId, data: `${message}\r` }
+        payload: { fromSessionId, sessionId: toSessionId, data: `${message}\r` }
       })
       const msgBuf = Buffer.from(msg, 'utf-8')
       const lenBuf = Buffer.alloc(4)
+      lenBuf.writeUInt32BE(msgBuf.length, 0)
       socketClient.write(Buffer.concat([lenBuf, msgBuf]))
       return { ok: true }
     }
@@ -341,9 +342,20 @@ app.whenReady().then(() => {
       const payloadCwd = cwd || (terminals.length > 0 ? terminals[0].cwd : null)
       let projectDir = userHome
       if (payloadCwd) {
-        projectDir = payloadCwd.startsWith('~/') ? path.join(userHome, payloadCwd.slice(2)) : payloadCwd
+        const expanded = payloadCwd === '~'
+          ? userHome
+          : payloadCwd.startsWith('~/')
+            ? path.join(userHome, payloadCwd.slice(2))
+            : payloadCwd
+        projectDir = path.resolve(expanded)
       } else {
         projectDir = process.cwd()
+      }
+
+      try {
+        projectDir = fs.realpathSync(projectDir)
+      } catch {
+        // The selected directory may be created by the terminal command itself.
       }
 
       const orchestraDir = path.join(projectDir, '.orchestra')
