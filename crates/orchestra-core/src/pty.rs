@@ -10,6 +10,7 @@ use tracing::{error, info};
 
 pub struct PtySession {
     pub id: String,
+    token: String,
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     pub output_tx: broadcast::Sender<Vec<u8>>,
@@ -75,8 +76,10 @@ impl PtyManager {
         cmd.env("TERM", "xterm-256color");
         
         // Inject Orchestra environment variables
+        let token = uuid::Uuid::new_v4().to_string();
         cmd.env("ORCHESTRA_SESSION_ID", &session_id);
         cmd.env("ORCHESTRA_TERMINAL_ID", &session_id);
+        cmd.env("ORCHESTRA_TOKEN", &token);
         cmd.env("ORCHESTRA", "1");
         let socket_path = std::env::var("XDG_RUNTIME_DIR")
             .map(|dir| format!("{}/orchestra/orchestra.sock", dir))
@@ -132,6 +135,7 @@ impl PtyManager {
 
         let session = PtySession {
             id: session_id.clone(),
+            token,
             writer: writer_arc,
             master: master_arc,
             output_tx: tx,
@@ -177,5 +181,20 @@ impl PtyManager {
     pub fn subscribe(&self, session_id: &str) -> Option<broadcast::Receiver<Vec<u8>>> {
         let lock = self.sessions.lock().unwrap();
         lock.get(session_id).map(|s| s.output_tx.subscribe())
+    }
+
+    pub fn list_sessions(&self) -> Vec<String> {
+        let lock = self.sessions.lock().unwrap();
+        lock.keys().cloned().collect()
+    }
+
+    pub fn authorizes(&self, session_id: &str, token: &str) -> bool {
+        let lock = self.sessions.lock().unwrap();
+        lock.get(session_id).is_some_and(|session| session.token == token)
+    }
+
+    pub fn send_prompt(&self, session_id: &str, prompt: &str) -> Result<()> {
+        let pasted = format!("\x1b[200~{}\x1b[201~\r", prompt);
+        self.write_input(session_id, pasted.as_bytes())
     }
 }
