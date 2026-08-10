@@ -167,6 +167,16 @@ export const CanvasArea: React.FC = () => {
   useEffect(() => {
     if (!(window as any).orchestra?.onEvent) return
     const cleanup = (window as any).orchestra.onEvent((event: any) => {
+      if (event?.type === 'orchestra:note-external-update' && event.payload?.id) {
+        const existingNode = storeNodes.find((node) => node.id === event.payload.id)
+        if (existingNode && existingNode.properties.content !== event.payload.content) {
+          updateNode(existingNode.id, {
+            properties: { ...existingNode.properties, content: event.payload.content }
+          })
+        }
+        return
+      }
+
       if (event?.type === 'orchestra:canvas-external-update' && event.payload?.terminals) {
         const terminals = event.payload.terminals
         terminals.forEach((term: any) => {
