@@ -24,9 +24,9 @@ fn resolve_working_dir(cwd: Option<&str>) -> Result<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let raw = cwd.unwrap_or(&home);
     let expanded = if raw == "~" {
-        PathBuf::from(home)
+        PathBuf::from(&home)
     } else if let Some(rest) = raw.strip_prefix("~/") {
-        PathBuf::from(home).join(rest)
+        PathBuf::from(&home).join(rest)
     } else {
         PathBuf::from(raw)
     };
