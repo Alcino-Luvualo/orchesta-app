@@ -12,6 +12,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
+const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
+
 pub struct SocketServer {
     db: Arc<Database>,
     pty: PtyManager,
@@ -61,6 +63,10 @@ impl SocketServer {
                 break; // Client disconnected
             }
             let len = u32::from_be_bytes(len_bytes) as usize;
+            if len == 0 || len > MAX_FRAME_SIZE {
+                error!("Invalid Orchestra IPC frame length: {}", len);
+                break;
+            }
             let mut buf = vec![0u8; len];
             if reader.read_exact(&mut buf).await.is_err() {
                 break;
@@ -126,6 +132,12 @@ impl SocketServer {
         writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
     ) -> Result<Value> {
         match msg_type {
+            "system.hello" => Ok(json!({
+                "protocolVersion": 1,
+                "daemonVersion": env!("CARGO_PKG_VERSION"),
+                "capabilities": ["terminal.spawn", "terminal.input", "terminal.resize", "terminal.kill"]
+            })),
+
             // Workspaces
             "workspace.list" => Ok(json!(db.get_workspaces()?)),
             "workspace.save" => {
