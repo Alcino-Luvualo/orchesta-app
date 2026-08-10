@@ -76,7 +76,12 @@ impl PtyManager {
         
         // Inject Orchestra environment variables
         cmd.env("ORCHESTRA_SESSION_ID", &session_id);
+        cmd.env("ORCHESTRA_TERMINAL_ID", &session_id);
         cmd.env("ORCHESTRA", "1");
+        let socket_path = std::env::var("XDG_RUNTIME_DIR")
+            .map(|dir| format!("{}/orchestra/orchestra.sock", dir))
+            .unwrap_or_else(|_| "/tmp/orchestra.sock".to_string());
+        cmd.env("ORCHESTRA_SOCKET", socket_path);
 
         let working_dir = resolve_working_dir(cwd.as_deref())?;
         let context_dir = working_dir.join(".orchestra").join("terminals").join(&session_id);
