@@ -328,7 +328,7 @@ export const CanvasArea: React.FC = () => {
           id: `e_${params.source}_${params.target}`,
           source: params.source,
           target: params.target,
-          label: 'connected'
+          label: 'connected', permissions: ['read', 'write', 'send_prompt', 'receive_response', 'control', 'share_context']
         }
         setEdges([...storeEdges, newEdge])
         setConnectMode(false)
@@ -382,7 +382,7 @@ export const CanvasArea: React.FC = () => {
       if (event.key !== 'Enter' || !connectMode || !connectionSourceId || !connectionHoverId || connectionHoverId === connectionSourceId) return
       event.preventDefault()
       const exists = storeEdges.some((edge) => edge.source === connectionSourceId && edge.target === connectionHoverId)
-      if (!exists) setEdges([...storeEdges, { id: `e_${connectionSourceId}_${connectionHoverId}`, source: connectionSourceId, target: connectionHoverId, label: 'connected' }])
+      if (!exists) setEdges([...storeEdges, { id: `e_${connectionSourceId}_${connectionHoverId}`, source: connectionSourceId, target: connectionHoverId, label: 'connected', permissions: ['read', 'write', 'send_prompt', 'receive_response', 'control', 'share_context'] }])
       setConnectMode(false); setConnectionSourceId(null); setConnectionPointer(null); setConnectionHoverId(null); setSelectedNodeId(connectionHoverId)
     }
     window.addEventListener('keydown', finishOnEnter)
@@ -646,7 +646,7 @@ export const CanvasArea: React.FC = () => {
         onNodeClick={(_, node) => {
           if (connectMode && connectionSourceId && connectionSourceId !== node.id) {
             const exists = storeEdges.some((edge) => edge.source === connectionSourceId && edge.target === node.id)
-            if (!exists) setEdges([...storeEdges, { id: `e_${connectionSourceId}_${node.id}`, source: connectionSourceId, target: node.id, label: 'connected' }])
+            if (!exists) setEdges([...storeEdges, { id: `e_${connectionSourceId}_${node.id}`, source: connectionSourceId, target: node.id, label: 'connected', permissions: ['read', 'write', 'send_prompt', 'receive_response', 'control', 'share_context'] }])
             setConnectMode(false); setConnectionSourceId(null); setConnectionPointer(null); setSelectedNodeId(node.id)
             return
           }
