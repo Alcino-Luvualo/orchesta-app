@@ -86,6 +86,16 @@ impl PtyManager {
             .map(|dir| format!("{}/orchestra/orchestra.sock", dir))
             .unwrap_or_else(|_| "/tmp/orchestra.sock".to_string());
         cmd.env("ORCHESTRA_SOCKET", socket_path);
+        if let Ok(core_path) = std::env::current_exe() {
+            if let Some(bin_dir) = core_path.parent() {
+                let cli_path = bin_dir.join("orchestra");
+                if cli_path.is_file() {
+                    cmd.env("ORCHESTRA_CLI", &cli_path);
+                    let inherited_path = std::env::var("PATH").unwrap_or_default();
+                    cmd.env("PATH", format!("{}:{}", bin_dir.display(), inherited_path));
+                }
+            }
+        }
 
         let working_dir = resolve_working_dir(cwd.as_deref())?;
         let context_dir = working_dir.join(".orchestra").join("terminals").join(&session_id);
