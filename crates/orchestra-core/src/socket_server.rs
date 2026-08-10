@@ -204,6 +204,97 @@ impl SocketServer {
                 Ok(json!({ "success": true, "id": note_id }))
             }
 
+            "agent.ask" => {
+                let source = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing source sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let target = payload["agent"].as_str().ok_or_else(|| anyhow::anyhow!("Missing target terminal"))?;
+                let message = payload["message"].as_str().ok_or_else(|| anyhow::anyhow!("Missing message"))?;
+                let wait = payload["wait"].as_bool().unwrap_or(false);
+                let timeout_secs = payload["timeoutSecs"].as_u64().unwrap_or(90).clamp(5, 600);
+
+                if !pty.authorizes(source, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                if !db.nodes_are_connected(source, target)? {
+                    return Err(anyhow::anyhow!("The terminal is not connected to that agent"));
+                }
+                if !db.has_connection_permission(source, target, "send_prompt")? {
+                    return Err(anyhow::anyhow!("The terminal connection does not grant send_prompt permission"));
+                }
+                if wait && !db.has_connection_permission(source, target, "receive_response")? {
+                    return Err(anyhow::anyhow!("The terminal connection does not grant receive_response permission"));
+                }
+                if !pty.list_sessions().iter().any(|id| id == target) {
+                    return Err(anyhow::anyhow!("Target terminal is not running"));
+                }
+
+                let request_id = format!("ask_{}", uuid::Uuid::new_v4());
+                let done_marker = format!("<ORCHESTRA_DONE:{}>", request_id);
+                let prompt = format!(
+                    "{}\n\nWhen you have completed this request, print {} on its own line.",
+                    message, done_marker
+                );
+                let mut output = if wait {
+                    Some(pty.subscribe(target).ok_or_else(|| anyhow::anyhow!("Could not subscribe to target terminal output"))?)
+                } else {
+                    None
+                };
+
+                pty.send_prompt(target, &prompt)?;
+
+                if let Some(receiver) = output.as_mut() {
+                    let deadline = tokio::time::Instant::now()
+                        + std::time::Duration::from_secs(timeout_secs);
+                    let mut response = String::new();
+
+                    loop {
+                        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                        if remaining.is_zero() {
+                            return Ok(json!({
+                                "requestId": request_id,
+                                "status": "timed_out",
+                                "response": response,
+                                "marker": done_marker
+                            }));
+                        }
+
+                        match tokio::time::timeout(remaining, receiver.recv()).await {
+                            Ok(Ok(bytes)) => {
+                                response.push_str(&String::from_utf8_lossy(&bytes));
+                                if response.len() > 1_000_000 {
+                                    return Err(anyhow::anyhow!("Agent response exceeded 1 MiB"));
+                                }
+                                if response.contains(&done_marker) {
+                                    return Ok(json!({
+                                        "requestId": request_id,
+                                        "status": "completed",
+                                        "response": response.replace(&done_marker, "").trim(),
+                                    }));
+                                }
+                            }
+                            Ok(Err(_)) => {
+                                return Err(anyhow::anyhow!("Target terminal output stream closed"));
+                            }
+                            Err(_) => {
+                                return Ok(json!({
+                                    "requestId": request_id,
+                                    "status": "timed_out",
+                                    "response": response,
+                                    "marker": done_marker
+                                }));
+                            }
+                        }
+                    }
+                }
+
+                Ok(json!({
+                    "requestId": request_id,
+                    "status": "delivered",
+                    "fromSessionId": source,
+                    "toSessionId": target
+                }))
+            }
+
             "agent.message.send" => {
                 let source = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing source sessionId"))?;
                 let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
