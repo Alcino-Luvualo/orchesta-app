@@ -229,6 +229,7 @@ impl SocketServer {
                 }
 
                 let request_id = format!("ask_{}", uuid::Uuid::new_v4());
+                db.record_agent_request(&request_id, source, target, "ask", "delivered", wait)?;
                 let done_marker = format!("<ORCHESTRA_DONE:{}>", request_id);
                 let prompt = format!(
                     "{}\n\nWhen you have completed this request, print {} on its own line.",
@@ -250,6 +251,7 @@ impl SocketServer {
                     loop {
                         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                         if remaining.is_zero() {
+                            db.record_agent_request(&request_id, source, target, "ask", "timed_out", wait)?;
                             return Ok(json!({
                                 "requestId": request_id,
                                 "status": "timed_out",
@@ -265,6 +267,7 @@ impl SocketServer {
                                     return Err(anyhow::anyhow!("Agent response exceeded 1 MiB"));
                                 }
                                 if response.contains(&done_marker) {
+                                    db.record_agent_request(&request_id, source, target, "ask", "completed", wait)?;
                                     let clean_response = response.replace(&done_marker, "").trim().to_string();
                                     return Ok(json!({
                                         "requestId": request_id,
@@ -277,6 +280,7 @@ impl SocketServer {
                                 return Err(anyhow::anyhow!("Target terminal output stream closed"));
                             }
                             Err(_) => {
+                                db.record_agent_request(&request_id, source, target, "ask", "timed_out", wait)?;
                                 return Ok(json!({
                                     "requestId": request_id,
                                     "status": "timed_out",
@@ -294,6 +298,16 @@ impl SocketServer {
                     "fromSessionId": source,
                     "toSessionId": target
                 }))
+            }
+
+            "agent.request-audit.list" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                let limit = payload["limit"].as_u64().unwrap_or(50).clamp(1, 250) as usize;
+                Ok(json!(db.list_agent_request_audit(limit)?))
             }
 
             "agent.message.send" => {
