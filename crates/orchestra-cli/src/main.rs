@@ -24,6 +24,15 @@ enum Commands {
         agent: String,
         message: String,
     },
+    /// Send a request and optionally wait for the target agent's explicit completion marker
+    Ask {
+        agent: String,
+        message: String,
+        #[arg(long)]
+        wait: bool,
+        #[arg(long, default_value_t = 90)]
+        timeout_secs: u64,
+    },
     /// Read a sticky note
     NoteRead {
         title: String,
@@ -85,6 +94,20 @@ async fn main() -> Result<()> {
             (
                 "agent.message.send",
                 json!({ "sessionId": session_id, "token": token, "agent": agent, "message": message }),
+            )
+        },
+        Commands::Ask { agent, message, wait, timeout_secs } => {
+            let (session_id, token) = terminal_auth()?;
+            (
+                "agent.ask",
+                json!({
+                    "sessionId": session_id,
+                    "token": token,
+                    "agent": agent,
+                    "message": message,
+                    "wait": wait,
+                    "timeoutSecs": timeout_secs
+                }),
             )
         },
         Commands::NoteRead { title } => {
