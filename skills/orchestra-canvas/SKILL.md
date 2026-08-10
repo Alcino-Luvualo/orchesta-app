@@ -40,9 +40,10 @@ Only target an active terminal returned by `orchestra agents` that is connected 
 
 ```bash
 orchestra send <terminal-id> "Review the authentication implementation and report findings."
+orchestra ask <terminal-id> "Review the authentication implementation and report findings." --wait --timeout-secs 90
 ```
 
-Orchestra delivers prompts with bracketed paste. Do not claim a response was received unless it appears in the originating terminal; asynchronous response capture is not available yet.
+`send` only delivers a prompt. `ask --wait` waits for the target terminal to print its unique completion marker, then returns captured output; it requires both `send_prompt` and `receive_response` on the connection. A timeout returns the output captured so far. This is not a cancellation or manual-takeover control.
 
 ## Boundaries
 
