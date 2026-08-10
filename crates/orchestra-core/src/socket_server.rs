@@ -138,6 +138,53 @@ impl SocketServer {
                 "capabilities": ["terminal.spawn", "terminal.input", "terminal.resize", "terminal.kill"]
             })),
 
+            "agent.list" => {
+                let sessions = pty.list_sessions();
+                let agents = sessions
+                    .into_iter()
+                    .map(|session_id| {
+                        let connections = db.connected_nodes(&session_id).unwrap_or_default();
+                        json!({
+                            "sessionId": session_id,
+                            "connections": connections,
+                            "status": "running"
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!(agents))
+            }
+            "connection.list" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                Ok(json!(db.connected_nodes(session_id)?))
+            }
+            "agent.message.send" => {
+                let source = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing source sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let target = payload["agent"].as_str().ok_or_else(|| anyhow::anyhow!("Missing target terminal"))?;
+                let message = payload["message"].as_str().ok_or_else(|| anyhow::anyhow!("Missing message"))?;
+
+                if !pty.authorizes(source, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                if !db.nodes_are_connected(source, target)? {
+                    return Err(anyhow::anyhow!("The terminal is not connected to that agent"));
+                }
+                if !pty.list_sessions().iter().any(|id| id == target) {
+                    return Err(anyhow::anyhow!("Target terminal is not running"));
+                }
+
+                pty.send_prompt(target, message)?;
+                Ok(json!({
+                    "delivered": true,
+                    "fromSessionId": source,
+                    "toSessionId": target
+                }))
+            }
+
             // Workspaces
             "workspace.list" => Ok(json!(db.get_workspaces()?)),
             "workspace.save" => {
