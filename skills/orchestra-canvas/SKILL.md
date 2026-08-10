@@ -43,7 +43,7 @@ orchestra send <terminal-id> "Review the authentication implementation and repor
 orchestra ask <terminal-id> "Review the authentication implementation and report findings." --wait --timeout-secs 90
 ```
 
-`send` only delivers a prompt. `ask --wait` waits for the target terminal to print its unique completion marker, then returns captured output; it requires both `send_prompt` and `receive_response` on the connection. A timeout returns the output captured so far. This is not a cancellation or manual-takeover control.
+`send` only delivers a prompt. `ask --wait` waits for the target terminal to print its unique completion marker, then returns captured output; it requires both `send_prompt` and `receive_response` on the connection. A timeout returns the output captured so far. Requests are recorded locally and can be inspected with `orchestra request-history`. This is not a cancellation or manual-takeover control.
 
 ## Boundaries
 
