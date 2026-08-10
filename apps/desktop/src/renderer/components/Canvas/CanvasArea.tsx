@@ -167,6 +167,16 @@ export const CanvasArea: React.FC = () => {
   useEffect(() => {
     if (!(window as any).orchestra?.onEvent) return
     const cleanup = (window as any).orchestra.onEvent((event: any) => {
+      if (event?.type === 'orchestra:note-external-update' && event.payload?.id) {
+        const existingNode = storeNodes.find((node) => node.id === event.payload.id)
+        if (existingNode && existingNode.properties.content !== event.payload.content) {
+          updateNode(existingNode.id, {
+            properties: { ...existingNode.properties, content: event.payload.content }
+          })
+        }
+        return
+      }
+
       if (event?.type === 'orchestra:canvas-external-update' && event.payload?.terminals) {
         const terminals = event.payload.terminals
         terminals.forEach((term: any) => {
@@ -318,7 +328,7 @@ export const CanvasArea: React.FC = () => {
           id: `e_${params.source}_${params.target}`,
           source: params.source,
           target: params.target,
-          label: 'connected'
+          label: 'connected', permissions: ['read', 'write', 'send_prompt', 'receive_response', 'control', 'share_context']
         }
         setEdges([...storeEdges, newEdge])
         setConnectMode(false)
@@ -372,7 +382,7 @@ export const CanvasArea: React.FC = () => {
       if (event.key !== 'Enter' || !connectMode || !connectionSourceId || !connectionHoverId || connectionHoverId === connectionSourceId) return
       event.preventDefault()
       const exists = storeEdges.some((edge) => edge.source === connectionSourceId && edge.target === connectionHoverId)
-      if (!exists) setEdges([...storeEdges, { id: `e_${connectionSourceId}_${connectionHoverId}`, source: connectionSourceId, target: connectionHoverId, label: 'connected' }])
+      if (!exists) setEdges([...storeEdges, { id: `e_${connectionSourceId}_${connectionHoverId}`, source: connectionSourceId, target: connectionHoverId, label: 'connected', permissions: ['read', 'write', 'send_prompt', 'receive_response', 'control', 'share_context'] }])
       setConnectMode(false); setConnectionSourceId(null); setConnectionPointer(null); setConnectionHoverId(null); setSelectedNodeId(connectionHoverId)
     }
     window.addEventListener('keydown', finishOnEnter)
@@ -582,6 +592,18 @@ export const CanvasArea: React.FC = () => {
   }
 
   const selectedNode = storeNodes.find((node) => node.id === selectedNodeId)
+  const connectionCapabilities = ['read', 'write', 'send_prompt', 'receive_response', 'control', 'share_context']
+  const toggleEdgePermission = (permission: string) => {
+    if (!selectedEdgeId) return
+    setEdges(storeEdges.map((edge) => {
+      if (edge.id !== selectedEdgeId) return edge
+      const current = edge.permissions || connectionCapabilities
+      const permissions = current.includes(permission)
+        ? current.filter((value) => value !== permission)
+        : [...current, permission]
+      return { ...edge, permissions }
+    }))
+  }
   const pendingRope = null
   const duplicateSelected = () => {
     if (!selectedNode) return
@@ -636,7 +658,7 @@ export const CanvasArea: React.FC = () => {
         onNodeClick={(_, node) => {
           if (connectMode && connectionSourceId && connectionSourceId !== node.id) {
             const exists = storeEdges.some((edge) => edge.source === connectionSourceId && edge.target === node.id)
-            if (!exists) setEdges([...storeEdges, { id: `e_${connectionSourceId}_${node.id}`, source: connectionSourceId, target: node.id, label: 'connected' }])
+            if (!exists) setEdges([...storeEdges, { id: `e_${connectionSourceId}_${node.id}`, source: connectionSourceId, target: node.id, label: 'connected', permissions: ['read', 'write', 'send_prompt', 'receive_response', 'control', 'share_context'] }])
             setConnectMode(false); setConnectionSourceId(null); setConnectionPointer(null); setSelectedNodeId(node.id)
             return
           }
@@ -715,6 +737,20 @@ export const CanvasArea: React.FC = () => {
         <div className="canvas-context-toolbar" aria-label={selectedEdgeId ? 'Ações da conexão' : `Ações para ${selectedNode?.kind}`}>
           {selectedEdgeId && <>
             <span className="connection-selection">Conexão selecionada</span>
+            {connectionCapabilities.map((permission) => {
+              const edge = storeEdges.find((item) => item.id === selectedEdgeId)
+              const enabled = (edge?.permissions || connectionCapabilities).includes(permission)
+              return (
+                <button
+                  key={permission}
+                  className={enabled ? 'active' : ''}
+                  onClick={() => toggleEdgePermission(permission)}
+                  title={enabled ? `Remover permissão: ${permission}` : `Permitir: ${permission}`}
+                >
+                  {permission}
+                </button>
+              )
+            })}
             <button className="danger" onClick={() => { deleteEdge(selectedEdgeId); setSelectedEdgeId(null) }} title="Desconectar"><Trash2 className="icon" /></button>
           </>}
           {selectedNode && <>

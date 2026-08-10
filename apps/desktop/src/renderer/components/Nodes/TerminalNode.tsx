@@ -106,7 +106,9 @@ export const TerminalNode: React.FC<{ id: string; data: any }> = ({ id, data }) 
       }
       window.orchestra.invoke('terminal.spawn', {
         sessionId: id,
-        cwd: cwd.startsWith('/') && !cwd.startsWith('/home/user/') ? cwd : undefined,
+        // The core canonicalizes absolute, relative and ~/ paths. Never drop a
+        // user-selected path here or the context can be created in another workspace.
+        cwd: typeof cwd === 'string' && cwd.trim() ? cwd.trim() : undefined,
         cols: 60,
         rows: 14,
         env

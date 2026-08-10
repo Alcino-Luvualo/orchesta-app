@@ -80,6 +80,13 @@ impl Database {
                 FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS connection_permissions (
+                edge_id TEXT PRIMARY KEY,
+                permissions_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(edge_id) REFERENCES canvas_edges(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS notes (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -148,6 +155,17 @@ impl Database {
                 message TEXT NOT NULL,
                 time TEXT NOT NULL,
                 unread INTEGER DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_request_audit (
+                id TEXT PRIMARY KEY,
+                source_session_id TEXT NOT NULL,
+                target_session_id TEXT NOT NULL,
+                request_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                waited INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
             );
             ",
         )?;
@@ -279,7 +297,13 @@ impl Database {
     // Canvas Edges
     pub fn get_canvas_edges(&self, workspace_id: &str) -> Result<Vec<serde_json::Value>> {
         let conn = self.get_conn()?;
-        let mut stmt = conn.prepare("SELECT id, source_id, source_port, target_id, target_port, label FROM canvas_edges WHERE workspace_id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.source_id, e.source_port, e.target_id, e.target_port, e.label,
+                    p.permissions_json
+             FROM canvas_edges e
+             LEFT JOIN connection_permissions p ON p.edge_id = e.id
+             WHERE e.workspace_id = ?1"
+        )?;
         let rows = stmt.query_map(params![workspace_id], |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, String>(0)?,
@@ -288,6 +312,9 @@ impl Database {
                 "target": row.get::<_, String>(3)?,
                 "targetPort": row.get::<_, Option<String>>(4)?,
                 "label": row.get::<_, Option<String>>(5)?,
+                "permissions": row.get::<_, Option<String>>(6)?
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                    .unwrap_or_else(|| serde_json::json!(["read", "write", "send_prompt", "receive_response", "control", "share_context"])),
             }))
         })?;
         let mut list = Vec::new();
@@ -318,13 +345,136 @@ impl Database {
              ON CONFLICT(id) DO UPDATE SET source_id=?3, source_port=?4, target_id=?5, target_port=?6, label=?7",
             params![id, workspace_id, source, source_port, target, target_port, label, now],
         )?;
+
+        let permissions = if edge["permissions"].is_array() {
+            serde_json::to_string(&edge["permissions"])?
+        } else {
+            serde_json::to_string(&serde_json::json!(["read", "write", "send_prompt", "receive_response", "control", "share_context"]))?
+        };
+        conn.execute(
+            "INSERT INTO connection_permissions (edge_id, permissions_json, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(edge_id) DO UPDATE SET permissions_json=?2, updated_at=?3",
+            params![id, permissions, now],
+        )?;
         Ok(())
     }
 
     pub fn delete_canvas_edge(&self, edge_id: &str) -> Result<()> {
         let conn = self.get_conn()?;
+        conn.execute("DELETE FROM connection_permissions WHERE edge_id = ?1", params![edge_id])?;
         conn.execute("DELETE FROM canvas_edges WHERE id = ?1", params![edge_id])?;
         Ok(())
+    }
+
+    pub fn nodes_are_connected(&self, first: &str, second: &str) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM canvas_edges
+             WHERE (source_id = ?1 AND target_id = ?2)
+                OR (source_id = ?2 AND target_id = ?1)",
+            params![first, second],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn has_connection_permission(&self, first: &str, second: &str, permission: &str) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT p.permissions_json
+             FROM canvas_edges e
+             LEFT JOIN connection_permissions p ON p.edge_id = e.id
+             WHERE (e.source_id = ?1 AND e.target_id = ?2)
+                OR (e.source_id = ?2 AND e.target_id = ?1)"
+        )?;
+        let rows = stmt.query_map(params![first, second], |row| row.get::<_, Option<String>>(0))?;
+        for row in rows {
+            match row? {
+                Some(raw) => {
+                    let values: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+                    if values.iter().any(|value| value == permission) {
+                        return Ok(true);
+                    }
+                }
+                None => return Ok(true),
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn connected_nodes(&self, node_id: &str) -> Result<Vec<serde_json::Value>> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.source_id, e.target_id, e.label, p.permissions_json
+             FROM canvas_edges e
+             LEFT JOIN connection_permissions p ON p.edge_id = e.id
+             WHERE e.source_id = ?1 OR e.target_id = ?1"
+        )?;
+        let rows = stmt.query_map(params![node_id], |row| {
+            let source: String = row.get(1)?;
+            let target: String = row.get(2)?;
+            let peer = if source == node_id { target } else { source };
+            let permissions = row.get::<_, Option<String>>(4)?
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .unwrap_or_else(|| serde_json::json!(["read", "write", "send_prompt", "receive_response", "control", "share_context"]));
+            Ok(serde_json::json!({
+                "edgeId": row.get::<_, String>(0)?,
+                "nodeId": peer,
+                "label": row.get::<_, Option<String>>(3)?,
+                "permissions": permissions,
+            }))
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
+    }
+
+    pub fn record_agent_request(
+        &self,
+        id: &str,
+        source_session_id: &str,
+        target_session_id: &str,
+        request_kind: &str,
+        status: &str,
+        waited: bool,
+    ) -> Result<()> {
+        let conn = self.get_conn()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO agent_request_audit (id, source_session_id, target_session_id, request_kind, status, waited, created_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CASE WHEN ?5 IN ('completed', 'timed_out', 'failed') THEN ?7 ELSE NULL END)
+             ON CONFLICT(id) DO UPDATE SET status=?5, completed_at=CASE WHEN ?5 IN ('completed', 'timed_out', 'failed') THEN ?7 ELSE completed_at END",
+            params![id, source_session_id, target_session_id, request_kind, status, if waited { 1 } else { 0 }, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_agent_request_audit(&self, limit: usize) -> Result<Vec<serde_json::Value>> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, source_session_id, target_session_id, request_kind, status, waited, created_at, completed_at
+             FROM agent_request_audit ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "sourceSessionId": row.get::<_, String>(1)?,
+                "targetSessionId": row.get::<_, String>(2)?,
+                "kind": row.get::<_, String>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "waited": row.get::<_, i64>(5)? == 1,
+                "createdAt": row.get::<_, String>(6)?,
+                "completedAt": row.get::<_, Option<String>>(7)?,
+            }))
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
     }
 
     // Roles

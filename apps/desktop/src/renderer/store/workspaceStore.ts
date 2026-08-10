@@ -17,6 +17,7 @@ export interface CanvasEdgeData {
   source: string
   target: string
   label?: string
+  permissions?: string[]
 }
 
 export interface Workspace {

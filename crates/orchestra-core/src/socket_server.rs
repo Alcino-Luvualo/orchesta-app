@@ -12,6 +12,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
+const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
+
 pub struct SocketServer {
     db: Arc<Database>,
     pty: PtyManager,
@@ -61,6 +63,10 @@ impl SocketServer {
                 break; // Client disconnected
             }
             let len = u32::from_be_bytes(len_bytes) as usize;
+            if len == 0 || len > MAX_FRAME_SIZE {
+                error!("Invalid Orchestra IPC frame length: {}", len);
+                break;
+            }
             let mut buf = vec![0u8; len];
             if reader.read_exact(&mut buf).await.is_err() {
                 break;
@@ -126,6 +132,211 @@ impl SocketServer {
         writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
     ) -> Result<Value> {
         match msg_type {
+            "system.hello" => Ok(json!({
+                "protocolVersion": 1,
+                "daemonVersion": env!("CARGO_PKG_VERSION"),
+                "capabilities": ["terminal.spawn", "terminal.input", "terminal.resize", "terminal.kill"]
+            })),
+
+            "agent.list" => {
+                let sessions = pty.list_sessions();
+                let agents = sessions
+                    .into_iter()
+                    .map(|session_id| {
+                        let connections = db.connected_nodes(&session_id).unwrap_or_default();
+                        json!({
+                            "sessionId": session_id,
+                            "connections": connections,
+                            "status": "running"
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!(agents))
+            }
+            "connection.list" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                Ok(json!(db.connected_nodes(session_id)?))
+            }
+            "note.read" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let note_id = payload["noteId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing noteId"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                if !db.has_connection_permission(session_id, note_id, "read")? {
+                    return Err(anyhow::anyhow!("The note connection does not grant read permission"));
+                }
+                Ok(json!({ "id": note_id, "content": pty.read_note(session_id, note_id)? }))
+            }
+            "note.write" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let note_id = payload["noteId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing noteId"))?;
+                let content = payload["content"].as_str().ok_or_else(|| anyhow::anyhow!("Missing content"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                if !db.has_connection_permission(session_id, note_id, "write")? {
+                    return Err(anyhow::anyhow!("The note connection does not grant write permission"));
+                }
+                pty.write_note(session_id, note_id, content)?;
+                Ok(json!({ "success": true, "id": note_id }))
+            }
+            "note.append" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let note_id = payload["noteId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing noteId"))?;
+                let content = payload["content"].as_str().ok_or_else(|| anyhow::anyhow!("Missing content"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                if !db.has_connection_permission(session_id, note_id, "write")? {
+                    return Err(anyhow::anyhow!("The note connection does not grant write permission"));
+                }
+                let mut existing = pty.read_note(session_id, note_id)?;
+                existing.push_str(content);
+                pty.write_note(session_id, note_id, &existing)?;
+                Ok(json!({ "success": true, "id": note_id }))
+            }
+
+            "agent.ask" => {
+                let source = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing source sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let target = payload["agent"].as_str().ok_or_else(|| anyhow::anyhow!("Missing target terminal"))?;
+                let message = payload["message"].as_str().ok_or_else(|| anyhow::anyhow!("Missing message"))?;
+                let wait = payload["wait"].as_bool().unwrap_or(false);
+                let timeout_secs = payload["timeoutSecs"].as_u64().unwrap_or(90).clamp(5, 600);
+
+                if !pty.authorizes(source, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                if !db.nodes_are_connected(source, target)? {
+                    return Err(anyhow::anyhow!("The terminal is not connected to that agent"));
+                }
+                if !db.has_connection_permission(source, target, "send_prompt")? {
+                    return Err(anyhow::anyhow!("The terminal connection does not grant send_prompt permission"));
+                }
+                if wait && !db.has_connection_permission(source, target, "receive_response")? {
+                    return Err(anyhow::anyhow!("The terminal connection does not grant receive_response permission"));
+                }
+                if !pty.list_sessions().iter().any(|id| id == target) {
+                    return Err(anyhow::anyhow!("Target terminal is not running"));
+                }
+
+                let request_id = format!("ask_{}", uuid::Uuid::new_v4());
+                db.record_agent_request(&request_id, source, target, "ask", "delivered", wait)?;
+                let done_marker = format!("<ORCHESTRA_DONE:{}>", request_id);
+                let prompt = format!(
+                    "{}\n\nWhen you have completed this request, print {} on its own line.",
+                    message, done_marker
+                );
+                let mut output = if wait {
+                    Some(pty.subscribe(target).ok_or_else(|| anyhow::anyhow!("Could not subscribe to target terminal output"))?)
+                } else {
+                    None
+                };
+
+                pty.send_prompt(target, &prompt)?;
+
+                if let Some(receiver) = output.as_mut() {
+                    let deadline = tokio::time::Instant::now()
+                        + std::time::Duration::from_secs(timeout_secs);
+                    let mut response = String::new();
+
+                    loop {
+                        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                        if remaining.is_zero() {
+                            db.record_agent_request(&request_id, source, target, "ask", "timed_out", wait)?;
+                            return Ok(json!({
+                                "requestId": request_id,
+                                "status": "timed_out",
+                                "response": response,
+                                "marker": done_marker
+                            }));
+                        }
+
+                        match tokio::time::timeout(remaining, receiver.recv()).await {
+                            Ok(Ok(bytes)) => {
+                                response.push_str(&String::from_utf8_lossy(&bytes));
+                                if response.len() > 1_000_000 {
+                                    return Err(anyhow::anyhow!("Agent response exceeded 1 MiB"));
+                                }
+                                if response.contains(&done_marker) {
+                                    db.record_agent_request(&request_id, source, target, "ask", "completed", wait)?;
+                                    let clean_response = response.replace(&done_marker, "").trim().to_string();
+                                    return Ok(json!({
+                                        "requestId": request_id,
+                                        "status": "completed",
+                                        "response": clean_response,
+                                    }));
+                                }
+                            }
+                            Ok(Err(_)) => {
+                                return Err(anyhow::anyhow!("Target terminal output stream closed"));
+                            }
+                            Err(_) => {
+                                db.record_agent_request(&request_id, source, target, "ask", "timed_out", wait)?;
+                                return Ok(json!({
+                                    "requestId": request_id,
+                                    "status": "timed_out",
+                                    "response": response,
+                                    "marker": done_marker
+                                }));
+                            }
+                        }
+                    }
+                }
+
+                Ok(json!({
+                    "requestId": request_id,
+                    "status": "delivered",
+                    "fromSessionId": source,
+                    "toSessionId": target
+                }))
+            }
+
+            "agent.request-audit.list" => {
+                let session_id = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                if !pty.authorizes(session_id, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                let limit = payload["limit"].as_u64().unwrap_or(50).clamp(1, 250) as usize;
+                Ok(json!(db.list_agent_request_audit(limit)?))
+            }
+
+            "agent.message.send" => {
+                let source = payload["sessionId"].as_str().ok_or_else(|| anyhow::anyhow!("Missing source sessionId"))?;
+                let token = payload["token"].as_str().ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+                let target = payload["agent"].as_str().ok_or_else(|| anyhow::anyhow!("Missing target terminal"))?;
+                let message = payload["message"].as_str().ok_or_else(|| anyhow::anyhow!("Missing message"))?;
+
+                if !pty.authorizes(source, token) {
+                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
+                }
+                if !db.nodes_are_connected(source, target)? {
+                    return Err(anyhow::anyhow!("The terminal is not connected to that agent"));
+                }
+                if !db.has_connection_permission(source, target, "send_prompt")? {
+                    return Err(anyhow::anyhow!("The terminal connection does not grant send_prompt permission"));
+                }
+                if !pty.list_sessions().iter().any(|id| id == target) {
+                    return Err(anyhow::anyhow!("Target terminal is not running"));
+                }
+
+                pty.send_prompt(target, message)?;
+                Ok(json!({
+                    "delivered": true,
+                    "fromSessionId": source,
+                    "toSessionId": target
+                }))
+            }
+
             // Workspaces
             "workspace.list" => Ok(json!(db.get_workspaces()?)),
             "workspace.save" => {
