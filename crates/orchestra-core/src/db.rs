@@ -156,6 +156,17 @@ impl Database {
                 time TEXT NOT NULL,
                 unread INTEGER DEFAULT 1
             );
+
+            CREATE TABLE IF NOT EXISTS agent_request_audit (
+                id TEXT PRIMARY KEY,
+                source_session_id TEXT NOT NULL,
+                target_session_id TEXT NOT NULL,
+                request_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                waited INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            );
             ",
         )?;
 
@@ -412,6 +423,51 @@ impl Database {
                 "nodeId": peer,
                 "label": row.get::<_, Option<String>>(3)?,
                 "permissions": permissions,
+            }))
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
+    }
+
+    pub fn record_agent_request(
+        &self,
+        id: &str,
+        source_session_id: &str,
+        target_session_id: &str,
+        request_kind: &str,
+        status: &str,
+        waited: bool,
+    ) -> Result<()> {
+        let conn = self.get_conn()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO agent_request_audit (id, source_session_id, target_session_id, request_kind, status, waited, created_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CASE WHEN ?5 IN ('completed', 'timed_out', 'failed') THEN ?7 ELSE NULL END)
+             ON CONFLICT(id) DO UPDATE SET status=?5, completed_at=CASE WHEN ?5 IN ('completed', 'timed_out', 'failed') THEN ?7 ELSE completed_at END",
+            params![id, source_session_id, target_session_id, request_kind, status, if waited { 1 } else { 0 }, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_agent_request_audit(&self, limit: usize) -> Result<Vec<serde_json::Value>> {
+        let conn = self.get_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, source_session_id, target_session_id, request_kind, status, waited, created_at, completed_at
+             FROM agent_request_audit ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "sourceSessionId": row.get::<_, String>(1)?,
+                "targetSessionId": row.get::<_, String>(2)?,
+                "kind": row.get::<_, String>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "waited": row.get::<_, i64>(5)? == 1,
+                "createdAt": row.get::<_, String>(6)?,
+                "completedAt": row.get::<_, Option<String>>(7)?,
             }))
         })?;
         let mut items = Vec::new();
