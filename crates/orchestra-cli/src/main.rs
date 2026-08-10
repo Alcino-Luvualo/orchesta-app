@@ -41,8 +41,12 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let socket_path = std::env::var("XDG_RUNTIME_DIR")
-        .map(|r| PathBuf::from(r).join("orchestra").join("orchestra.sock"))
+    let socket_path = std::env::var("ORCHESTRA_SOCKET")
+        .map(PathBuf::from)
+        .or_else(|_| {
+            std::env::var("XDG_RUNTIME_DIR")
+                .map(|r| PathBuf::from(r).join("orchestra").join("orchestra.sock"))
+        })
         .unwrap_or_else(|_| PathBuf::from("/tmp/orchestra.sock"));
 
     if !socket_path.exists() {
