@@ -3,11 +3,12 @@ import { useWorkspaceStore } from '../../store/workspaceStore'
 import { Plus, Folder } from 'lucide-react'
 
 export const HomeScreen: React.FC = () => {
-  const { workspaces, setActiveWorkspace, setScreen, createWorkspace } = useWorkspaceStore()
-  const createNewWorkspace = () => {
-    const name = window.prompt('Nome do novo workspace')
-    if (name === null) return
-    createWorkspace(name)
+  const { workspaces, setActiveWorkspace, createWorkspace } = useWorkspaceStore()
+  const createNewWorkspace = async () => {
+    const path = await window.orchestra?.chooseWorkspace?.()
+    if (!path) return
+    const name = path.split('/').filter(Boolean).pop() || 'Workspace'
+    createWorkspace(name, path)
   }
 
   return (
@@ -26,13 +27,13 @@ export const HomeScreen: React.FC = () => {
         <div>
           <div className="section-title">Workspaces Recentes</div>
           <div className="recent">
+            {workspaces.length === 0 && <div className="empty-state">Ainda não existem workspaces guardados.</div>}
             {workspaces.map((ws) => (
               <div
                 key={ws.id}
                 className="workspace-card"
                 onClick={() => {
                   setActiveWorkspace(ws)
-                  setScreen('canvas')
                 }}
               >
                 <div className="workspace-icon">
@@ -47,37 +48,13 @@ export const HomeScreen: React.FC = () => {
             ))}
           </div>
 
-          <div className="section-title" style={{ marginTop: 28 }}>Começar com um template</div>
-          <div className="templates">
-            <div className="template" style={{ cursor: 'pointer' }} onClick={() => setScreen('canvas')}>
-              <b style={{ color: 'var(--primary)', display: 'block', marginBottom: 4 }}>Feature development</b>
-              <p>Terminal Lead + Frontend + Files + Browser Portal local.</p>
-            </div>
-            <div className="template" style={{ cursor: 'pointer' }} onClick={() => setScreen('canvas')}>
-              <b style={{ color: 'var(--info)', display: 'block', marginBottom: 4 }}>Code review</b>
-              <p>Terminal Reviewer + Sticky Notes + Git Diff visualizer.</p>
-            </div>
-          </div>
+          <div className="section-title" style={{ marginTop: 28 }}>Dica</div>
+          <div className="template"><p>Escolhe um diretório real para começar. O canvas e as sessões são guardados por workspace.</p></div>
         </div>
 
         <aside>
           <div className="section-title">Atividade Recente dos Agentes</div>
-          <div className="activity">
-            <div className="activity-row">
-              <i />
-              <div>
-                <b>Claude Code</b>
-                <span>Finalizou refatoração do módulo auth</span>
-              </div>
-            </div>
-            <div className="activity-row">
-              <i />
-              <div>
-                <b>Code Reviewer</b>
-                <span>Aprovou 3 commits na branch main</span>
-              </div>
-            </div>
-          </div>
+          <div className="activity"><div className="empty-state">A atividade aparece quando existirem sessões e pedidos reais.</div></div>
         </aside>
       </div>
     </div>
