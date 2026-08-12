@@ -1,21 +1,50 @@
 import { create } from 'zustand'
 
+export type NodeKind = 'terminal' | 'note' | 'files' | 'browser' | 'text' | 'shape'
+
+export interface NodeProperties {
+  [key: string]: unknown
+  title?: string
+  content?: string
+  path?: string
+  url?: string
+  cwd?: string
+  agent?: string
+  status?: string
+  command?: string
+  portalId?: string
+  text?: string
+  drawing?: boolean
+  points?: Array<{ x: number; y: number }>
+  name?: string
+}
+
+export interface CanvasComponentData {
+  properties: NodeProperties
+  width?: number
+  height?: number
+  selected?: boolean
+}
+
 export interface CanvasNodeData {
   id: string
-  kind: 'terminal' | 'note' | 'files' | 'browser' | 'device' | 'text' | 'shape'
+  kind: NodeKind
   x: number
   y: number
   width: number
   height: number
   zIndex?: number
   locked?: boolean
-  properties: Record<string, any>
+  collapsed?: boolean
+  properties: NodeProperties
 }
 
 export interface CanvasEdgeData {
   id: string
   source: string
   target: string
+  sourcePort?: string
+  targetPort?: string
   label?: string
   permissions?: string[]
 }
@@ -25,18 +54,34 @@ export interface Workspace {
   name: string
   path: string
   activeFloorId?: string
+  createdAt?: string
+  updatedAt?: string
 }
 
 export interface Floor {
   id: string
+  workspaceId?: string
   name: string
   branch: string
   path: string
   isLanding?: boolean
 }
 
+export interface ViewportState {
+  x: number
+  y: number
+  zoom: number
+}
+
+interface CanvasSnapshot {
+  nodes: CanvasNodeData[]
+  edges: CanvasEdgeData[]
+}
+
+type Screen = 'canvas' | 'home' | 'environments'
+
 interface WorkspaceState {
-  currentScreen: 'canvas' | 'home' | 'environments' | 'settings'
+  currentScreen: Screen
   theme: 'dark' | 'light'
   activeWorkspace: Workspace | null
   workspaces: Workspace[]
@@ -44,21 +89,25 @@ interface WorkspaceState {
   activeFloor: Floor | null
   nodes: CanvasNodeData[]
   edges: CanvasEdgeData[]
+  viewports: Record<string, ViewportState>
+  history: CanvasSnapshot[]
+  future: CanvasSnapshot[]
   selectedNodeId: string | null
   pendingTerminalRect: { x: number; y: number; width: number; height: number } | null
-  isInspectorOpen: boolean
+  pendingFilesRect: { x: number; y: number; width: number; height: number } | null
   isCommandPaletteOpen: boolean
   isRecruitModalOpen: boolean
+  isFilesModalOpen: boolean
   isFloorModalOpen: boolean
+  daemonError: string | null
 
-  // Actions
-  setScreen: (screen: 'canvas' | 'home' | 'environments' | 'settings') => void
+  setScreen: (screen: Screen) => void
   toggleTheme: () => void
-  setActiveWorkspace: (ws: Workspace) => void
-  setWorkspaces: (ws: Workspace[]) => void
-  createWorkspace: (name?: string) => Workspace
+  setActiveWorkspace: (workspace: Workspace | null) => void
+  setWorkspaces: (workspaces: Workspace[]) => void
+  createWorkspace: (name?: string, path?: string) => Workspace | null
   setFloors: (floors: Floor[]) => void
-  setActiveFloor: (floor: Floor) => void
+  setActiveFloor: (floor: Floor | null) => void
   setNodes: (nodes: CanvasNodeData[]) => void
   addNode: (node: CanvasNodeData) => void
   updateNode: (id: string, partial: Partial<CanvasNodeData>) => void
@@ -66,170 +115,155 @@ interface WorkspaceState {
   setEdges: (edges: CanvasEdgeData[]) => void
   addEdge: (edge: CanvasEdgeData) => void
   deleteEdge: (id: string) => void
+  setViewport: (key: string, viewport: ViewportState) => void
+  commitHistory: () => void
+  undo: () => void
+  redo: () => void
   setSelectedNodeId: (id: string | null) => void
   setPendingTerminalRect: (rect: { x: number; y: number; width: number; height: number } | null) => void
-  toggleInspector: () => void
+  setPendingFilesRect: (rect: { x: number; y: number; width: number; height: number } | null) => void
   setCommandPaletteOpen: (open: boolean) => void
   setRecruitModalOpen: (open: boolean) => void
+  setFilesModalOpen: (open: boolean) => void
   setFloorModalOpen: (open: boolean) => void
+  setDaemonError: (error: string | null) => void
+}
+
+const initialNodePosition = (nodes: CanvasNodeData[], node: CanvasNodeData) => {
+  let x = Math.round(node.x)
+  let y = Math.round(node.y)
+  const collides = (left: number, top: number) => nodes.some((other) => !(
+    left + node.width + 14 <= other.x ||
+    left >= other.x + other.width + 14 ||
+    top + node.height + 14 <= other.y ||
+    top >= other.y + other.height + 14
+  ))
+  if (!collides(x, y)) return { x, y }
+  for (let radius = 16; radius <= 480; radius += 16) {
+    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 8) {
+      const candidateX = Math.round(node.x + Math.cos(angle) * radius)
+      const candidateY = Math.round(node.y + Math.sin(angle) * radius)
+      if (!collides(candidateX, candidateY)) return { x: candidateX, y: candidateY }
+    }
+  }
+  return { x, y }
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
-  currentScreen: 'canvas',
+  currentScreen: 'home',
   theme: 'dark',
-  activeWorkspace: { id: 'ws_commerce', name: 'commerce-app', path: '/home/user/dev/commerce' },
-  workspaces: [
-    { id: 'ws_commerce', name: 'commerce-app', path: '/home/user/dev/commerce' },
-    { id: 'ws_orchestra', name: 'orchestra-core', path: '/home/user/dev/orchestra' }
-  ],
-  floors: [
-    { id: 'fl_main', name: 'Main Ground', branch: 'main', path: '/home/user/dev/commerce', isLanding: true },
-    { id: 'fl_auth', name: 'Auth Refactor', branch: 'feature/authentication', path: '/home/user/dev/commerce/.floors/auth' }
-  ],
-  activeFloor: { id: 'fl_main', name: 'Main Ground', branch: 'main', path: '/home/user/dev/commerce', isLanding: true },
-  nodes: [
-    {
-      id: 'term_lead',
-      kind: 'terminal',
-      x: 60,
-      y: 70,
-      width: 420,
-      height: 250,
-      properties: {
-        title: 'Claude Code',
-        agent: 'Claude Code',
-        role: '',
-        roleColor: '#c8f169',
-        cwd: '~/dev/commerce',
-        status: 'running'
-      }
-    },
-    {
-      id: 'note_tasks',
-      kind: 'note',
-      x: 520,
-      y: 70,
-      width: 280,
-      height: 230,
-      properties: {
-        title: 'Especificação Auth',
-        content: '# Tarefas de Autenticação\n\n- [x] Criar schema OAuth2\n- [ ] Implementar JWT refresh token\n- [ ] Testar rotas com Playwright\n\n> Agentes conectados têm permissão de leitura neste documento.'
-      }
-    },
-    {
-      id: 'files_tree',
-      kind: 'files',
-      x: 850,
-      y: 65,
-      width: 380,
-      height: 300,
-      properties: {
-        title: 'Estrutura do Projeto',
-        path: '/home/user/dev/commerce'
-      }
-    },
-    {
-      id: 'browser_portal',
-      kind: 'browser',
-      x: 770,
-      y: 410,
-      width: 360,
-      height: 260,
-      properties: {
-        title: 'Localhost Preview',
-        url: 'http://localhost:3000'
-      }
-    }
-  ],
-  edges: [
-    { id: 'e1', source: 'term_lead', target: 'note_tasks', label: 'context' },
-    { id: 'e2', source: 'term_lead', target: 'files_tree', label: 'workspace' }
-  ],
+  activeWorkspace: null,
+  workspaces: [],
+  floors: [],
+  activeFloor: null,
+  nodes: [],
+  edges: [],
+  viewports: {},
+  history: [],
+  future: [],
   selectedNodeId: null,
-  isInspectorOpen: false,
+  pendingTerminalRect: null,
+  pendingFilesRect: null,
   isCommandPaletteOpen: false,
   isRecruitModalOpen: false,
+  isFilesModalOpen: false,
   isFloorModalOpen: false,
+  daemonError: null,
 
-  setScreen: (screen) => set({ currentScreen: screen }),
+  setScreen: (currentScreen) => set({ currentScreen }),
   toggleTheme: () => {
     const next = get().theme === 'dark' ? 'light' : 'dark'
     document.documentElement.setAttribute('data-theme', next)
     set({ theme: next })
   },
-  setActiveWorkspace: (ws) => set({ activeWorkspace: ws }),
-  setWorkspaces: (ws) => set({ workspaces: ws }),
-  createWorkspace: (name) => {
-    const index = get().workspaces.length + 1
+  setActiveWorkspace: (activeWorkspace) => set({ activeWorkspace, currentScreen: activeWorkspace ? 'canvas' : 'home', selectedNodeId: null, history: [], future: [] }),
+  setWorkspaces: (workspaces) => set({ workspaces }),
+  createWorkspace: (name, workspacePath) => {
+    const path = workspacePath?.trim()
+    if (!path) return null
     const workspace: Workspace = {
-      id: `ws_${Date.now()}`,
-      name: name?.trim() || `Workspace ${index}`,
-      path: `/home/user/dev/workspace-${index}`
+      id: `ws_${crypto.randomUUID()}`,
+      name: name?.trim() || path.split('/').filter(Boolean).pop() || 'Workspace',
+      path
     }
-    set((state) => ({ workspaces: [...state.workspaces, workspace], activeWorkspace: workspace, currentScreen: 'canvas', nodes: [], edges: [], selectedNodeId: null }))
+    set((state) => ({
+      workspaces: [...state.workspaces.filter((item) => item.id !== workspace.id), workspace],
+      activeWorkspace: workspace,
+      activeFloor: null,
+      floors: [],
+      nodes: [],
+      edges: [],
+      selectedNodeId: null,
+      currentScreen: 'canvas'
+    }))
+    window.orchestra?.invoke('workspace.save', { ...workspace }).catch(() => undefined)
     return workspace
   },
   setFloors: (floors) => set({ floors }),
-  setActiveFloor: (floor) => set({ activeFloor: floor }),
+  setActiveFloor: (activeFloor) => set({ activeFloor, history: [], future: [] }),
   setNodes: (nodes) => set({ nodes }),
-  addNode: (node) =>
-    set((state) => {
-      let targetX = Math.round(node.x)
-      let targetY = Math.round(node.y)
-
-      const rectsTouch = (
-        r1: { x: number; y: number; width: number; height: number },
-        r2: { x: number; y: number; width: number; height: number },
-        gap = 14
-      ) => {
-        return !(
-          r1.x + r1.width + gap <= r2.x ||
-          r1.x >= r2.x + r2.width + gap ||
-          r1.y + r1.height + gap <= r2.y ||
-          r1.y >= r2.y + r2.height + gap
-        )
-      }
-
-      const candidate = { ...node, x: targetX, y: targetY }
-      let hasOverlap = state.nodes.some((other) => rectsTouch(candidate, other))
-
-      if (hasOverlap) {
-        for (let radius = 12; radius <= 480; radius += 12) {
-          for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 8) {
-            const nx = Math.round(node.x + Math.cos(angle) * radius)
-            const ny = Math.round(node.y + Math.sin(angle) * radius)
-            const testCand = { ...node, x: nx, y: ny }
-            if (!state.nodes.some((other) => rectsTouch(testCand, other))) {
-              targetX = nx
-              targetY = ny
-              hasOverlap = false
-              break
-            }
-          }
-          if (!hasOverlap) break
-        }
-      }
-
-      return { nodes: [...state.nodes, { ...node, x: targetX, y: targetY }] }
-    }),
-  updateNode: (id, partial) =>
+  addNode: (node) => set((state) => ({
+    history: [...state.history, { nodes: state.nodes, edges: state.edges }].slice(-100),
+    future: [],
+    nodes: [...state.nodes, { ...node, ...initialNodePosition(state.nodes, node) }]
+  })),
+  updateNode: (id, partial) => set((state) => ({
+    nodes: state.nodes.map((node) => node.id !== id
+      ? node
+      : { ...node, ...partial, properties: { ...node.properties, ...(partial.properties || {}) } })
+  })),
+  deleteNode: (id) => {
+    const node = get().nodes.find((item) => item.id === id)
+    if (node?.kind === 'terminal') window.orchestra?.invoke('terminal.kill', { sessionId: id }).catch(() => undefined)
     set((state) => ({
-      nodes: state.nodes.map((n) => (n.id === id ? { ...n, ...partial, properties: { ...n.properties, ...partial.properties } } : n))
-    })),
-  deleteNode: (id) =>
-    set((state) => ({
-      nodes: state.nodes.filter((n) => n.id !== id),
-      edges: state.edges.filter((e) => e.source !== id && e.target !== id),
+      history: [...state.history, { nodes: state.nodes, edges: state.edges }].slice(-100),
+      future: [],
+      nodes: state.nodes.filter((nodeItem) => nodeItem.id !== id),
+      edges: state.edges.filter((edge) => edge.source !== id && edge.target !== id),
       selectedNodeId: state.selectedNodeId === id ? null : state.selectedNodeId
-    })),
+    }))
+  },
   setEdges: (edges) => set({ edges }),
-  addEdge: (edge) => set((state) => ({ edges: [...state.edges, edge] })),
-  deleteEdge: (id) => set((state) => ({ edges: state.edges.filter((e) => e.id !== id) })),
-  pendingTerminalRect: null,
-  setPendingTerminalRect: (rect) => set({ pendingTerminalRect: rect }),
-  setSelectedNodeId: (id) => set({ selectedNodeId: id, isInspectorOpen: id !== null }),
-  toggleInspector: () => set((state) => ({ isInspectorOpen: !state.isInspectorOpen })),
-  setCommandPaletteOpen: (open) => set({ isCommandPaletteOpen: open }),
-  setRecruitModalOpen: (open) => set({ isRecruitModalOpen: open }),
-  setFloorModalOpen: (open) => set({ isFloorModalOpen: open })
+  addEdge: (edge) => set((state) => state.edges.some((item) => item.id === edge.id)
+    ? state
+    : { history: [...state.history, { nodes: state.nodes, edges: state.edges }].slice(-100), future: [], edges: [...state.edges, edge] }),
+  deleteEdge: (id) => set((state) => ({
+    history: [...state.history, { nodes: state.nodes, edges: state.edges }].slice(-100),
+    future: [],
+    edges: state.edges.filter((edge) => edge.id !== id)
+  })),
+  setViewport: (key, viewport) => set((state) => ({ viewports: { ...state.viewports, [key]: viewport } })),
+  commitHistory: () => set((state) => {
+    const last = state.history[state.history.length - 1]
+    if (last && JSON.stringify(last.nodes) === JSON.stringify(state.nodes) && JSON.stringify(last.edges) === JSON.stringify(state.edges)) return state
+    return { history: [...state.history, { nodes: state.nodes, edges: state.edges }].slice(-100), future: [] }
+  }),
+  undo: () => set((state) => {
+    const previous = state.history[state.history.length - 1]
+    if (!previous) return state
+    return {
+      nodes: previous.nodes,
+      edges: previous.edges,
+      history: state.history.slice(0, -1),
+      future: [{ nodes: state.nodes, edges: state.edges }, ...state.future].slice(0, 100)
+    }
+  }),
+  redo: () => set((state) => {
+    const next = state.future[0]
+    if (!next) return state
+    return {
+      nodes: next.nodes,
+      edges: next.edges,
+      history: [...state.history, { nodes: state.nodes, edges: state.edges }].slice(-100),
+      future: state.future.slice(1)
+    }
+  }),
+  setSelectedNodeId: (selectedNodeId) => set({ selectedNodeId }),
+  setPendingTerminalRect: (pendingTerminalRect) => set({ pendingTerminalRect }),
+  setPendingFilesRect: (pendingFilesRect) => set({ pendingFilesRect }),
+  setCommandPaletteOpen: (isCommandPaletteOpen) => set({ isCommandPaletteOpen }),
+  setRecruitModalOpen: (isRecruitModalOpen) => set({ isRecruitModalOpen }),
+  setFilesModalOpen: (isFilesModalOpen) => set({ isFilesModalOpen }),
+  setFloorModalOpen: (isFloorModalOpen) => set({ isFloorModalOpen }),
+  setDaemonError: (daemonError) => set({ daemonError })
 }))
