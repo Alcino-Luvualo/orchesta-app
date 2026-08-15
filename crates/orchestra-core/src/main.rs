@@ -8,8 +8,11 @@ use tracing::info;
 
 mod db;
 mod git;
+mod protocol;
 mod pty;
+mod shell_integration;
 mod socket_server;
+mod terminal_session;
 mod workspace;
 
 #[tokio::main]
@@ -26,13 +29,18 @@ async fn main() -> Result<()> {
     let db_path = db_dir.join("orchestra.db");
     let database = Arc::new(Database::new(&db_path)?);
     let pty_manager = PtyManager::new();
+    let terminal_sessions = terminal_session::TerminalSessionRegistry::new();
 
     // Compute socket path under XDG runtime dir or fallback
-    let socket_path = std::env::var("XDG_RUNTIME_DIR")
-        .map(|r| PathBuf::from(r).join("orchestra").join("orchestra.sock"))
+    let socket_path = std::env::var("ORCHESTRA_SOCKET")
+        .map(PathBuf::from)
+        .or_else(|_| {
+            std::env::var("XDG_RUNTIME_DIR")
+                .map(|r| PathBuf::from(r).join("orchestra").join("orchestra.sock"))
+        })
         .unwrap_or_else(|_| PathBuf::from("/tmp/orchestra.sock"));
 
-    let server = SocketServer::new(database, pty_manager);
+    let server = SocketServer::new(database, pty_manager, terminal_sessions);
     server.start(socket_path).await?;
 
     Ok(())
