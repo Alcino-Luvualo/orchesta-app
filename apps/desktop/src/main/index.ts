@@ -2122,7 +2122,6 @@ app.whenReady().then(() => {
     if (safe.fullyInside && safe.bounds.width > 1 && safe.bounds.height > 1) record.lastVisibleBounds = safe.bounds
     record.zoomFactor = 1
     record.view.setBounds(safe.bounds)
-    try { record.view.webContents.setZoomFactor(1) } catch { /* teardown race */ }
     // A native child is not clipped by the DOM. It must be fully inside the
     // content viewport before it is made visible.
     record.visible = safe.fullyInside
@@ -2143,7 +2142,6 @@ app.whenReady().then(() => {
     if (Boolean(visible) && safe.fullyInside && safe.bounds.width > 1 && safe.bounds.height > 1) record.lastVisibleBounds = safe.bounds
     record.zoomFactor = 1
     record.view.setBounds(safe.bounds)
-    try { record.view.webContents.setZoomFactor(1) } catch { /* teardown race */ }
     const shouldShow = Boolean(visible) && safe.fullyInside
     record.visible = shouldShow
     record.frozen = !shouldShow
