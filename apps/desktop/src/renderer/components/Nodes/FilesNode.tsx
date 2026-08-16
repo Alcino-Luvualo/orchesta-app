@@ -106,13 +106,12 @@ function relativeWorkspacePath(root: string, value: string) {
 }
 
 /**
- * Canvas nodes can outlive a workspace (or a worktree can be removed while
- * Orchestra is closed). Never let that stale path become the `workspaceRoot`
- * sent to the core: with a workspace id the core intentionally rejects a
- * mismatching root, and an absolute cwd outside the root must stay rejected
- * by the security boundary. The renderer falls back to the registered root
- * so a stale File Tree remains usable instead of producing a startup error
- * loop. The original value is surfaced as a small, non-blocking notice.
+ * A File Tree may intentionally target a directory outside the active
+ * workspace. Keep that path separate from the registered workspace root:
+ * workspace-scoped requests keep their workspace id, while an explicitly
+ * selected external root is sent as a standalone read/write root. This keeps
+ * the core sandbox intact for workspace requests without rejecting a valid
+ * directory chosen in the File Tree modal.
  */
 function resolveProjectPath(workspaceRoot: string, requested: string): { path: string; outside: boolean } {
   const root = normalizeUnixPath(workspaceRoot)
@@ -235,14 +234,19 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const configuredProjectPath = String(props.path || props.cwd || activeFloor?.path || workspaceRoot || '')
   const resolvedProject = resolveProjectPath(workspaceRoot, configuredProjectPath)
   const projectPath = resolvedProject.path
-  const projectPathOutsideWorkspace = resolvedProject.outside
   const workspaceId = activeWorkspace?.id
+  const externalRoot = resolvedProject.outside ? projectPath : ''
+  const fileRoot = externalRoot || workspaceRoot
+  const fileWorkspaceId = externalRoot ? undefined : workspaceId
   const isWide = (data.width || 440) >= 580
-  // `workspaceRoot` is always the registered workspace root. `projectPath`
-  // is only the subtree displayed by this node and is passed as a relative
-  // request path below. This keeps subtree File Trees sandboxed while still
-  // allowing a node created for a child directory to open correctly.
-  const payloadBase = useMemo(() => ({ workspaceId: workspaceId || '', workspaceRoot }), [workspaceRoot, workspaceId])
+  // `fileRoot` is the actual root used by this node. For an external File
+  // Tree it equals `projectPath`, so all descendants remain inside the folder
+  // explicitly chosen by the user instead of being compared with another
+  // workspace's root.
+  const payloadBase = useMemo(() => ({
+    ...(fileWorkspaceId ? { workspaceId: fileWorkspaceId } : {}),
+    workspaceRoot: fileRoot,
+  }), [fileRoot, fileWorkspaceId])
 
   const setFeedback = useCallback((next: Notice) => {
     setNotice(next)
@@ -250,16 +254,16 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   }, [])
 
   const loadData = useCallback(async () => {
-    if (!workspaceId || !projectPath || !window.orchestra?.invoke) {
+    if (!fileRoot || !projectPath || !window.orchestra?.invoke) {
       setLoading(false)
-      setError('Selecione um workspace real para abrir os ficheiros.')
+      setError('Escolhe um diretório válido para abrir os ficheiros.')
       return
     }
     setLoading(true)
-    setError(projectPathOutsideWorkspace
-      ? 'A pasta guardada deste File Tree já não pertence ao workspace atual; foi aberta a partir da raiz.'
-      : null)
-    const base = { ...payloadBase, path: relativeWorkspacePath(workspaceRoot, projectPath) }
+    // A directory selected outside the active workspace is sent as its own
+    // sandbox root. Only actual filesystem/request failures become errors.
+    setError(null)
+    const base = { ...payloadBase, path: relativeWorkspacePath(fileRoot, projectPath) }
     const requests = await Promise.allSettled([
       invoke<FileTreeItem>('workspace.tree', { ...base, depth: 1 }),
       invoke<GitStatus>('git.status', base),
@@ -289,7 +293,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     if (stashResult.status === 'fulfilled') setStashes(Array.isArray(stashResult.value?.stashes) ? stashResult.value.stashes : [])
     if (worktreeResult.status === 'fulfilled') setWorktrees(Array.isArray(worktreeResult.value?.worktrees) ? worktreeResult.value.worktrees : [])
     setLoading(false)
-  }, [payloadBase, projectPath, projectPathOutsideWorkspace, workspaceId, workspaceRoot])
+  }, [fileRoot, payloadBase, projectPath])
 
   useEffect(() => { void loadData() }, [loadData])
 
@@ -394,7 +398,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   }, [changedFiles, selectedGitPath])
 
   const selectFile = useCallback(async (entry: FileTreeItem | { path: string; name: string; is_dir: false }) => {
-    if (entry.is_dir || !workspaceId) return
+    if (entry.is_dir || !fileRoot) return
     const resolved = joinWorkspacePath(projectPath, entry.path)
     setFileError(null)
     setSaveState('saved')
@@ -402,7 +406,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     setSelectedFolderPath('')
     setTreeFocusPath(resolved)
     try {
-      const result = await invoke<{ content?: string }>('workspace.read_file', { ...payloadBase, path: relativeWorkspacePath(workspaceRoot, resolved) })
+      const result = await invoke<{ content?: string }>('workspace.read_file', { ...payloadBase, path: relativeWorkspacePath(fileRoot, resolved) })
       const content = result?.content ?? ''
       setFileContent(content)
       lastDiskContentRef.current = content
@@ -416,13 +420,13 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     } finally {
       setLoadingFile(false)
     }
-  }, [payloadBase, projectPath, workspaceId, workspaceRoot])
+  }, [fileRoot, payloadBase, projectPath])
 
   const loadFolder = useCallback(async (entry: FileTreeItem, force = false) => {
     if (!entry.is_dir || (!force && loadedPaths.has(entry.path)) || loadingPaths.has(entry.path)) return
     setLoadingPaths((current) => new Set(current).add(entry.path))
     try {
-      const result = await invoke<FileTreeItem>('workspace.tree', { ...payloadBase, path: relativeWorkspacePath(workspaceRoot, entry.path), depth: 1 })
+      const result = await invoke<FileTreeItem>('workspace.tree', { ...payloadBase, path: relativeWorkspacePath(fileRoot, entry.path), depth: 1 })
       if (result?.is_dir) {
         setTree((current) => current ? mergeTreeNode(current, result) : current)
         setLoadedPaths((current) => new Set(current).add(entry.path))
@@ -432,7 +436,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     } finally {
       setLoadingPaths((current) => { const next = new Set(current); next.delete(entry.path); return next })
     }
-  }, [loadedPaths, loadingPaths, payloadBase, projectPath, setFeedback, workspaceRoot])
+  }, [fileRoot, loadedPaths, loadingPaths, payloadBase, projectPath, setFeedback])
 
   const focusTreeRow = useCallback((index: number) => {
     const row = visibleEntries[index]
@@ -521,7 +525,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   }, [projectPath, selectFile, workspaceId])
 
   const saveFile = useCallback(async () => {
-    if (!dirty || !selectedFilePath || !workspaceId) return
+    if (!dirty || !selectedFilePath || !fileRoot) return
     setSaveState('saving')
     const apiPath = relativeWorkspacePath(projectPath, selectedFilePath)
     try {
@@ -541,7 +545,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       setSaveState('error')
       setFileError(errorMessage(reason, 'Não foi possível guardar o ficheiro.'))
     }
-  }, [dirty, fileContent, loadData, payloadBase, projectPath, selectedFilePath, setFeedback, workspaceId])
+  }, [dirty, fileContent, fileRoot, loadData, payloadBase, projectPath, selectedFilePath, setFeedback])
 
   saveFileRef.current = saveFile
 
@@ -578,7 +582,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   }, [fileContent, pendingLocation, selectedFilePath])
 
   useEffect(() => {
-    if (!selectedFilePath || !workspaceId || dirty) return
+    if (!selectedFilePath || !fileRoot || dirty) return
     const timer = window.setInterval(() => {
       invoke<{ content?: string }>('workspace.read_file', { ...payloadBase, path: relativeWorkspacePath(projectPath, selectedFilePath) })
         .then((result) => {
@@ -590,20 +594,20 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
         }).catch(() => undefined)
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [dirty, payloadBase, projectPath, selectedFilePath, workspaceId])
+  }, [dirty, fileRoot, payloadBase, projectPath, selectedFilePath])
 
   useEffect(() => {
-    if (!selectedFilePath || !workspaceId || !projectPath) { setDiagnostics([]); return }
+    if (!selectedFilePath || !fileRoot || !projectPath) { setDiagnostics([]); return }
     const timer = window.setTimeout(() => {
       invoke<{ diagnostics?: Diagnostic[] }>('workspace.diagnostics', { ...payloadBase, path: '.', file: relativeWorkspacePath(projectPath, selectedFilePath) })
         .then((result) => setDiagnostics(Array.isArray(result?.diagnostics) ? result.diagnostics : []))
         .catch(() => setDiagnostics([]))
     }, 450)
     return () => window.clearTimeout(timer)
-  }, [payloadBase, projectPath, selectedFilePath, workspaceId])
+  }, [fileRoot, payloadBase, projectPath, selectedFilePath])
 
   useEffect(() => {
-    if (viewMode !== 'diff' || !selectedGitPath || !workspaceId || !projectPath) return
+    if (viewMode !== 'diff' || !selectedGitPath || !fileRoot || !projectPath) return
     let active = true
     setDiffText({ working: '', staged: '' })
     Promise.allSettled([
@@ -617,21 +621,21 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       })
     })
     return () => { active = false }
-  }, [payloadBase, projectPath, selectedGitPath, viewMode, workspaceId])
+  }, [fileRoot, payloadBase, projectPath, selectedGitPath, viewMode])
 
   useEffect(() => {
     const query = searchQuery.trim()
-    if (!query || !workspaceId || !projectPath) { setContentResults([]); return }
+    if (!query || !fileRoot || !projectPath) { setContentResults([]); return }
     const timer = window.setTimeout(() => {
       invoke<{ results?: ContentResult[] }>('workspace.search', { ...payloadBase, path: '.', query, content: true })
         .then((result) => setContentResults(Array.isArray(result?.results) ? result.results : []))
         .catch(() => setContentResults([]))
     }, 220)
     return () => window.clearTimeout(timer)
-  }, [payloadBase, projectPath, searchQuery, workspaceId])
+  }, [fileRoot, payloadBase, projectPath, searchQuery])
 
   const runGitAction = useCallback(async (label: string, type: string, payload: Record<string, unknown> = {}, refresh = true) => {
-    if (!workspaceId || gitBusy) return
+    if (!fileRoot || gitBusy) return
     setGitBusy(type); setError(null)
     try {
       await invoke(type, { ...payloadBase, path: '.', ...payload })
@@ -641,7 +645,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       const message = errorMessage(reason, `${label} falhou.`)
       setError(message); setFeedback({ kind: 'error', message })
     } finally { setGitBusy(null) }
-  }, [gitBusy, loadData, payloadBase, setFeedback, workspaceId])
+  }, [fileRoot, gitBusy, loadData, payloadBase, setFeedback])
 
   const requestConfirmation = useCallback((title: string, message: string, action: () => Promise<void>) => setConfirmState({ title, message, action }), [])
 
@@ -652,40 +656,40 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const stageAll = useCallback(async () => {
     const pending = changedFiles.filter((file) => gitStatusFlags(file.status).unstaged)
     if (!pending.length) { setFeedback({ kind: 'info', message: 'Não há alterações unstaged.' }); return }
-    if (!workspaceId || gitBusy) return
+    if (!fileRoot || gitBusy) return
     setGitBusy('git.stage-all')
     try {
       for (const file of pending) await invoke('git.stage', { ...payloadBase, path: '.', file: file.path })
       setFeedback({ kind: 'success', message: `${pending.length} ficheiro(s) staged.` }); await loadData()
     } catch (reason) { const message = errorMessage(reason, 'Não foi possível stagear tudo.'); setError(message); setFeedback({ kind: 'error', message }) }
     finally { setGitBusy(null) }
-  }, [changedFiles, gitBusy, loadData, payloadBase, setFeedback, workspaceId])
+  }, [changedFiles, fileRoot, gitBusy, loadData, payloadBase, setFeedback])
 
   const unstageAll = useCallback(async () => {
     const staged = changedFiles.filter((file) => gitStatusFlags(file.status).staged)
     if (!staged.length) { setFeedback({ kind: 'info', message: 'Não há ficheiros staged.' }); return }
-    if (!workspaceId || gitBusy) return
+    if (!fileRoot || gitBusy) return
     setGitBusy('git.unstage-all')
     try {
       for (const file of staged) await invoke('git.unstage', { ...payloadBase, path: '.', file: file.path })
       setFeedback({ kind: 'success', message: `${staged.length} ficheiro(s) unstaged.` }); await loadData()
     } catch (reason) { const message = errorMessage(reason, 'Não foi possível remover o stage.'); setError(message); setFeedback({ kind: 'error', message }) }
     finally { setGitBusy(null) }
-  }, [changedFiles, gitBusy, loadData, payloadBase, setFeedback, workspaceId])
+  }, [changedFiles, fileRoot, gitBusy, loadData, payloadBase, setFeedback])
 
   const commitStaged = useCallback(async (stageFirst = false) => {
-    if (!commitMessage.trim() || !workspaceId || gitBusy) return
+    if (!commitMessage.trim() || !fileRoot || gitBusy) return
     if (stageFirst) await stageAll()
     if (!stageFirst && !changedFiles.some((file) => gitStatusFlags(file.status).staged)) {
       setFeedback({ kind: 'info', message: 'Stage pelo menos um ficheiro antes de fazer commit.' }); return
     }
     await runGitAction('Commit', 'git.commit', { message: commitMessage.trim() })
     setCommitMessage('')
-  }, [changedFiles, commitMessage, gitBusy, runGitAction, setFeedback, stageAll, workspaceId])
+  }, [changedFiles, commitMessage, fileRoot, gitBusy, runGitAction, setFeedback, stageAll])
 
   const createEntry = useCallback(async (directory: boolean) => {
     const name = newEntryName.trim()
-    if (!name || !workspaceId) return
+    if (!name || !fileRoot) return
     if (name === '.' || name === '..' || /[\\/]/.test(name)) { setFeedback({ kind: 'error', message: 'Usa apenas um nome de ficheiro ou pasta.' }); return }
     const parent = selectedFolderPath || (selectedFilePath ? selectedFilePath.slice(0, selectedFilePath.lastIndexOf('/')) || projectPath : projectPath)
     const path = relativeWorkspacePath(projectPath, `${parent.replace(/\/$/, '')}/${name}`)
@@ -693,23 +697,23 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       await invoke(directory ? 'workspace.create_directory' : 'workspace.create_file', { ...payloadBase, path })
       setNewEntryName(''); setExpandedPaths((current) => new Set(current).add(parent)); setFeedback({ kind: 'success', message: `${name} criado.` }); await loadData()
     } catch (reason) { const message = errorMessage(reason, 'Não foi possível criar a entrada.'); setError(message); setFeedback({ kind: 'error', message }) }
-  }, [loadData, newEntryName, payloadBase, projectPath, selectedFilePath, selectedFolderPath, setFeedback, workspaceId])
+  }, [fileRoot, loadData, newEntryName, payloadBase, projectPath, selectedFilePath, selectedFolderPath, setFeedback])
 
   const removeSelected = useCallback(() => {
     const target = selectedFilePath || selectedFolderPath
-    if (!target || target === projectPath || !workspaceId) return
+    if (!target || target === projectPath || !fileRoot) return
     requestConfirmation('Eliminar entrada', `Eliminar permanentemente “${fileName(target)}”? Esta ação não pode ser desfeita.`, async () => {
       try {
         await invoke('workspace.delete', { ...payloadBase, path: relativeWorkspacePath(projectPath, target) })
         setSelectedFile(''); setSelectedFilePath(''); setSelectedFolderPath(''); setTreeFocusPath(''); setFileContent(''); setFeedback({ kind: 'success', message: `${fileName(target)} eliminado.` }); await loadData()
       } catch (reason) { const message = errorMessage(reason, 'Não foi possível eliminar a entrada.'); setError(message); setFeedback({ kind: 'error', message }) }
     })
-  }, [loadData, payloadBase, projectPath, requestConfirmation, selectedFilePath, selectedFolderPath, setFeedback, workspaceId])
+  }, [fileRoot, loadData, payloadBase, projectPath, requestConfirmation, selectedFilePath, selectedFolderPath, setFeedback])
 
   const renameSelected = useCallback(async () => {
     const nextName = newEntryName.trim()
     const target = selectedFilePath || selectedFolderPath
-    if (!nextName || !target || target === projectPath || !workspaceId) return
+    if (!nextName || !target || target === projectPath || !fileRoot) return
     if (nextName === '.' || nextName === '..' || /[\\/]/.test(nextName)) { setFeedback({ kind: 'error', message: 'Usa apenas um nome de entrada.' }); return }
     const separator = target.lastIndexOf('/')
     const nextPath = `${separator > 0 ? target.slice(0, separator) : projectPath}/${nextName}`
@@ -717,7 +721,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       await invoke('workspace.rename', { ...payloadBase, path: relativeWorkspacePath(projectPath, target), targetPath: relativeWorkspacePath(projectPath, nextPath) })
       setNewEntryName(''); setSelectedFile(''); setSelectedFilePath(''); setSelectedFolderPath(''); setFeedback({ kind: 'success', message: `${fileName(target)} renomeado.` }); await loadData()
     } catch (reason) { const message = errorMessage(reason, 'Não foi possível renomear a entrada.'); setError(message); setFeedback({ kind: 'error', message }) }
-  }, [loadData, newEntryName, payloadBase, projectPath, selectedFilePath, selectedFolderPath, setFeedback, workspaceId])
+  }, [fileRoot, loadData, newEntryName, payloadBase, projectPath, selectedFilePath, selectedFolderPath, setFeedback])
 
   const selectGitFile = useCallback((file: GitFile) => {
     setSelectedGitPath(file.path)
@@ -726,13 +730,13 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
 
   const runBlame = useCallback(async () => {
     const target = selectedFilePath ? relativeWorkspacePath(projectPath, selectedFilePath) : selectedGitPath
-    if (!target || !workspaceId) return
+    if (!target || !fileRoot) return
     try {
       const result = await invoke<{ lines?: BlameLine[] }>('git.blame', { ...payloadBase, path: '.', file: target })
       setBlameLines(Array.isArray(result?.lines) ? result.lines : [])
       setFeedback({ kind: 'info', message: `Blame carregado para ${fileName(target)}.` })
     } catch (reason) { setFeedback({ kind: 'error', message: errorMessage(reason, 'Blame não disponível para este ficheiro.') }) }
-  }, [payloadBase, projectPath, selectedFilePath, selectedGitPath, setFeedback, workspaceId])
+  }, [fileRoot, payloadBase, projectPath, selectedFilePath, selectedGitPath, setFeedback])
 
   const deleteBranch = useCallback((branch: Branch) => requestConfirmation('Eliminar branch', `Eliminar a branch “${branch.name}”?`, () => runGitAction('Branch eliminada', 'git.branch.delete', { name: branch.name, force: false, confirm: true })), [requestConfirmation, runGitAction])
   const deleteTag = useCallback((ref: GitRef) => requestConfirmation('Eliminar tag', `Eliminar a tag “${ref.name}”?`, () => runGitAction('Tag eliminada', 'git.tag.delete', { name: ref.name, confirm: true })), [requestConfirmation, runGitAction])
