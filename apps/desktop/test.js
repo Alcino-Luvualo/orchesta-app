@@ -61,7 +61,7 @@ const authChecks = [
   ['portal motion requests reject stale generations', /acceptedGeneration !== record\.motionGeneration/],
   ['native portals are suppressed while renderer surfaces are modal', /nativePortalSuppressionReasons[\s\S]*?applyPortalVisibility/],
   ['hidden portal screenshots have an offscreen compositor fallback', /function capturePortalOffscreen\([\s\S]*?offscreen: true/],
-  ['canvas scale is not applied as browser page zoom', /record\.view\.webContents\.setZoomFactor\(1\)/],
+  ['canvas scale is not applied as browser page zoom', /existing\.view\.webContents\.setZoomFactor\(1\)/],
   ['portal bounds track same-generation revisions', /boundsRevision/],
   ['portal bounds reject stale revisions', /revision < record\.boundsRevision/],
   ['portal handlers accept bounds revisions', /acceptedRevision/],
@@ -209,7 +209,7 @@ if (!filesNodeSource.includes('useModalA11y') || !filesNodeSource.includes('ref=
 const canvasSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CanvasArea.tsx'), 'utf8')
 const browserSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/BrowserNode.tsx'), 'utf8')
 if (!browserSource.includes('propsRef.current') || !browserSource.includes('url: payload.url')) throw new Error('Browser navigation does not preserve current node properties')
-if (!browserSource.includes('resumeResult') || !browserSource.includes('response.stale === true')) throw new Error('Portal resume race can reveal stale bounds')
+if (!browserSource.includes('Keep the native view following the transformed node') || !browserSource.includes('lastBoundsKeyRef.current = \'\'')) throw new Error('Browser portal motion must keep live native bounds instead of flashing a placeholder')
 if (!canvasSource.includes("selectedNode.kind === 'browser' ? { portalId: duplicateId }")) throw new Error('Browser duplication can still share a native portal')
 if (!canvasSource.includes("target.closest('.react-flow__node, .nowheel, .canvas-toolbar, .canvas-context-toolbar, .zoom')")) throw new Error('Board wheel handler can hijack node/editor surfaces')
 if (!canvasSource.includes('activeFloor?.id || persistedFloorId') || !canvasSource.includes('focusSnapshotRef.current = null')) throw new Error('Focus mode is not cleaned up at a floor boundary')
