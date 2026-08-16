@@ -56,6 +56,7 @@ export const CanvasArea: React.FC = () => {
   const [connectionPointer, setConnectionPointer] = useState<{ x: number; y: number } | null>(null)
   const [connectionHoverId, setConnectionHoverId] = useState<string | null>(null)
   const [focusSnapshot, setFocusSnapshot] = useState<CanvasNodeData | null>(null)
+  const focusViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   // The cursor is the single navigation mode: dragging empty canvas pans,
   // while dragging a node belongs to that node.
@@ -644,11 +645,14 @@ export const CanvasArea: React.FC = () => {
 
   const restoreFocus = useCallback(() => {
     if (!focusSnapshot) return
+    const previousViewport = focusViewportRef.current
+    focusViewportRef.current = null
     setNodes(storeNodes.map((node) => node.id === focusSnapshot.id
       ? { ...node, x: focusSnapshot.x, y: focusSnapshot.y, width: focusSnapshot.width, height: focusSnapshot.height, zIndex: focusSnapshot.zIndex, locked: focusSnapshot.locked, collapsed: focusSnapshot.collapsed }
       : node))
     focusSnapshotRef.current = null
     setFocusSnapshot(null)
+    if (previousViewport && flowRef.current) void flowRef.current.setViewport(previousViewport)
   }, [focusSnapshot, setNodes, storeNodes])
 
   const toggleFocus = useCallback((nodeId: string) => {
@@ -663,24 +667,20 @@ export const CanvasArea: React.FC = () => {
     const canvasBounds = workspaceRef.current?.getBoundingClientRect()
     const canvasWidth = Math.max(1, canvasBounds?.width || window.innerWidth)
     const canvasHeight = Math.max(1, canvasBounds?.height || window.innerHeight)
-    const canvasLeft = canvasBounds?.left || 0
-    const canvasTop = canvasBounds?.top || 0
-    // Focus is a canvas surface, not a second window. Size it in flow units
-    // using the current zoom so its native browser child and resize handles
-    // remain inside the real workspace on small windows and high zoom levels.
-    const zoom = Math.max(0.08, Math.min(4, flowRef.current.getZoom()))
-    const availableWidth = Math.max(1, canvasWidth - 48)
-    const availableHeight = Math.max(1, canvasHeight - 92)
-    const minWidth = Math.min(300, availableWidth / zoom)
-    const minHeight = Math.min(200, availableHeight / zoom)
+    // Focus uses a neutral 1:1 React Flow viewport. Keeping the focused node
+    // in CSS-pixel flow coordinates prevents xterm/WebGL and native portal
+    // children from being painted into a tiny transformed surface.
+    const availableWidth = Math.max(320, canvasWidth - 48)
+    const availableHeight = Math.max(220, canvasHeight - 92)
     const size = {
-      width: Math.max(minWidth, availableWidth / zoom),
-      height: Math.max(minHeight, availableHeight / zoom)
+      width: availableWidth,
+      height: availableHeight
     }
-    const center = flowRef.current.screenToFlowPosition({ x: canvasLeft + canvasWidth / 2, y: canvasTop + canvasHeight / 2 })
+    if (!focusViewportRef.current) focusViewportRef.current = flowRef.current.getViewport()
     focusSnapshotRef.current = node
     setFocusSnapshot(node)
-    setNodes(restoredNodes.map((item) => item.id === node.id ? { ...item, x: center.x - size.width / 2, y: center.y - size.height / 2, ...size } : item))
+    setNodes(restoredNodes.map((item) => item.id === node.id ? { ...item, x: 24, y: 46, ...size } : item))
+    void flowRef.current.setViewport({ x: 0, y: 0, zoom: 1 })
   }, [focusSnapshot, restoreFocus, setNodes, storeNodes])
 
   // Keep the focused node inside the actual workspace when the window or
@@ -693,15 +693,13 @@ export const CanvasArea: React.FC = () => {
       const workspace = workspaceRef.current
       if (!flow || !workspace) return
       const bounds = workspace.getBoundingClientRect()
-      const zoom = Math.max(0.08, Math.min(4, flow.getZoom()))
-      const availableWidth = Math.max(1, bounds.width - 48)
-      const availableHeight = Math.max(1, bounds.height - 92)
-      const size = { width: availableWidth / zoom, height: availableHeight / zoom }
-      const center = flow.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
+      const availableWidth = Math.max(320, bounds.width - 48)
+      const availableHeight = Math.max(220, bounds.height - 92)
+      const size = { width: availableWidth, height: availableHeight }
       const currentNodes = useWorkspaceStore.getState().nodes
       const focused = currentNodes.find((node) => node.id === focusSnapshot.id)
       if (!focused) return
-      const next = { x: center.x - size.width / 2, y: center.y - size.height / 2, ...size }
+      const next = { x: 24, y: 46, ...size }
       if (focused.x === next.x && focused.y === next.y && focused.width === next.width && focused.height === next.height) return
       setNodes(currentNodes.map((node) => node.id === focused.id ? { ...node, ...next } : node))
     }
@@ -749,9 +747,12 @@ export const CanvasArea: React.FC = () => {
             : node))
         }
       }
+      const previousViewport = focusViewportRef.current
+      focusViewportRef.current = null
       focusScopeRef.current = scope
       focusSnapshotRef.current = null
       setFocusSnapshot(null)
+      if (previousViewport && flowRef.current) void flowRef.current.setViewport(previousViewport)
     }
   }, [activeFloor?.id, activeWorkspace?.id, persistedFloorId, setNodes])
 
@@ -1014,6 +1015,7 @@ export const CanvasArea: React.FC = () => {
         }}
         onMoveEnd={(_, viewport) => {
           window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: false, reason: 'viewport' } }))
+          if (focusSnapshotRef.current) return
           const viewportKey = `${activeWorkspace?.id || 'workspace'}:${useWorkspaceStore.getState().activeFloor?.id || 'landing'}`
           useWorkspaceStore.getState().setViewport(viewportKey, viewport)
           const currentFloor = useWorkspaceStore.getState().activeFloor
