@@ -5,12 +5,21 @@
   "author": "Alcino Luvualo",
   "private": true,
   "scripts": {
-    "dev": "npm --prefix apps/desktop run dev",
-    "build:core": "cargo build --release",
+    "dev": "ORCHESTRA_SOCKET=/tmp/orchesta-app-dev.sock npm --prefix apps/desktop run dev",
+    "skill:sync": "node scripts/sync-orchestra-skill.mjs",
+    "skill:check": "node scripts/sync-orchestra-skill.mjs --check",
+    "verify:package-resources": "npm run skill:check && node scripts/verify-package-resources.mjs",
+    "check": "npm run skill:check && cargo fmt --all -- --check && cargo check --workspace && npm --prefix apps/desktop run check",
+    "test": "cargo test --workspace && npm --prefix apps/desktop run build && npm run test:packaging && npm run test:smoke && npm run test:e2e",
+    "test:packaging": "node scripts/verify-package-resources.test.mjs",
+    "test:smoke": "node apps/desktop/test.js",
+    "test:e2e": "cargo build -p orchestra-core && node apps/desktop/terminal-v2-gate.js",
+    "build:core": "npm run skill:sync && cargo build --release -p orchestra-core -p orchestra-cli",
     "build:desktop": "npm --prefix apps/desktop run build",
-    "package:deb": "npm --prefix apps/desktop run build && npx electron-builder --config apps/desktop/electron-builder.yml --linux deb",
-    "package:appimage": "npm --prefix apps/desktop run build && npx electron-builder --config apps/desktop/electron-builder.yml --linux AppImage",
-    "package:all": "npm --prefix apps/desktop run build && npx electron-builder --config apps/desktop/electron-builder.yml --linux deb AppImage"
+    "package:deb": "npm run build:core && npm run verify:package-resources && npm --prefix apps/desktop run package:deb",
+    "package:appimage": "npm run build:core && npm run verify:package-resources && npm --prefix apps/desktop run package:appimage",
+    "package:all": "npm run build:core && npm run verify:package-resources && npm --prefix apps/desktop run package:all",
+    "package:dir": "npm run build:core && npm run verify:package-resources && npm --prefix apps/desktop run package:dir"
   },
   "workspaces": [
     "apps/*"
@@ -19,7 +28,7 @@
     "electron": "^33.0.0"
   },
   "allowScripts": {
-    "electron@33.0.0": true,
-    "esbuild": true
+    "esbuild": true,
+    "electron": true
   }
 }
