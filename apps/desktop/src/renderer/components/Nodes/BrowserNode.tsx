@@ -11,9 +11,9 @@ const hiddenPortalBounds: PortalBounds = { x: 0, y: 0, width: 1, height: 1 }
 /**
  * Browser portals are native WebContentsViews. They are composited above the
  * renderer and therefore cannot follow a CSS transform or be clipped by the
- * ReactFlow node automatically. This component owns the small bridge that
- * keeps the native view safe while the canvas moves and gives the DOM a
- * snapshot fallback whenever the view cannot be shown faithfully.
+ * ReactFlow node automatically. This component owns the bridge that keeps
+ * the native view's pixel bounds synchronized with the transformed node while
+ * the canvas moves, without hiding the loaded page behind a placeholder.
  */
 export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = ({ id, data }) => {
   const props = data.properties || {}
@@ -31,19 +31,14 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
   const [error, setError] = useState<string | null>(null)
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
-  const [snapshot, setSnapshot] = useState<string | null>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const motionRef = useRef(false)
   const motionReasonsRef = useRef<Set<string>>(new Set())
   const motionWatchdogsRef = useRef<Map<string, number>>(new Map())
   const disposedRef = useRef(false)
-  const frozenRef = useRef(false)
-  const freezeInFlightRef = useRef<Promise<{ portalId?: string; data?: string; url?: string; stale?: boolean; generation?: number; revision?: number }> | null>(null)
-  const frozenGenerationRef = useRef(0)
   const motionGenerationRef = useRef(0)
   const portalRevisionRef = useRef(0)
   const boundsRafRef = useRef<number | null>(null)
-  const settleRafRef = useRef<number | null>(null)
   const lastBoundsKeyRef = useRef('')
   const lastGeometryRef = useRef<PortalGeometry | null>(null)
   const { updateNode, deleteNode, setSelectedNodeId, commitHistory } = useWorkspaceStore()
@@ -128,129 +123,25 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
           // main-side revision. Retry from the adopted token instead of
           // leaving this portal permanently hidden.
           lastBoundsKeyRef.current = ''
-          if (!disposed && !disposedRef.current && !motionRef.current && !frozenRef.current && !freezeInFlightRef.current) {
+          if (!disposed && !disposedRef.current) {
             scheduleBoundsSync()
           }
         }
       }).catch(() => undefined)
     }
 
-    const hideNative = (generation = currentGeneration()) => {
-      const geometry = lastGeometryRef.current || readGeometry()
-      sendBounds(geometry, false, generation)
-    }
-
     const scheduleBoundsSync = () => {
-      if (disposed || disposedRef.current || motionRef.current || frozenRef.current || freezeInFlightRef.current) return
+      if (disposed || disposedRef.current) return
       if (boundsRafRef.current !== null) return
       boundsRafRef.current = window.requestAnimationFrame(() => {
         boundsRafRef.current = null
-        if (disposed || disposedRef.current || motionRef.current || frozenRef.current || freezeInFlightRef.current) return
+        if (disposed || disposedRef.current) return
         const geometry = readGeometry()
-        // A partially clipped native view is never visible. The intersection
-        // is still sent so the main process cannot retain an oversized stale
-        // rectangle, but the DOM placeholder/snapshot remains on top.
+        // Keep the native view following the transformed node even while the
+        // board is moving. Hiding it first leaves the renderer placeholder
+        // white for a frame (or for the duration of a slow capture), which is
+        // especially visible on double-click focus and board drags.
         sendBounds(geometry, true)
-      })
-    }
-
-    const nextAnimationFrame = () => new Promise<void>((resolve) => {
-      window.requestAnimationFrame(() => resolve())
-    })
-
-    const startFreeze = (generation: number) => {
-      if (disposed || disposedRef.current || !motionRef.current || frozenRef.current || freezeInFlightRef.current) return
-      const revision = ++portalRevisionRef.current
-      const request = portal.freeze(portalId, { generation, revision })
-      freezeInFlightRef.current = request
-      let staleFreeze = false
-      request.then((result) => {
-        if (typeof result?.generation === 'number' && Number.isFinite(result.generation)) {
-          // An external control request can advance the main-side token while
-          // this capture is in flight. Adopt it so the next freeze/resume is
-          // not permanently rejected as stale after a portal remount.
-          motionGenerationRef.current = Math.max(motionGenerationRef.current, Math.floor(result.generation))
-        }
-        if (typeof result?.revision === 'number' && Number.isFinite(result.revision)) {
-          portalRevisionRef.current = Math.max(portalRevisionRef.current, Math.floor(result.revision))
-        }
-      if (disposed || disposedRef.current || !motionRef.current) return
-        staleFreeze = result?.stale === true
-        if (result && typeof result.data === 'string' && result.data.length > 0 && !staleFreeze) {
-          setSnapshot(result.data)
-          frozenRef.current = true
-          frozenGenerationRef.current = generation
-          return
-        }
-        // The main process may have rejected this request because an older
-        // resume won the race. Retry once with the currently active token.
-      }).catch(() => {
-        // Keep the placeholder visible if capture fails; never reveal the
-        // native page during motion without a current, safe bounds update.
-      }).finally(() => {
-        if (freezeInFlightRef.current === request) freezeInFlightRef.current = null
-        if (motionRef.current && !frozenRef.current && (generation !== currentGeneration() || staleFreeze)) {
-          window.requestAnimationFrame(() => startFreeze(currentGeneration()))
-        }
-      })
-    }
-
-    const scheduleResume = (generation: number) => {
-      if (settleRafRef.current !== null) window.cancelAnimationFrame(settleRafRef.current)
-      // Two frames let ReactFlow finish the transform/layout commit before a
-      // native view is shown. This avoids the one-frame detached duplicate.
-      settleRafRef.current = window.requestAnimationFrame(() => {
-        settleRafRef.current = window.requestAnimationFrame(async () => {
-          settleRafRef.current = null
-          const inFlight = freezeInFlightRef.current
-          if (inFlight) await inFlight.catch(() => undefined)
-          await nextAnimationFrame()
-          if (disposed || disposedRef.current || motionRef.current || generation !== currentGeneration()) return
-
-          const geometry = readGeometry()
-          if (!geometry.visible) {
-            sendBounds(geometry, false, generation)
-            frozenRef.current = false
-            setSnapshot(null)
-            return
-          }
-
-          // A resume is tied to the same generation that ended the motion.
-          // The main process ignores it if a newer motion has already begun.
-          let resumeResult: unknown
-          try {
-            resumeResult = await portal.resume(portalId, geometry.bounds, {
-              generation,
-              scale: geometry.scale,
-              revision: ++portalRevisionRef.current
-            })
-          } catch {
-            return
-          }
-          if (resumeResult && typeof resumeResult === 'object') {
-            const response = resumeResult as { stale?: unknown; generation?: unknown; revision?: unknown }
-            if (typeof response.generation === 'number' && Number.isFinite(response.generation)) {
-              motionGenerationRef.current = Math.max(motionGenerationRef.current, Math.floor(response.generation))
-            }
-            if (typeof response.revision === 'number' && Number.isFinite(response.revision)) {
-              portalRevisionRef.current = Math.max(portalRevisionRef.current, Math.floor(response.revision))
-            }
-            if (response.stale === true) {
-              lastBoundsKeyRef.current = ''
-              if (!disposed && !disposedRef.current && !motionRef.current) scheduleResume(currentGeneration())
-              return
-            }
-          }
-          if (disposed || disposedRef.current || motionRef.current || generation !== currentGeneration()) {
-            hideNative(currentGeneration())
-            return
-          }
-          frozenRef.current = false
-          frozenGenerationRef.current = 0
-          setSnapshot(null)
-          lastBoundsKeyRef.current = ''
-          scheduleBoundsSync()
-        })
       })
     }
 
@@ -259,19 +150,23 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         if (!motionRef.current) {
           motionRef.current = true
           motionGenerationRef.current += 1
-          // Freeze first so the main process captures the current node-sized
-          // surface, then hide it immediately. Reversing these IPC calls
-          // captures the 1x1 safety bounds instead of a useful snapshot.
-          startFreeze(currentGeneration())
-          hideNative(currentGeneration())
         }
+        // ReactFlow emits move packets before/while the DOM transform is
+        // committed. Schedule one geometry read per frame so WebContentsView
+        // keeps the same pixel size as the visible BrowserNode.
+        lastBoundsKeyRef.current = ''
+        scheduleBoundsSync()
         return
       }
 
-      if (!motionRef.current && !frozenRef.current && !freezeInFlightRef.current) return
+      if (!motionRef.current) {
+        scheduleBoundsSync()
+        return
+      }
       motionRef.current = false
       motionGenerationRef.current += 1
-      scheduleResume(currentGeneration())
+      lastBoundsKeyRef.current = ''
+      scheduleBoundsSync()
     }
 
     portal.ensure(portalId, initialUrl).then((result) => {
@@ -307,7 +202,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         motionReasonsRef.current.add(reason)
         // ReactFlow normally emits a matching move-end event. If a native
         // portal or an interrupted gesture steals that event, do not leave
-        // every browser frozen forever; active move packets re-arm this lease.
+        // motion tracking active forever; active move packets re-arm this lease.
         clearWatchdog()
         watchdogs.set(reason, window.setTimeout(() => {
           watchdogs.delete(reason)
@@ -339,7 +234,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
     })
 
     const observer = typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(scheduleBoundsSync)
+      ? new ResizeObserver(() => scheduleBoundsSync())
       : null
     if (contentRef.current) observer?.observe(contentRef.current)
     window.addEventListener('resize', scheduleBoundsSync)
@@ -356,9 +251,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
       motionWatchdogsRef.current.clear()
       motionRef.current = false
       if (boundsRafRef.current !== null) window.cancelAnimationFrame(boundsRafRef.current)
-      if (settleRafRef.current !== null) window.cancelAnimationFrame(settleRafRef.current)
       boundsRafRef.current = null
-      settleRafRef.current = null
       observer?.disconnect()
       window.removeEventListener('resize', scheduleBoundsSync)
       window.removeEventListener('scroll', scheduleBoundsSync, true)
@@ -432,9 +325,9 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         </form>
 
         <div ref={contentRef} className="chrome-content nodrag nowheel" onMouseDown={(event) => event.stopPropagation()}>
-          {snapshot ? <img className="portal-snapshot" src={snapshot} alt="Pré-visualização do portal durante o movimento" /> : <div className="portal-placeholder">
+          <div className="portal-placeholder">
             {error ? <><b>Portal com erro</b><span>{error}</span></> : <><span>{currentUrl}</span><small>{loading ? 'A carregar…' : 'Portal Chromium isolado'}</small></>}
-          </div>}
+          </div>
         </div>
       </div>
     </div>
