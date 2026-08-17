@@ -66,6 +66,7 @@ export const CanvasArea: React.FC = () => {
   const [connectionHoverId, setConnectionHoverId] = useState<string | null>(null)
   const [focusSnapshot, setFocusSnapshot] = useState<CanvasNodeData | null>(null)
   const focusViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null)
+  const focusTransitionRef = useRef(0)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   // The cursor is the single navigation mode: dragging empty canvas pans,
   // while dragging a node belongs to that node.
@@ -696,14 +697,23 @@ export const CanvasArea: React.FC = () => {
 
   const restoreFocus = useCallback(() => {
     if (!focusSnapshot) return
+    const transition = ++focusTransitionRef.current
     const previousViewport = focusViewportRef.current
     focusViewportRef.current = null
-    setNodes(storeNodes.map((node) => node.id === focusSnapshot.id
+    const restoredNodes = storeNodes.map((node) => node.id === focusSnapshot.id
       ? { ...node, x: focusSnapshot.x, y: focusSnapshot.y, width: focusSnapshot.width, height: focusSnapshot.height, zIndex: focusSnapshot.zIndex, locked: focusSnapshot.locked, collapsed: focusSnapshot.collapsed }
-      : node))
-    focusSnapshotRef.current = null
-    setFocusSnapshot(null)
-    if (previousViewport && flowRef.current) void flowRef.current.setViewport(previousViewport)
+      : node)
+    const finish = () => {
+      if (focusTransitionRef.current !== transition) return
+      setNodes(restoredNodes)
+      focusSnapshotRef.current = null
+      setFocusSnapshot(null)
+    }
+    if (previousViewport && flowRef.current) {
+      void flowRef.current.setViewport(previousViewport).then(finish).catch(finish)
+    } else {
+      finish()
+    }
   }, [focusSnapshot, setNodes, storeNodes])
 
   const toggleFocus = useCallback((nodeId: string) => {
@@ -728,10 +738,24 @@ export const CanvasArea: React.FC = () => {
       height: availableHeight
     }
     if (!focusViewportRef.current) focusViewportRef.current = flowRef.current.getViewport()
-    focusSnapshotRef.current = node
-    setFocusSnapshot(node)
-    setNodes(restoredNodes.map((item) => item.id === node.id ? { ...item, x: 24, y: 46, ...size } : item))
-    void flowRef.current.setViewport({ x: 0, y: 0, zoom: 1 })
+    const transition = ++focusTransitionRef.current
+    const focusedNodes = restoredNodes.map((item) => item.id === node.id ? { ...item, x: 24, y: 46, ...size } : item)
+    // React Flow applies its viewport transform asynchronously. Applying the
+    // enlarged node and focus blur in the same tick used to expose one frame
+    // with the old pan/zoom, which looked like every node suddenly growing and
+    // the focused browser being clipped. Neutralize the transform first, then
+    // publish the focus state after that transform has committed.
+    void flowRef.current.setViewport({ x: 0, y: 0, zoom: 1 }).then(() => {
+      if (focusTransitionRef.current !== transition) return
+      setNodes(focusedNodes)
+      focusSnapshotRef.current = node
+      setFocusSnapshot(node)
+    }).catch(() => {
+      if (focusTransitionRef.current !== transition) return
+      setNodes(focusedNodes)
+      focusSnapshotRef.current = node
+      setFocusSnapshot(node)
+    })
   }, [focusSnapshot, restoreFocus, setNodes, storeNodes])
 
   // Keep the focused node inside the actual workspace when the window or
