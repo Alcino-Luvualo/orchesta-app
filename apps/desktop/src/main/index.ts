@@ -1212,31 +1212,6 @@ async function waitPortal(record: PortalRecord, payload: Record<string, unknown>
   return { ok: !selector && !expectedText && record.firstFrameReady, timedOut: true, state: record.lifecycle, selector: selector || undefined, text: expectedText || undefined }
 }
 
-function portalCaptureSize(record: PortalRecord): { width: number; height: number } {
-  const current = (() => {
-    try { return record.view.getBounds() } catch { return record.physicalBounds } })()
-  const windowSize = portalContentSize()
-  // A portal is commonly hidden at 1x1 while a modal or motion lease owns the
-  // renderer. Preserve the last real node viewport for screenshots instead of
-  // falling back to the whole window (or Chromium's full document size).
-  const fallback = record.lastVisibleBounds
-  const width = record.desiredVisible && current.width > 1
-    ? current.width
-    : fallback.width > 1
-      ? fallback.width
-      : current.width > 1
-        ? current.width
-        : Math.min(windowSize.width, 1280)
-  const height = record.desiredVisible && current.height > 1
-    ? current.height
-    : fallback.height > 1
-      ? fallback.height
-      : current.height > 1
-        ? current.height
-        : Math.min(windowSize.height, 800)
-  return { width: Math.max(1, Math.floor(width)), height: Math.max(1, Math.floor(height)) }
-}
-
 async function withPortalTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | null = null
   try {
@@ -1257,12 +1232,37 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
     throw new Error('Geometria do portal ainda não está pronta para o primeiro frame')
   }
   const webContents = record.view.webContents
-  const captureSize = portalCaptureSize(record)
+
+  const acceptSnapshot = (bytes: Buffer): string | null => {
+    if (bytes.length === 0) return null
+    if (portals.get(record.id) !== record) throw new Error('Portal substituído durante a captura')
+    const snapshot = `data:image/png;base64,${bytes.toString('base64')}`
+    record.firstFrameReady = true
+    if (record.lifecycle === 'loading' || record.lifecycle === 'creating') record.lifecycle = record.frozen ? 'frozen' : 'ready'
+    record.lastSnapshot = snapshot
+    applyPortalVisibility(record)
+    return snapshot
+  }
 
   try {
       webContents.invalidate()
   } catch {
       // Repaint is best-effort; CDP can still capture a loaded document.
+  }
+
+  // capturePage() without a rectangle returns the exact compositor surface.
+  // Supplying logical bounds here makes Electron apply the canvas/page zoom a
+  // second time, shrinking the page into the upper-left corner of the DOM
+  // snapshot during pointer, drag and focus transitions.
+  try {
+    const image = await withPortalTimeout(webContents.capturePage(), 8000)
+    if (!image.isEmpty()) {
+      const snapshot = acceptSnapshot(image.toPNG())
+      if (snapshot) return snapshot
+    }
+  } catch {
+    // CDP can still capture the current surface when native capture is not
+    // ready yet (for example during the first compositor frame).
   }
 
   let debuggerAttachedHere = false
@@ -1272,45 +1272,21 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
         debuggerAttachedHere = true
       }
       await new Promise((resolve) => setTimeout(resolve, 40))
-      const metrics = await withPortalTimeout(
-        webContents.debugger.sendCommand('Page.getLayoutMetrics') as Promise<{
-          cssVisualViewport?: { clientWidth?: number; clientHeight?: number }
-        }>,
-        8000
-      )
-      // Never use the entire scrollable document here: long pages otherwise
-      // render with the wrong aspect/size.
-      const visualViewport = metrics.cssVisualViewport
-      const width = Number.isFinite(visualViewport?.clientWidth) && (visualViewport?.clientWidth || 0) > 0
-        ? Math.min(record.logicalViewport.width, Math.ceil(visualViewport!.clientWidth!))
-        : record.logicalViewport.width
-      const height = Number.isFinite(visualViewport?.clientHeight) && (visualViewport?.clientHeight || 0) > 0
-        ? Math.min(record.logicalViewport.height, Math.ceil(visualViewport!.clientHeight!))
-        : record.logicalViewport.height
       const response = await withPortalTimeout(
         webContents.debugger.sendCommand('Page.captureScreenshot', {
           format: 'png',
           fromSurface: true,
-          captureBeyondViewport: false,
-          // Capture logical CSS dimensions at the canvas pixel scale. The DOM
-          // snapshot is then transformed by ReactFlow without becoming blurry
-          // or being stretched from a CSS-sized bitmap at zoom > 100%.
-          clip: { x: 0, y: 0, width, height, scale: record.canvasScale }
+          captureBeyondViewport: false
         }) as Promise<{ data?: string }>,
         8000
       )
       if (response?.data) {
-        const snapshot = `data:image/png;base64,${response.data}`
-        if (portals.get(record.id) !== record) throw new Error('Portal substituído durante a captura')
-        record.firstFrameReady = true
-        if (record.lifecycle === 'loading' || record.lifecycle === 'creating') record.lifecycle = record.frozen ? 'frozen' : 'ready'
-        record.lastSnapshot = snapshot
-        applyPortalVisibility(record)
-        return snapshot
+        const snapshot = acceptSnapshot(Buffer.from(response.data, 'base64'))
+        if (snapshot) return snapshot
       }
     } catch {
-      // Fall back to Electron's native capture below. Some Chromium builds do
-      // not allow a second debugger attachment while DevTools is open.
+      // Keep the last valid native snapshot below. Some Chromium builds do
+      // not allow a debugger attachment while DevTools is open.
     } finally {
       try {
         if (debuggerAttachedHere && !webContents.isDestroyed() && webContents.debugger.isAttached()) {
@@ -1319,29 +1295,6 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
       } catch { /* WebContents teardown race */ }
     }
 
-  // Capture the existing native surface in place. Moving a WebContentsView
-  // to a temporary negative rectangle changes compositor layout and used to
-  // race bounds updates, producing portal jumps/white flashes on focus.
-  // Hidden/suppressed views use the existing surface/cache; never relocate
-  // or reload the portal just to obtain a frame.
-  if (portalViewAlive(record)) {
-    const image = await withPortalTimeout(
-      webContents.capturePage({ x: 0, y: 0, width: captureSize.width, height: captureSize.height }),
-      8000
-    )
-    if (!image.isEmpty()) {
-      const bytes = image.toPNG()
-      if (bytes.length > 0) {
-        const snapshot = `data:image/png;base64,${bytes.toString('base64')}`
-        if (portals.get(record.id) !== record) throw new Error('Portal substituído durante a captura')
-        record.firstFrameReady = true
-        if (record.lifecycle === 'loading' || record.lifecycle === 'creating') record.lifecycle = record.frozen ? 'frozen' : 'ready'
-        record.lastSnapshot = snapshot
-        applyPortalVisibility(record)
-        return snapshot
-      }
-    }
-  }
   if (record.lastSnapshot) return record.lastSnapshot
   throw new Error('O compositor do portal ainda não tem um primeiro frame')
 }
