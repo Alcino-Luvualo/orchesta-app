@@ -1072,7 +1072,6 @@ export const CanvasArea: React.FC = () => {
           }
           setSelectedEdgeId(null); setSelectedNodeId(node.id)
         }}
-        onMoveStart={() => window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: true, reason: 'viewport' } }))}
         onNodeDragStart={() => {
           commitHistory()
           window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: true, reason: 'node' } }))
