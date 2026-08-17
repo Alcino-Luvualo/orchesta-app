@@ -745,15 +745,17 @@ export const CanvasArea: React.FC = () => {
     // with the old pan/zoom, which looked like every node suddenly growing and
     // the focused browser being clipped. Neutralize the transform first, then
     // publish the focus state after that transform has committed.
+    // Mark the focus transition before moving the viewport so onMoveEnd does
+    // not persist the temporary neutral 1:1 transform as the user's canvas
+    // viewport.
+    focusSnapshotRef.current = node
     void flowRef.current.setViewport({ x: 0, y: 0, zoom: 1 }).then(() => {
       if (focusTransitionRef.current !== transition) return
       setNodes(focusedNodes)
-      focusSnapshotRef.current = node
       setFocusSnapshot(node)
     }).catch(() => {
       if (focusTransitionRef.current !== transition) return
       setNodes(focusedNodes)
-      focusSnapshotRef.current = node
       setFocusSnapshot(node)
     })
   }, [focusSnapshot, restoreFocus, setNodes, storeNodes])
