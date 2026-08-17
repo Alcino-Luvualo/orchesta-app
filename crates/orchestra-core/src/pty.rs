@@ -12,7 +12,10 @@ use std::thread;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
-const MAX_SCROLLBACK_BYTES: usize = 2 * 1024 * 1024;
+// Keep enough history for long-running agents and large build logs while
+// staying below the 8 MiB IPC frame limit when a terminal is reattached
+// (base64 encoding adds roughly one third to the raw byte count).
+const MAX_SCROLLBACK_BYTES: usize = 4 * 1024 * 1024;
 const OUTPUT_QUEUE_CAPACITY: usize = 128;
 const ORCHESTRA_SKILL_RELATIVE_PATH: &str = "skills/orchestra-canvas/SKILL.md";
 const ORCHESTRA_PLUGIN_RELATIVE_PATH: &str = ".agents/plugins/plugins/orchestra";
@@ -947,7 +950,7 @@ mod tests {
     use super::{
         configured_portal_socket, derived_portal_socket_path, is_npm_process_environment,
         is_protected_environment, normalized_size, orchestra_bootstrap, resolve_skill_and_plugin,
-        PtyManager, SHELL_ENV_REMOVE,
+        PtyManager, MAX_SCROLLBACK_BYTES, SHELL_ENV_REMOVE,
     };
     use std::time::Duration;
 
@@ -960,6 +963,14 @@ mod tests {
         let size = normalized_size(80, 24);
         assert_eq!(size.cols, 80);
         assert_eq!(size.rows, 24);
+    }
+
+    #[test]
+    fn scrollback_budget_stays_below_the_ipc_frame_limit() {
+        assert!(MAX_SCROLLBACK_BYTES >= 4 * 1024 * 1024);
+        // Reattach responses base64-encode the raw PTY history. Leave room for
+        // JSON framing and the protocol's eight-megabyte maximum frame.
+        assert!(MAX_SCROLLBACK_BYTES * 4 / 3 < crate::protocol::MAX_FRAME_SIZE);
     }
 
     #[test]
