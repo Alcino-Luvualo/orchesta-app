@@ -57,16 +57,16 @@ const authChecks = [
   ['watcher fallback timers are cleaned on shutdown', /for \(const poller of orchestraPollers\.values\(\)\) clearInterval\(poller\.timer\)/],
   ['native portal pinch has a cancellable mouse path', /before-mouse-event[\s\S]*?forwardPortalPinch[\s\S]*?preventDefault/],
   ['native portal pinch has an input fallback', /input-event[\s\S]*?forwardPortalPinch/],
-  ['native portal pinch is sent to the board', /emitPortalEvent\('portal:pinch'/],
+  ['native portal pinch is sent to the board', /emitPortalRecordEvent\([\s\S]*?'portal:pinch'/],
   ['portal motion requests reject stale generations', /acceptedGeneration !== record\.motionGeneration/],
   ['native portals are suppressed while renderer surfaces are modal', /nativePortalSuppressionReasons[\s\S]*?applyPortalVisibility/],
-  ['hidden portal screenshots have an offscreen compositor fallback', /function capturePortalOffscreen\([\s\S]*?offscreen: true/],
-  ['canvas scale is not applied as browser page zoom', /existing\.view\.webContents\.setZoomFactor\(1\)/],
+  ['portal screenshots preserve a cached live frame', /lastSnapshot[\s\S]*?screenshotPortal/],
+  ['canvas scale preserves the browser logical viewport', /function portalZoomForScale\(scale: number\)[\s\S]*?return clampPortalScale\(scale\)[\s\S]*?setZoomFactor\(nextZoom\)/],
   ['portal bounds track same-generation revisions', /boundsRevision/],
   ['portal bounds reject stale revisions', /revision < record\.boundsRevision/],
   ['portal handlers accept bounds revisions', /acceptedRevision/],
   ['portal capture tracks the last node viewport', /lastVisibleBounds[\s\S]*?portalCaptureSize/],
-  ['temporary portal captures honor suppression leases', /function setPortalTransientVisibility[\s\S]*?nativePortalSuppressionReasons\.size === 0/],
+  ['portal captures never move the native view offscreen', /Moving a WebContentsView[\s\S]*?record\.lastSnapshot/],
   ['portal destruction is idempotent during Electron teardown', /function destroyPortal\(portalId: string\)[\s\S]*?portals\.delete\(portalId\)[\s\S]*?windowRef\.isDestroyed\(\)[\s\S]*?webContents\.isDestroyed\(\)/],
   ['portal socket is unique per core socket', /function getPortalControlSocketPath\(\)[\s\S]*?coreSocketPath[\s\S]*?\.portal\.sock/],
   ['active portal socket is never unlinked', /probeUnixSocket\(socketPath\)[\s\S]*?fs\.unlinkSync\(socketPath\)/]
@@ -119,7 +119,7 @@ const initialFlowPoint = { x: (anchor.x - initialViewport.x) / initialViewport.z
 const nextScreenPoint = { x: nextViewport.x + initialFlowPoint.x * nextViewport.zoom, y: nextViewport.y + initialFlowPoint.y * nextViewport.zoom }
 if (Math.abs(nextScreenPoint.x - anchor.x) > 1e-9 || Math.abs(nextScreenPoint.y - anchor.y) > 1e-9) throw new Error('Pinch anchor drifted')
 if (pinch.getCanvasPinchViewport(initialViewport, anchor, 100).zoom !== 4) throw new Error('Pinch max zoom clamp failed')
-if (pinch.getCanvasPinchViewport(initialViewport, anchor, 0.001).zoom !== 0.08) throw new Error('Pinch min zoom clamp failed')
+if (pinch.getCanvasPinchViewport(initialViewport, anchor, 0.001).zoom !== 0.25) throw new Error('Pinch min zoom clamp failed')
 let repeatedViewport = initialViewport
 for (const factor of [1.08, 0.94, 1.13, 0.87]) {
   repeatedViewport = pinch.getCanvasPinchViewport(repeatedViewport, anchor, factor)
@@ -144,6 +144,13 @@ const fullPortal = geometry.getPortalGeometry({ left: 100, top: 80, right: 500, 
 if (!fullPortal.visible || fullPortal.scale !== 2) throw new Error('Fully visible portal scale geometry regressed')
 const outsidePortal = geometry.getPortalGeometry({ left: -900, top: -800, right: -100, bottom: -20 }, { left: 0, top: 0, width: 800, height: 600 }, 800, 780)
 if (outsidePortal.visible || outsidePortal.hasIntersection || outsidePortal.bounds.width !== 1 || outsidePortal.bounds.height !== 1) throw new Error('Offscreen portal geometry was not hidden')
+const invalidViewport = geometry.getPortalGeometry({ left: 10, top: 10, right: 110, bottom: 110 }, { left: 0, top: 0, width: 0, height: 600 }, 100, 100)
+if (invalidViewport.visible || invalidViewport.hasIntersection || invalidViewport.bounds.width !== 1 || invalidViewport.bounds.height !== 1) throw new Error('Invalid portal viewport was not safely hidden')
+const fractionalPortal = geometry.getPortalGeometry({ left: 10.25, top: 20.75, right: 110.1, bottom: 120.2 }, { left: 0.5, top: 10.5, width: 240.25, height: 260.25 }, 100, 100)
+if (!fractionalPortal.visible || fractionalPortal.clipped || fractionalPortal.bounds.x !== 10 || fractionalPortal.bounds.y !== 20 || fractionalPortal.bounds.width !== 101 || fractionalPortal.bounds.height !== 101) throw new Error('Fractional portal bounds lost visible pixels')
+if (Math.abs(fractionalPortal.scale - 0.9965) > 0.002) throw new Error('Fractional portal scale is not responsive to both axes')
+const movingPortal = geometry.getPortalGeometry({ left: 140.4, top: 95.7, right: 540.4, bottom: 395.7 }, { left: 0, top: 0, width: 1200, height: 800 }, 400, 300)
+if (!movingPortal.visible || movingPortal.bounds.x !== 140 || movingPortal.bounds.y !== 95 || movingPortal.bounds.width !== 401 || movingPortal.bounds.height !== 301 || movingPortal.scale !== 1) throw new Error('Portal motion geometry did not preserve rounded bounds')
 
 // Keep the file tree and graph layout helpers executable in the smoke suite.
 // These checks are deliberately DOM-free: they protect keyboard order, status
@@ -209,7 +216,7 @@ if (!filesNodeSource.includes('useModalA11y') || !filesNodeSource.includes('ref=
 const canvasSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CanvasArea.tsx'), 'utf8')
 const browserSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/BrowserNode.tsx'), 'utf8')
 if (!browserSource.includes('propsRef.current') || !browserSource.includes('url: payload.url')) throw new Error('Browser navigation does not preserve current node properties')
-if (!browserSource.includes('Keep the native view following the transformed node') || !browserSource.includes('lastBoundsKeyRef.current = \'\'')) throw new Error('Browser portal motion must keep live native bounds instead of flashing a placeholder')
+if (!browserSource.includes("scheduleBoundsSync('snapshot')") || !browserSource.includes('pendingUpdate') || !browserSource.includes('snapshotRef.current')) throw new Error('Browser portal motion lost its cached snapshot/latest-only presentation bridge')
 if (!canvasSource.includes("selectedNode.kind === 'browser' ? { portalId: duplicateId }")) throw new Error('Browser duplication can still share a native portal')
 if (!canvasSource.includes("target.closest('.react-flow__node, .nowheel, .canvas-toolbar, .canvas-context-toolbar, .zoom')")) throw new Error('Board wheel handler can hijack node/editor surfaces')
 if (!canvasSource.includes('activeFloor?.id || persistedFloorId') || !canvasSource.includes('focusSnapshotRef.current = null')) throw new Error('Focus mode is not cleaned up at a floor boundary')
@@ -220,13 +227,15 @@ if (!canvasSource.includes('const next = { x: 24, y: 46, ...size }')) throw new 
 if (filesNodeSource.includes('A pasta guardada deste File Tree já não pertence ao workspace atual')) throw new Error('File Tree external roots must not show the old workspace warning')
 if (!filesNodeSource.includes('const externalRoot = resolvedProject.outside ? projectPath : \'\'')) throw new Error('File Tree does not preserve a selected external root')
 if (!filesNodeSource.includes('fileWorkspaceId ? { workspaceId: fileWorkspaceId } : {}')) throw new Error('External File Tree requests must not send the active workspace id')
+if (!filesNodeSource.includes('return { path: candidate || root, outside: Boolean(raw) && !inside }')) throw new Error('File Tree external roots are still collapsed to the active workspace')
+if (!mainSource.includes('function portalEnsureSnapshot') || !mainSource.includes('history: { canGoBack, canGoForward }') || !mainSource.includes('viewport: record.logicalViewport')) throw new Error('Portal ensure response lost navigation/loading/viewport state')
 const cssSource = fs.readFileSync(path.join(sourceRoot, 'renderer/index.css'), 'utf8')
 if (!cssSource.includes('.terminal-create-modal { width: min(500px, 100%); max-height:')) throw new Error('Terminal creation modal lacks a viewport height guard')
 if (!cssSource.includes('.portal-placeholder { display: flex;')) throw new Error('Browser portal empty state is not laid out')
 if (cssSource.includes('.canvas-focus-active .react-flow__pane')) throw new Error('Focus mode must not dim the React Flow pane parent of the focused node')
 if (cssSource.includes('.canvas-focus-active .react-flow__node.canvas-node-focus { max-width:')) throw new Error('Focus node sizing must stay in flow coordinates')
 if (!canvasSource.includes('onNodeDrag={() => window.dispatchEvent')) throw new Error('Portal motion watchdog has no node-drag heartbeat')
-if (mainSource.includes('setZoomFactor(safe.scale)')) throw new Error('Canvas transform still changes browser page zoom')
+if (!mainSource.includes('record.view.webContents.setZoomFactor(nextZoom)')) throw new Error('Browser logical viewport no longer follows the canvas scale')
 const modalSources = [
   'components/Modals/RecruitAgentModal.tsx',
   'components/Modals/FilesDirectoryModal.tsx',
@@ -243,6 +252,22 @@ if (!filesNodeSource.includes('contextMenuRef') || !filesNodeSource.includes('ro
 const noteSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/NoteNode.tsx'), 'utf8')
 if (!noteSource.includes('note-resize-line') || !noteSource.includes('StarterKit.configure({ link: false })')) {
   throw new Error('Sticky note divider/editor guard regressed')
+}
+const responsiveFixturePath = path.join(appRoot, 'test-fixtures/responsive-portal.html')
+const responsiveHarnessPath = path.join(appRoot, 'portal-responsive-harness.mjs')
+if (!fs.existsSync(responsiveFixturePath) || !fs.existsSync(responsiveHarnessPath)) {
+  throw new Error('Responsive browser portal fixture/harness is missing')
+}
+const responsiveFixture = fs.readFileSync(responsiveFixturePath, 'utf8')
+const responsiveHarness = fs.readFileSync(responsiveHarnessPath, 'utf8')
+if (!responsiveHarness.includes('WebContentsView') || !responsiveHarness.includes('portalView.setBounds') || !responsiveHarness.includes('capturePage()')) {
+  throw new Error('Responsive browser harness must exercise a real WebContentsView')
+}
+for (const required of ['name="viewport"', 'max-width: 520px', 'max-width: 1000px', 'portalFixture', 'generation', 'revision']) {
+  if (!responsiveFixture.includes(required)) throw new Error(`Responsive portal fixture lost ${required}`)
+}
+for (const required of ['offscreen: true', 'setZoomFactor', 'logicalWidths = [390, 768, 1440]', 'portalFixture.drag', 'portalFixture.snapshot']) {
+  if (!responsiveHarness.includes(required)) throw new Error(`Responsive portal harness lost ${required}`)
 }
 const skillSource = fs.readFileSync(path.join(appRoot, '../../skills/orchestra-canvas/SKILL.md'), 'utf8')
 if (skillSource.includes('You are running inside Orchestra Desktop')) throw new Error('Agent skill still injects the visible Orchestra startup banner')
