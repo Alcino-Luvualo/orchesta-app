@@ -224,6 +224,7 @@ if (!canvasSource.includes('canvasScopeKey') || !canvasSource.includes('hydrated
 if (!canvasSource.includes("reason: 'pinch'")) throw new Error('Programmatic pinch does not freeze native browser portals')
 if (!canvasSource.includes('focusViewportRef.current = flowRef.current.getViewport()') || !canvasSource.includes('setViewport({ x: 0, y: 0, zoom: 1 })')) throw new Error('Focus mode must neutralize the React Flow transform for terminal rendering')
 if (!canvasSource.includes('const next = { x: 24, y: 46, ...size }')) throw new Error('Focus mode must keep the focused node inside the workspace bounds')
+if (!canvasSource.includes('focusTransitionRef') || !canvasSource.includes('setViewport({ x: 0, y: 0, zoom: 1 }).then')) throw new Error('Focus mode still publishes geometry before the neutral viewport commits')
 if (filesNodeSource.includes('A pasta guardada deste File Tree já não pertence ao workspace atual')) throw new Error('File Tree external roots must not show the old workspace warning')
 if (!filesNodeSource.includes('const externalRoot = resolvedProject.outside ? projectPath : \'\'')) throw new Error('File Tree does not preserve a selected external root')
 if (!filesNodeSource.includes('fileWorkspaceId ? { workspaceId: fileWorkspaceId } : {}')) throw new Error('External File Tree requests must not send the active workspace id')
