@@ -246,6 +246,16 @@ interface PortalRecord {
   firstFrameReady: boolean
   lastError: string | null
   lastSnapshot: string | null
+  // The cached DOM frame is only lossless while it is displayed at the same
+  // logical viewport/scale it was captured at. Board zoom and node resize
+  // otherwise stretch an old low-resolution image during motion.
+  lastSnapshotGeometry: {
+    width: number
+    height: number
+    logicalWidth: number
+    logicalHeight: number
+    canvasScale: number
+  } | null
   snapshotRefreshTimer: ReturnType<typeof setTimeout> | null
   captureInFlight: Promise<string> | null
   /** Requested canvas viewport in CSS/layout units (never native pixels). */
@@ -742,6 +752,7 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
     firstFrameReady: false,
     lastError: null,
     lastSnapshot: null,
+    lastSnapshotGeometry: null,
     snapshotRefreshTimer: null,
     captureInFlight: null,
     logicalViewport: { width: 1, height: 1 },
@@ -1007,6 +1018,22 @@ function assertPortalSelector(selector: unknown): asserts selector is string {
   }
 }
 
+function portalSnapshotGeometryMatches(
+  record: PortalRecord,
+  bounds: PortalBounds,
+  scale: number,
+  logicalViewport?: { width?: unknown; height?: unknown }
+): boolean {
+  const cached = record.lastSnapshotGeometry
+  if (!cached) return false
+  const logicalWidth = Number(logicalViewport?.width)
+  const logicalHeight = Number(logicalViewport?.height)
+  return cached.width === bounds.width && cached.height === bounds.height
+    && cached.logicalWidth === (Number.isFinite(logicalWidth) && logicalWidth > 0 ? logicalWidth : record.logicalViewport.width)
+    && cached.logicalHeight === (Number.isFinite(logicalHeight) && logicalHeight > 0 ? logicalHeight : record.logicalViewport.height)
+    && Math.abs(cached.canvasScale - scale) <= 0.0005
+}
+
 const PORTAL_INSPECTABLE_SELECTOR = 'a,button,input,textarea,select,[role],[aria-label],[tabindex],[contenteditable]'
 
 function clearPortalRefs(record: PortalRecord): void {
@@ -1241,6 +1268,13 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
     record.firstFrameReady = true
     if (record.lifecycle === 'loading' || record.lifecycle === 'creating') record.lifecycle = record.frozen ? 'frozen' : 'ready'
     record.lastSnapshot = snapshot
+    record.lastSnapshotGeometry = {
+      width: record.physicalBounds.width,
+      height: record.physicalBounds.height,
+      logicalWidth: record.logicalViewport.width,
+      logicalHeight: record.logicalViewport.height,
+      canvasScale: record.canvasScale
+    }
     applyPortalVisibility(record)
     revealedForCapture = false
     return snapshot
@@ -2504,11 +2538,23 @@ app.whenReady().then(() => {
     }
     if (typeof value.interactive === 'boolean') record.presentationInteractive = value.interactive
     // Snapshot mode captures the currently painted native frame first, then
-    // commits the hidden/frozen state. This avoids returning an image while a
-    // newer hidden state is already visible above the DOM placeholder.
+    // commits the hidden/frozen state. A cached frame is reusable while the
+    // viewport has the same dimensions, but board zoom/resize changes the
+    // raster size. Capture at the new physical size before showing it in the
+    // DOM, otherwise the old frame is stretched and looks dim/fuzzy.
     let data: string | undefined = snapshotMode ? record.lastSnapshot || undefined : undefined
-    if (snapshotMode && !data && portalViewAlive(record)) {
-      try { data = await screenshotPortal(record) } catch { /* first frame retry remains on the loading path */ }
+    if (snapshotMode && portalViewAlive(record)) {
+      const captureBounds = safe.fullyInside ? safe.bounds : record.physicalBounds
+      const captureScale = safe.fullyInside ? canvasScale : record.canvasScale
+      const captureLogical = safe.fullyInside ? logical : record.logicalViewport
+      const needsFreshFrame = !data || !portalSnapshotGeometryMatches(record, captureBounds, captureScale, captureLogical)
+      if (needsFreshFrame) {
+        // Keep the native view hidden while moving it to the target size. The
+        // DOM continues to display the previous frame until this capture is
+        // ready, so no native white/black surface can flash over the canvas.
+        updatePortalPhysicalGeometry(record, captureBounds, captureScale, false, captureLogical)
+        try { data = await screenshotPortal(record) } catch { /* first frame retry remains on the loading path */ }
+      }
     }
     if (portals.get(portalId) !== record || acceptedGeneration !== record.motionGeneration || acceptedRevision !== record.boundsRevision) {
       return portalPresentationSnapshot(record, true)
