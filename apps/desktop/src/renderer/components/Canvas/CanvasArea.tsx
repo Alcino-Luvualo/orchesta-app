@@ -85,6 +85,10 @@ export const CanvasArea: React.FC = () => {
   const persistedEdgeIdsRef = useRef<Set<string>>(new Set())
   const persistedNodeHashesRef = useRef<Map<string, string>>(new Map())
   const persistedEdgeHashesRef = useRef<Map<string, string>>(new Map())
+  // A local close must win over the external refresh poll while the daemon
+  // finishes deleting the persisted record. Without this fence, the poll can
+  // observe the old row and immediately re-add the node after clicking X.
+  const deletingNodeIdsRef = useRef<Set<string>>(new Set())
   const fittedWorkspaceRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -194,13 +198,24 @@ export const CanvasArea: React.FC = () => {
         const nextRemoteEdges = (remoteEdges as CanvasEdgeData[]).map((edge) => normalizeBrowserEdgePermissions(edge, nextRemoteNodes))
         const remoteNodeIds = new Set(nextRemoteNodes.map((node) => node.id))
         const remoteEdgeIds = new Set(nextRemoteEdges.map((edge) => edge.id))
+        const deletingNodeIds = deletingNodeIdsRef.current
+        deletingNodeIds.forEach((nodeId) => {
+          if (!remoteNodeIds.has(nodeId)) {
+            deletingNodeIds.delete(nodeId)
+            return
+          }
+          // Retry idempotently until the daemon no longer reports the row.
+          // This also covers a transient socket failure during the first
+          // delete request without allowing the stale node back into React.
+          window.orchestra?.invoke('canvas.node.delete', { workspaceId, id: nodeId }).catch(() => undefined)
+        })
         // Only remove records that were already observed as persisted. This
         // keeps a freshly-created local node alive during its debounce window,
         // while still reflecting CLI/agent deletions and allowing the portal
         // lifecycle reconciler to destroy their native WebContentsViews.
-        const retainedNodes = current.nodes.filter((node) => !persistedNodeIdsRef.current.has(node.id) || remoteNodeIds.has(node.id))
+        const retainedNodes = current.nodes.filter((node) => !deletingNodeIds.has(node.id) && (!persistedNodeIdsRef.current.has(node.id) || remoteNodeIds.has(node.id)))
         const retainedEdges = current.edges.filter((edge) => !persistedEdgeIdsRef.current.has(edge.id) || remoteEdgeIds.has(edge.id))
-        const missingNodes = nextRemoteNodes.filter((node) => !retainedNodes.some((existing) => existing.id === node.id))
+        const missingNodes = nextRemoteNodes.filter((node) => !deletingNodeIds.has(node.id) && !retainedNodes.some((existing) => existing.id === node.id))
         const missingEdges = nextRemoteEdges.filter((edge) => !retainedEdges.some((existing) => existing.id === edge.id))
         if (missingNodes.length || retainedNodes.length !== current.nodes.length) current.setNodes([...retainedNodes, ...missingNodes])
         const repairedEdges = nextRemoteEdges.filter((edge) => {
@@ -803,6 +818,7 @@ export const CanvasArea: React.FC = () => {
   useEffect(() => {
     const onNodeDeleting = (event: Event) => {
       const nodeId = (event as CustomEvent<{ nodeId?: string }>).detail?.nodeId
+      if (nodeId) deletingNodeIdsRef.current.add(nodeId)
       if (nodeId && focusSnapshotRef.current?.id === nodeId) restoreFocus(false)
     }
     window.addEventListener('orchestra:node-deleting', onNodeDeleting)
