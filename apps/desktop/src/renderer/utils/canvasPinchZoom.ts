@@ -51,7 +51,10 @@ export const getCanvasBoardWheelGesture = (
   return deltaY === 0 ? 'none' : 'vertical-zoom'
 }
 
-export const CANVAS_MIN_ZOOM = 0.08
+// Native browser portals use the canvas scale as Chromium page zoom so the
+// page's logical CSS viewport remains stable. Chromium's reliable lower bound
+// is 0.25, therefore the board must use the same minimum.
+export const CANVAS_MIN_ZOOM = 0.25
 export const CANVAS_MAX_ZOOM = 4
 
 /**
