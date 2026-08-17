@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "vite",
     "check": "tsc --noEmit",
+    "test:portal-harness": "electron --no-sandbox portal-responsive-harness.mjs",
     "build": "tsc && vite build",
     "prepare:package": "npm --prefix ../.. run build:core && npm --prefix ../.. run verify:package-resources",
     "package:dir": "npm run prepare:package && npm run build && npx electron-builder --config electron-builder.yml --dir",
