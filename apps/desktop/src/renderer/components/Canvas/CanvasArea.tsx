@@ -18,7 +18,7 @@ import { TextNode } from '../Nodes/TextNode'
 import { ShapeNode } from '../Nodes/ShapeNode'
 import { Terminal, FileText, FolderTree, Globe, MousePointer, Cable, Copy, Trash2, Pencil, RotateCw, Bold, Italic, List, CheckSquare, PenLine, Square, Type } from 'lucide-react'
 import { CableSystem } from './CableSystem/CableSystem'
-import { canvasPinchGestureFactor, canvasPinchZoomFactor, getCanvasBoardWheelGesture, getCanvasPinchAnchor, getCanvasPinchPanViewport, getCanvasPinchViewport, isCanvasPinchWheelEvent } from '../../utils/canvasPinchZoom'
+import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, canvasPinchGestureFactor, canvasPinchZoomFactor, getCanvasBoardWheelGesture, getCanvasPinchAnchor, getCanvasPinchPanViewport, getCanvasPinchViewport, isCanvasPinchWheelEvent } from '../../utils/canvasPinchZoom'
 import { applyCanvasNodeChanges } from './canvasNodeChanges'
 import type { CanvasNodeMeasurement } from './canvasNodeChanges'
 
@@ -44,6 +44,15 @@ function normalizeBrowserEdgePermissions(edge: CanvasEdgeData, nodes: CanvasNode
   const permissions = Array.isArray(edge.permissions) ? edge.permissions : []
   if (permissions.some((permission) => BROWSER_CONNECTION_PERMISSIONS.includes(permission))) return edge
   return { ...edge, permissions: [...new Set([...permissions, ...BROWSER_CONNECTION_PERMISSIONS])] }
+}
+
+// CanvasArea is unmounted when the user temporarily visits another app
+// screen. Keep the inventory at module scope so those hidden portals retain
+// their live session and can be reconciled (or destroyed) on the next canvas
+// hydration instead of being leaked or needlessly reloaded.
+const browserPortalInventory: { scope: string | null; portals: Map<string, string> } = {
+  scope: null,
+  portals: new Map()
 }
 
 export const CanvasArea: React.FC = () => {
@@ -81,6 +90,31 @@ export const CanvasArea: React.FC = () => {
     measuredNodeDimensionsRef.current.clear()
     setMeasurementRevision((revision) => revision + 1)
   }, [activeWorkspace?.id, persistedFloorId])
+
+  // WebContentsViews live in the Electron main process, outside React's
+  // lifecycle. Reconcile them with the hydrated canvas so deleting a browser
+  // through a keyboard shortcut, an external refresh, or a scope transition
+  // cannot leave an invisible Chromium renderer running indefinitely.
+  useEffect(() => {
+    const workspaceId = activeWorkspace?.id
+    const scope = workspaceId ? `${workspaceId}:${persistedFloorId || 'landing'}` : null
+    const tracked = browserPortalInventory
+    if (tracked.scope !== scope) {
+      for (const portalId of tracked.portals.values()) {
+        void window.orchestra?.portal?.destroy(portalId).catch(() => undefined)
+      }
+      browserPortalInventory.scope = scope
+      browserPortalInventory.portals = new Map()
+    }
+    if (!scope || hydratedWorkspaceRef.current !== scope) return
+    const next = new Map(storeNodes
+      .filter((node) => node.kind === 'browser')
+      .map((node) => [node.id, String(node.properties?.portalId || node.id)]))
+    for (const [nodeId, portalId] of browserPortalInventory.portals) {
+      if (!next.has(nodeId)) void window.orchestra?.portal?.destroy(portalId).catch(() => undefined)
+    }
+    browserPortalInventory.portals = next
+  }, [activeWorkspace?.id, persistedFloorId, storeNodes])
 
   const nodeTypes = useMemo(() => ({
     terminal: TerminalNode,
@@ -157,17 +191,25 @@ export const CanvasArea: React.FC = () => {
         const current = useWorkspaceStore.getState()
         const nextRemoteNodes = remoteNodes as CanvasNodeData[]
         const nextRemoteEdges = (remoteEdges as CanvasEdgeData[]).map((edge) => normalizeBrowserEdgePermissions(edge, nextRemoteNodes))
-        const missingNodes = nextRemoteNodes.filter((node) => !current.nodes.some((existing) => existing.id === node.id))
-        const missingEdges = nextRemoteEdges.filter((edge) => !current.edges.some((existing) => existing.id === edge.id))
-        if (missingNodes.length) current.setNodes([...current.nodes, ...missingNodes])
+        const remoteNodeIds = new Set(nextRemoteNodes.map((node) => node.id))
+        const remoteEdgeIds = new Set(nextRemoteEdges.map((edge) => edge.id))
+        // Only remove records that were already observed as persisted. This
+        // keeps a freshly-created local node alive during its debounce window,
+        // while still reflecting CLI/agent deletions and allowing the portal
+        // lifecycle reconciler to destroy their native WebContentsViews.
+        const retainedNodes = current.nodes.filter((node) => !persistedNodeIdsRef.current.has(node.id) || remoteNodeIds.has(node.id))
+        const retainedEdges = current.edges.filter((edge) => !persistedEdgeIdsRef.current.has(edge.id) || remoteEdgeIds.has(edge.id))
+        const missingNodes = nextRemoteNodes.filter((node) => !retainedNodes.some((existing) => existing.id === node.id))
+        const missingEdges = nextRemoteEdges.filter((edge) => !retainedEdges.some((existing) => existing.id === edge.id))
+        if (missingNodes.length || retainedNodes.length !== current.nodes.length) current.setNodes([...retainedNodes, ...missingNodes])
         const repairedEdges = nextRemoteEdges.filter((edge) => {
-          const previous = current.edges.find((existing) => existing.id === edge.id)
+          const previous = retainedEdges.find((existing) => existing.id === edge.id)
           return previous && JSON.stringify(previous) !== JSON.stringify(edge)
         })
-        if (missingEdges.length || repairedEdges.length) {
+        if (missingEdges.length || repairedEdges.length || retainedEdges.length !== current.edges.length) {
           const repairedById = new Map(repairedEdges.map((edge) => [edge.id, edge]))
           current.setEdges([
-            ...current.edges.map((edge) => repairedById.get(edge.id) || edge),
+            ...retainedEdges.map((edge) => repairedById.get(edge.id) || edge),
             ...missingEdges
           ])
         }
@@ -509,11 +551,20 @@ export const CanvasArea: React.FC = () => {
         measured,
         style: { width, height },
         selected: selectedNodeId === n.id,
-        data: { properties: n.properties || {}, width, height, selected: selectedNodeId === n.id },
+        data: {
+          properties: n.properties || {},
+          width,
+          height,
+          selected: selectedNodeId === n.id,
+          zIndex: n.zIndex ?? 1,
+          focusModeActive: Boolean(focusSnapshot),
+          focused: focusSnapshot?.id === n.id,
+          interactive: !connectMode && tool === 'select'
+        },
         className: focusSnapshot ? (focusSnapshot.id === n.id ? 'canvas-node-focus' : 'canvas-node-blurred') : ''
       }
     })
-  }, [focusSnapshot?.id, measurementRevision, selectedNodeId, storeNodes])
+  }, [connectMode, focusSnapshot?.id, measurementRevision, selectedNodeId, storeNodes, tool])
 
   // Map Zustand edges to ReactFlow edges
   const reactFlowEdges = useMemo(() => {
@@ -976,8 +1027,12 @@ export const CanvasArea: React.FC = () => {
         panOnScroll={!focusSnapshot}
         zoomOnScroll={!focusSnapshot}
         zoomOnPinch={!focusSnapshot}
-        minZoom={0.08}
-        maxZoom={4}
+        // Chromium page zoom is used to preserve each browser's logical CSS
+        // viewport while the canvas is scaled. Keep React Flow inside the
+        // same supported range so a desktop portal never flips to a mobile
+        // breakpoint merely because the board was zoomed too far out.
+        minZoom={CANVAS_MIN_ZOOM}
+        maxZoom={CANVAS_MAX_ZOOM}
         zoomOnDoubleClick={false}
         preventScrolling={false}
         nodesDraggable={!focusSnapshot}
