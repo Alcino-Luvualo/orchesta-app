@@ -16,7 +16,7 @@ import { app, BrowserWindow, WebContentsView } from 'electron'
 
 const fixturePath = path.resolve(new URL('./test-fixtures/responsive-portal.html', import.meta.url).pathname)
 const logicalWidths = [390, 768, 1440]
-const zoomFactors = [1, 1.25, 2]
+const zoomFactors = [0.25, 0.43, 1, 2]
 const height = 640
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -69,9 +69,13 @@ async function run() {
         assert(viewport.innerHeight > 0 && viewport.visualScale > 0,
           `invalid visual viewport at width ${logicalWidth} / zoom ${zoom}`)
         const frame = await portalView.webContents.capturePage()
-        assert(!frame.isEmpty() && frame.getSize().width > 0 && frame.getSize().height > 0,
+        const frameSize = frame.getSize()
+        const physicalWidth = Math.round(logicalWidth * zoom)
+        assert(!frame.isEmpty() && frameSize.width > 0 && frameSize.height > 0,
           `native WebContentsView produced an empty frame at width ${logicalWidth} / zoom ${zoom}`)
-        results.push({ zoom, requestedWidth: logicalWidth, ...viewport })
+        assert(Math.abs(frameSize.width - physicalWidth) <= 2,
+          `snapshot width ${frameSize.width} drifted from native surface ${physicalWidth} at logical width ${logicalWidth} / zoom ${zoom}`)
+        results.push({ zoom, requestedWidth: logicalWidth, frameWidth: frameSize.width, ...viewport })
       }
     }
 
