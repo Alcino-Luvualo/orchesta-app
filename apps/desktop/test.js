@@ -90,6 +90,9 @@ if (!portalCaptureSource.includes('revealedForCapture') || !portalCaptureSource.
 if (!mainSource.includes("ipcMain.handle('portal:screenshot'") || !mainSource.includes("if (!record) return ''") || !mainSource.includes("return record.lastSnapshot || ''")) {
   throw new Error('Portal screenshot startup retries must remain non-fatal')
 }
+if (!mainSource.includes('lastSnapshotGeometry') || !mainSource.includes('portalSnapshotGeometryMatches') || !mainSource.includes('needsFreshFrame')) {
+  throw new Error('Portal motion must refresh snapshots after a viewport or canvas-scale change')
+}
 
 if (indexHtml.includes('frame-ancestors')) throw new Error('Meta CSP must not contain ineffective frame-ancestors')
 if (!fs.existsSync(viteConfigPath) || fs.existsSync(path.join(appRoot, 'vite.config.ts'))) {
