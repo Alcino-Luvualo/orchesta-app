@@ -1,28 +1,56 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Handle, Position, NodeResizer } from '@xyflow/react'
-import { ArrowLeft, ArrowRight, MoreVertical, RefreshCw, Search, SquareArrowOutUpRight, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RefreshCw, Search, SquareArrowOutUpRight, X } from 'lucide-react'
 import { CanvasComponentData, useWorkspaceStore } from '../../store/workspaceStore'
-import { getPortalGeometry, PortalBounds, PortalGeometry } from '../../../shared/browserPortalGeometry'
+import { getPortalGeometry, PortalBounds, PortalGeometry, PortalViewport } from '../../../shared/browserPortalGeometry'
 
-type PortalMotionOptions = { generation?: number; scale?: number; revision?: number }
+type PortalPresentationMode = 'creating' | 'live' | 'transitioning' | 'snapshot' | 'hidden'
+
+type PortalPresentationUpdate = {
+  instanceId?: string
+  bounds: PortalBounds
+  visible: boolean
+  mode: PortalPresentationMode
+  generation: number
+  revision: number
+  canvasScale: number
+  logicalViewport: { width: number; height: number }
+  zIndex?: number
+  focused?: boolean
+  interactive?: boolean
+}
 
 const hiddenPortalBounds: PortalBounds = { x: 0, y: 0, width: 1, height: 1 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object'
+}
+
+function asFinite(value: unknown, fallback: number): number {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
+}
+
+function presentationData(value: unknown): string | null {
+  if (!isRecord(value)) return null
+  const data = typeof value.data === 'string' ? value.data : value.snapshot
+  return typeof data === 'string' && data.length > 0 ? data : null
+}
 
 /**
  * Browser portals are native WebContentsViews. They are composited above the
  * renderer and therefore cannot follow a CSS transform or be clipped by the
- * ReactFlow node automatically. This component owns the bridge that keeps
- * the native view's pixel bounds synchronized with the transformed node while
- * the canvas moves, without hiding the loaded page behind a placeholder.
+ * ReactFlow node automatically. This component keeps a single, latest-only
+ * presentation stream for the native view and a DOM snapshot fallback for
+ * transitions/clipping, so a move/focus/resize never exposes a stale white
+ * rectangle over the canvas.
  */
 export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = ({ id, data }) => {
   const props = data.properties || {}
-  // Navigation is emitted by the native portal asynchronously. Always merge
-  // that live URL into the latest node properties; the effect below is
-  // intentionally keyed only by portal identity so a URL event cannot remount
-  // the view and reset the user's page.
   const propsRef = useRef(props)
   propsRef.current = props
+  const dataRef = useRef(data)
+  dataRef.current = data
   const portalId = String(props.portalId || id)
   const initialUrl = String(props.url || 'about:blank')
   const [address, setAddress] = useState(initialUrl)
@@ -31,6 +59,8 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
   const [error, setError] = useState<string | null>(null)
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
+  const [snapshot, setSnapshot] = useState<string | null>(null)
+  const [presentation, setPresentation] = useState<PortalPresentationMode>('creating')
   const contentRef = useRef<HTMLDivElement>(null)
   const motionRef = useRef(false)
   const motionReasonsRef = useRef<Set<string>>(new Set())
@@ -38,10 +68,21 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
   const disposedRef = useRef(false)
   const motionGenerationRef = useRef(0)
   const portalRevisionRef = useRef(0)
+  const portalInstanceRef = useRef('')
   const boundsRafRef = useRef<number | null>(null)
   const lastBoundsKeyRef = useRef('')
-  const lastGeometryRef = useRef<PortalGeometry | null>(null)
+  const snapshotRef = useRef<string | null>(null)
+  const refreshPresentationRef = useRef<() => void>(() => undefined)
   const { updateNode, deleteNode, setSelectedNodeId, commitHistory } = useWorkspaceStore()
+
+  const setSnapshotValue = (value: string | null) => {
+    snapshotRef.current = value
+    setSnapshot(value)
+  }
+
+  const setPresentationValue = (value: PortalPresentationMode) => {
+    setPresentation(value)
+  }
 
   useEffect(() => {
     updateNode(id, { properties: { ...propsRef.current, portalId } })
@@ -50,11 +91,15 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
 
     disposedRef.current = false
     let disposed = false
+    let nextRequestId = 0
+    let latestRequestId = 0
+    let pendingUpdate: (PortalPresentationUpdate & { requestId: number }) | null = null
+    let updateInFlight: Promise<unknown> | null = null
+    let portalReady = false
 
-    const getViewport = () => {
-      // getBoundingClientRect() is relative to the renderer's content
-      // viewport, which is also the coordinate space of contentView children.
-      // Do not use screen coordinates or BrowserWindow outer bounds here.
+    const getViewport = (): PortalViewport => {
+      // Both getBoundingClientRect() and WebContentsView bounds are expressed
+      // in logical content pixels. Never use outer window/screen coordinates.
       const documentWidth = typeof document !== 'undefined' ? document.documentElement?.clientWidth || 0 : 0
       const documentHeight = typeof document !== 'undefined' ? document.documentElement?.clientHeight || 0 : 0
       const width = Math.max(1, Math.floor(documentWidth || window.innerWidth || 1))
@@ -62,18 +107,20 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
       return { left: 0, top: 0, width, height }
     }
 
+    const getLogicalViewport = () => {
+      const element = contentRef.current
+      return {
+        width: Math.max(1, Math.floor(element?.offsetWidth || element?.clientWidth || 1)),
+        height: Math.max(1, Math.floor(element?.offsetHeight || element?.clientHeight || 1))
+      }
+    }
+
     const readGeometry = (): PortalGeometry => {
       const element = contentRef.current
       if (!element) {
-        const fallback = getPortalGeometry(
-          { left: 0, top: 0, right: 0, bottom: 0 },
-          getViewport(),
-          1,
-          1
-        )
+        const fallback = getPortalGeometry({ left: 0, top: 0, right: 0, bottom: 0 }, getViewport(), 1, 1)
         fallback.bounds = hiddenPortalBounds
         fallback.visible = false
-        lastGeometryRef.current = fallback
         return fallback
       }
       const rect = element.getBoundingClientRect()
@@ -83,66 +130,160 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         element.offsetWidth || element.clientWidth || rect.width,
         element.offsetHeight || element.clientHeight || rect.height
       )
-      lastGeometryRef.current = geometry
       return geometry
     }
 
     const currentGeneration = () => motionGenerationRef.current
 
-    const sendBounds = (geometry: PortalGeometry, visible: boolean, generation = currentGeneration()) => {
-      if (disposed || disposedRef.current) return
-      const bounds = geometry.bounds || hiddenPortalBounds
-      const safeVisible = Boolean(visible && geometry.visible)
-      const key = [
-        generation,
-        safeVisible ? 1 : 0,
-        bounds.x,
-        bounds.y,
-        bounds.width,
-        bounds.height,
-        geometry.scale.toFixed(4)
-      ].join(':')
-      if (lastBoundsKeyRef.current === key) return
-      lastBoundsKeyRef.current = key
-      const revision = ++portalRevisionRef.current
-      void portal.setBounds(portalId, bounds, safeVisible, {
-        generation,
-        scale: geometry.scale,
-        revision
-      }).then((result) => {
-        if (!result || typeof result !== 'object') return
-        const response = result as { stale?: unknown; generation?: unknown; revision?: unknown }
-        if (typeof response.generation === 'number' && Number.isFinite(response.generation)) {
-          motionGenerationRef.current = Math.max(motionGenerationRef.current, Math.floor(response.generation))
-        }
-        if (typeof response.revision === 'number' && Number.isFinite(response.revision)) {
-          portalRevisionRef.current = Math.max(portalRevisionRef.current, Math.floor(response.revision))
-        }
-        if (response.stale === true) {
-          // An older renderer remount or control client may have advanced the
-          // main-side revision. Retry from the adopted token instead of
-          // leaving this portal permanently hidden.
-          lastBoundsKeyRef.current = ''
-          if (!disposed && !disposedRef.current) {
-            scheduleBoundsSync()
-          }
-        }
-      }).catch(() => undefined)
+    const adoptTokens = (value: unknown) => {
+      if (!isRecord(value)) return
+      if (typeof value.instanceId === 'string' && value.instanceId) portalInstanceRef.current = value.instanceId
+      if (typeof value.generation === 'number' && Number.isFinite(value.generation)) {
+        motionGenerationRef.current = Math.max(motionGenerationRef.current, Math.floor(value.generation))
+      }
+      if (typeof value.revision === 'number' && Number.isFinite(value.revision)) {
+        portalRevisionRef.current = Math.max(portalRevisionRef.current, Math.floor(value.revision))
+      }
     }
 
-    const scheduleBoundsSync = () => {
+    const applyPresentationResult = (request: PortalPresentationUpdate, result: unknown) => {
+      adoptTokens(result)
+      const data = presentationData(result)
+      if (data) setSnapshotValue(data)
+      const resultRecord = isRecord(result) ? result : null
+      if (resultRecord?.stale === true) return
+      const resultVisible = resultRecord?.visible
+      if ((request.mode === 'live' || request.mode === 'transitioning') && resultVisible === false) {
+        setPresentationValue(snapshotRef.current ? 'snapshot' : 'hidden')
+      } else if (request.mode === 'live' && resultVisible !== false) {
+        // Keep the last accepted frame as a cache. It is not rendered while
+        // live, but retaining it lets the next motion/focus transition paint
+        // immediately instead of exposing the placeholder.
+        setPresentationValue('live')
+      } else if (request.mode === 'hidden') {
+        setPresentationValue('hidden')
+      } else if (request.mode === 'snapshot') {
+        setPresentationValue(snapshotRef.current ? 'snapshot' : 'hidden')
+      } else if (data) {
+        setPresentationValue('snapshot')
+      } else if (request.mode === 'creating') {
+        setPresentationValue('creating')
+      } else if (request.mode === 'transitioning') {
+        setPresentationValue(snapshotRef.current ? 'snapshot' : 'transitioning')
+      }
+    }
+
+    const sendDirect = async (request: PortalPresentationUpdate): Promise<unknown> => {
+      if (typeof portal.update === 'function') {
+        try {
+          return await portal.update(portalId, request)
+        } catch {
+          // Older desktop builds do not have portal.update yet. Keep the
+          // renderer compatible while the matching main process reconnects.
+        }
+      }
+      return portal.setBounds(portalId, request.bounds, request.visible, {
+        generation: request.generation,
+        scale: request.canvasScale,
+        revision: request.revision
+      })
+    }
+
+    const flushUpdates = () => {
+      if (disposed || disposedRef.current || updateInFlight || !pendingUpdate) return
+      const request = pendingUpdate
+      pendingUpdate = null
+      updateInFlight = sendDirect(request)
+      updateInFlight.then((result) => {
+        // A response from an older frame must not replace the current DOM
+        // state. Token adoption is still safe; presentation is latest-only.
+        adoptTokens(result)
+        if (request.requestId !== latestRequestId) return
+        if (isRecord(result) && result.stale === true) {
+          lastBoundsKeyRef.current = ''
+          pendingUpdate = { ...request, revision: ++portalRevisionRef.current, requestId: ++nextRequestId }
+          latestRequestId = pendingUpdate.requestId
+          return
+        }
+        applyPresentationResult(request, result)
+      }).catch((reason) => {
+        if (request.requestId !== latestRequestId || disposed || disposedRef.current) return
+        // A failed optional presentation bridge falls back to setBounds inside
+        // sendDirect. Only surface a real failure after that fallback fails.
+        setError(reason instanceof Error ? reason.message : 'Portal indisponível')
+        if (request.mode === 'hidden') setPresentationValue('hidden')
+      }).finally(() => {
+        updateInFlight = null
+        if (!disposed && !disposedRef.current && pendingUpdate) flushUpdates()
+      })
+    }
+
+    const queueUpdate = (request: PortalPresentationUpdate) => {
       if (disposed || disposedRef.current) return
-      if (boundsRafRef.current !== null) return
+      const requestId = ++nextRequestId
+      latestRequestId = requestId
+      pendingUpdate = { ...request, requestId }
+      flushUpdates()
+    }
+
+    const queueGeometry = (mode: PortalPresentationMode, forceVisible = mode === 'live') => {
+      const geometry = readGeometry()
+      const logicalViewport = getLogicalViewport()
+      const visible = Boolean(forceVisible && geometry.visible)
+      const currentData = dataRef.current
+      const nativeAllowed = currentData.interactive !== false && (!currentData.focusModeActive || Boolean(currentData.focused))
+      const requestedMode = mode
+      const effectiveMode: PortalPresentationMode = nativeAllowed
+        ? requestedMode
+        : snapshotRef.current
+          ? 'snapshot'
+          : 'hidden'
+      const request: PortalPresentationUpdate = {
+        instanceId: portalInstanceRef.current || undefined,
+        bounds: geometry.bounds || hiddenPortalBounds,
+        visible: Boolean(nativeAllowed && visible && effectiveMode !== 'snapshot' && effectiveMode !== 'hidden'),
+        mode: effectiveMode,
+        generation: currentGeneration(),
+        revision: ++portalRevisionRef.current,
+        canvasScale: asFinite(geometry.scale, 1),
+        logicalViewport,
+        zIndex: typeof currentData.zIndex === 'number' && Number.isFinite(currentData.zIndex) ? currentData.zIndex : undefined,
+        focused: !currentData.focusModeActive || Boolean(currentData.focused),
+        interactive: currentData.interactive !== false
+      }
+      const boundsKey = [
+        request.generation,
+        request.visible ? 1 : 0,
+        request.mode,
+        request.bounds.x,
+        request.bounds.y,
+        request.bounds.width,
+        request.bounds.height,
+        request.canvasScale.toFixed(4),
+        request.logicalViewport.width,
+        request.logicalViewport.height,
+        request.zIndex ?? '',
+        request.focused ? 1 : 0
+      ].join(':')
+      if (lastBoundsKeyRef.current === boundsKey) return
+      lastBoundsKeyRef.current = boundsKey
+      queueUpdate(request)
+    }
+
+    const scheduleBoundsSync = (modeOrEvent?: PortalPresentationMode | Event) => {
+      if (disposed || disposedRef.current || boundsRafRef.current !== null) return
       boundsRafRef.current = window.requestAnimationFrame(() => {
         boundsRafRef.current = null
-        if (disposed || disposedRef.current) return
-        const geometry = readGeometry()
-        // Keep the native view following the transformed node even while the
-        // board is moving. Hiding it first leaves the renderer placeholder
-        // white for a frame (or for the duration of a slow capture), which is
-        // especially visible on double-click focus and board drags.
-        sendBounds(geometry, true)
+        if (disposed || disposedRef.current || !portalReady) return
+        const requestedMode = typeof modeOrEvent === 'string' ? modeOrEvent : undefined
+        const nextMode: PortalPresentationMode = requestedMode || (motionRef.current ? 'snapshot' : 'live')
+        queueGeometry(nextMode, nextMode === 'live' || nextMode === 'transitioning')
       })
+    }
+
+    refreshPresentationRef.current = () => {
+      lastBoundsKeyRef.current = ''
+      scheduleBoundsSync()
     }
 
     const setMotion = (active: boolean) => {
@@ -151,14 +292,13 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
           motionRef.current = true
           motionGenerationRef.current += 1
         }
-        // ReactFlow emits move packets before/while the DOM transform is
-        // committed. Schedule one geometry read per frame so WebContentsView
-        // keeps the same pixel size as the visible BrowserNode.
-        lastBoundsKeyRef.current = ''
-        scheduleBoundsSync()
+        setPresentationValue(snapshotRef.current ? 'snapshot' : 'transitioning')
+        // The main process may capture a fresh frame for this transition. Do
+        // not keep the native child visible while its transformed bounds are
+        // changing; the cached DOM image is stable and never flashes white.
+        scheduleBoundsSync('snapshot')
         return
       }
-
       if (!motionRef.current) {
         scheduleBoundsSync()
         return
@@ -171,27 +311,42 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
 
     portal.ensure(portalId, initialUrl).then((result) => {
       if (disposed || disposedRef.current) return
-      if (typeof result?.generation === 'number' && Number.isFinite(result.generation)) {
-        // A portal record can survive a renderer/node remount. Continue from
-        // the main-process token instead of replaying generation 1 forever.
-        motionGenerationRef.current = Math.max(motionGenerationRef.current, Math.floor(result.generation))
-      }
-      if (typeof result?.revision === 'number' && Number.isFinite(result.revision)) {
-        portalRevisionRef.current = Math.max(portalRevisionRef.current, Math.floor(result.revision))
-      }
-      if (result?.url) {
+      portalReady = true
+      adoptTokens(result)
+      setError(null)
+      if (isRecord(result) && typeof result.url === 'string') {
         setCurrentUrl(result.url)
         setAddress(result.url)
       }
+      if (isRecord(result)) {
+        if (typeof result.loading === 'boolean') setLoading(result.loading)
+        if (typeof result.canGoBack === 'boolean') setCanGoBack(result.canGoBack)
+        if (typeof result.canGoForward === 'boolean') setCanGoForward(result.canGoForward)
+        if (typeof result.error === 'string' && result.error) setError(result.error)
+      }
       lastBoundsKeyRef.current = ''
+      queueGeometry('creating', false)
       scheduleBoundsSync()
     }).catch((reason) => {
-      if (!disposed && !disposedRef.current) setError(reason instanceof Error ? reason.message : 'Portal indisponível')
+      if (disposed || disposedRef.current) return
+      setPresentationValue('hidden')
+      setError(reason instanceof Error ? reason.message : 'Portal indisponível')
     })
 
+    const cachePortalSnapshot = () => {
+      if (disposed || disposedRef.current || typeof portal.screenshot !== 'function') return
+      portal.screenshot(portalId).then((value) => {
+        if (disposed || disposedRef.current || typeof value !== 'string' || value.length === 0) return
+        // A ready/did-stop event refreshes the cache only. Keep the native
+        // presentation mode untouched so a live page never flickers to a DOM
+        // image just because Chromium finished loading.
+        setSnapshotValue(value)
+      }).catch(() => undefined)
+    }
+
     const onCanvasMotion = (event: Event) => {
-      const detail = (event as CustomEvent<{ active?: boolean }>).detail
-      const reason = String((detail as { reason?: unknown } | undefined)?.reason || 'canvas')
+      const detail = (event as CustomEvent<{ active?: boolean; reason?: unknown }>).detail
+      const reason = String(detail?.reason || 'canvas')
       const watchdogs = motionWatchdogsRef.current
       const clearWatchdog = () => {
         const timer = watchdogs.get(reason)
@@ -200,9 +355,6 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
       }
       if (detail?.active) {
         motionReasonsRef.current.add(reason)
-        // ReactFlow normally emits a matching move-end event. If a native
-        // portal or an interrupted gesture steals that event, do not leave
-        // motion tracking active forever; active move packets re-arm this lease.
         clearWatchdog()
         watchdogs.set(reason, window.setTimeout(() => {
           watchdogs.delete(reason)
@@ -220,7 +372,9 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
     const unsubscribe = window.orchestra?.onEvent((event) => {
       const payload = event.payload || {}
       if (payload.portalId !== portalId) return
+      if (typeof payload.instanceId === 'string' && portalInstanceRef.current && payload.instanceId !== portalInstanceRef.current) return
       if (event.type === 'portal:navigation' && typeof payload.url === 'string') {
+        setError(null)
         setCurrentUrl(payload.url)
         setAddress(payload.url)
         setCanGoBack(Boolean(payload.canGoBack))
@@ -228,8 +382,45 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         updateNode(id, { properties: { ...propsRef.current, portalId, url: payload.url } })
       } else if (event.type === 'portal:loading') {
         setLoading(Boolean(payload.loading))
+        if (payload.loading) {
+          setError(null)
+          if (snapshotRef.current) setPresentationValue('snapshot')
+        } else {
+          cachePortalSnapshot()
+          const state = String(payload.state || '')
+          if (state === 'error' || state === 'crashed') {
+            setPresentationValue(snapshotRef.current ? 'snapshot' : 'hidden')
+          } else if (motionRef.current) scheduleBoundsSync('snapshot')
+          else scheduleBoundsSync('live')
+        }
+      } else if (event.type === 'portal:ready' || event.type === 'portal:did-stop-loading') {
+        setLoading(false)
+        const state = String(payload.state || '')
+        if (state !== 'error' && state !== 'crashed') setError(null)
+        cachePortalSnapshot()
+        if (state === 'error' || state === 'crashed') setPresentationValue(snapshotRef.current ? 'snapshot' : 'hidden')
+        else if (motionRef.current) scheduleBoundsSync('snapshot')
+        else scheduleBoundsSync('live')
       } else if (event.type === 'portal:error') {
         setError(String(payload.errorDescription || payload.error || 'Falha ao carregar o portal'))
+        setLoading(false)
+      } else if (event.type === 'portal:crash' || event.type === 'portal:crashed') {
+        setLoading(false)
+        setPresentationValue(snapshotRef.current ? 'snapshot' : 'hidden')
+        setError('O processo do portal terminou; recarrega para tentar novamente.')
+      } else if (event.type === 'portal:unresponsive') {
+        setError('O portal está temporariamente sem resposta.')
+      } else if (event.type === 'portal:presentation' || event.type === 'portal:snapshot' || event.type === 'portal:state') {
+        adoptTokens(payload)
+        const data = presentationData(payload)
+        if (data) {
+          setSnapshotValue(data)
+          setPresentationValue('snapshot')
+        } else if (payload.mode === 'live') {
+          setPresentationValue('live')
+        } else if (payload.mode === 'hidden') {
+          setPresentationValue('hidden')
+        }
       }
     })
 
@@ -246,10 +437,12 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
     return () => {
       disposed = true
       disposedRef.current = true
+      pendingUpdate = null
       motionReasonsRef.current.clear()
       for (const timer of motionWatchdogsRef.current.values()) window.clearTimeout(timer)
       motionWatchdogsRef.current.clear()
       motionRef.current = false
+      refreshPresentationRef.current = () => undefined
       if (boundsRafRef.current !== null) window.cancelAnimationFrame(boundsRafRef.current)
       boundsRafRef.current = null
       observer?.disconnect()
@@ -259,33 +452,55 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
       viewport?.removeEventListener('scroll', scheduleBoundsSync)
       window.removeEventListener('orchestra:canvas-motion', onCanvasMotion)
       unsubscribe?.()
-      // The generation is intentionally advanced before the cleanup request;
-      // any in-flight resume from this node becomes stale in the main process.
-      motionGenerationRef.current += 1
-      void portal.setBounds(portalId, hiddenPortalBounds, false, {
-        generation: currentGeneration(),
-        scale: 1,
-        revision: ++portalRevisionRef.current
-      }).catch(() => undefined)
+      // Advance both monotonic tokens before cleanup so an older in-flight
+      // live update cannot resurrect a portal after this node is removed.
+      const cleanupGeneration = ++motionGenerationRef.current
+      const cleanupRevision = ++portalRevisionRef.current
+      const cleanup: PortalPresentationUpdate = {
+        instanceId: portalInstanceRef.current || undefined,
+        bounds: hiddenPortalBounds,
+        visible: false,
+        mode: 'hidden',
+        generation: cleanupGeneration,
+        revision: cleanupRevision,
+        canvasScale: 1,
+        logicalViewport: getLogicalViewport(),
+        focused: false,
+        interactive: false
+      }
+      void sendDirect(cleanup).catch(() => undefined)
     }
   }, [id, portalId])
+
+  // Focus mode and node interactivity are controlled by CanvasArea. Refresh
+  // the native child immediately when those flags change without remounting
+  // the portal (which would otherwise reset the loaded page).
+  useEffect(() => {
+    refreshPresentationRef.current()
+  }, [data.focusModeActive, data.focused, data.interactive, data.zIndex, data.selected])
 
   const handleNavigate = (event?: React.FormEvent) => {
     event?.preventDefault()
     const value = address.trim()
     if (!value || !window.orchestra?.portal) return
     setError(null)
-    window.orchestra.portal.navigate(portalId, value).catch((reason) => setError(reason instanceof Error ? reason.message : 'Falha ao navegar'))
+    setLoading(true)
+    window.orchestra.portal.navigate(portalId, value).catch((reason) => {
+      setLoading(false)
+      setError(reason instanceof Error ? reason.message : 'Falha ao navegar')
+    })
   }
 
   const action = (name: 'back' | 'forward' | 'reload' | 'stop') => {
-    window.orchestra?.portal?.action(portalId, name).catch(() => undefined)
+    setError(null)
+    window.orchestra?.portal?.action(portalId, name).catch((reason) => setError(reason instanceof Error ? reason.message : 'Falha ao operar o portal'))
   }
 
   return (
     <div
       className="node"
       data-kind="browser"
+      data-portal-presentation={presentation}
       style={{ width: '100%', height: '100%', minWidth: 300, minHeight: 200 }}
       onClick={() => setSelectedNodeId(id)}
     >
@@ -320,14 +535,14 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
             <input type="text" value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Pesquisar ou digitar URL..." />
           </div>
           <button type="button" className="icon-btn chrome-nav" title="Abrir no navegador do sistema" onClick={() => window.orchestra?.portal?.openExternal(portalId).catch(() => undefined)}><SquareArrowOutUpRight className="icon" /></button>
-          <button type="button" className="icon-btn chrome-nav" title="Mais"><MoreVertical className="icon" /></button>
           <button type="button" className="icon-btn chrome-nav" onClick={(event) => { event.stopPropagation(); deleteNode(id); window.orchestra?.portal?.destroy(portalId).catch(() => undefined) }} title="Fechar portal"><X className="icon" /></button>
         </form>
 
-        <div ref={contentRef} className="chrome-content nodrag nowheel" onMouseDown={(event) => event.stopPropagation()}>
-          <div className="portal-placeholder">
-            {error ? <><b>Portal com erro</b><span>{error}</span></> : <><span>{currentUrl}</span><small>{loading ? 'A carregar…' : 'Portal Chromium isolado'}</small></>}
-          </div>
+        <div ref={contentRef} className={`chrome-content nodrag nowheel portal-state-${presentation}`} onMouseDown={(event) => event.stopPropagation()}>
+          {snapshot && presentation === 'snapshot' ? <img className="portal-snapshot" src={snapshot} alt="Pré-visualização do portal durante o movimento" /> : <div className="portal-placeholder">
+            {error ? <><b>Portal com erro</b><span>{error}</span></> : <><span>{currentUrl}</span><small>{loading ? 'A carregar…' : presentation === 'creating' ? 'A preparar o portal…' : 'Portal Chromium isolado'}</small></>}
+          </div>}
+          {error && snapshot && presentation === 'snapshot' && <div className="portal-error-overlay"><b>Portal com erro</b><span>{error}</span></div>}
         </div>
       </div>
     </div>
