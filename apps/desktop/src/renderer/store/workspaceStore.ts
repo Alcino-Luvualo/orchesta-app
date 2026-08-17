@@ -24,6 +24,10 @@ export interface CanvasComponentData {
   width?: number
   height?: number
   selected?: boolean
+  zIndex?: number
+  focusModeActive?: boolean
+  focused?: boolean
+  interactive?: boolean
 }
 
 export interface CanvasNodeData {
@@ -215,6 +219,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   deleteNode: (id) => {
     const node = get().nodes.find((item) => item.id === id)
     if (node?.kind === 'terminal') window.orchestra?.invoke('terminal.kill', { sessionId: id }).catch(() => undefined)
+    if (node?.kind === 'browser') {
+      const portalId = String(node.properties?.portalId || node.id)
+      window.orchestra?.portal?.destroy(portalId).catch(() => undefined)
+    }
     set((state) => ({
       history: [...state.history, { nodes: state.nodes, edges: state.edges }].slice(-100),
       future: [],
