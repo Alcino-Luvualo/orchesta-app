@@ -220,6 +220,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const { updateNode, deleteNode, setSelectedNodeId, commitHistory, activeWorkspace, activeFloor } = useWorkspaceStore()
   const editorHostRef = useRef<HTMLDivElement>(null)
   const editorViewRef = useRef<EditorView | null>(null)
+  const fileLoadGenerationRef = useRef(0)
   const saveFileRef = useRef<() => void>(() => undefined)
   const lastDiskContentRef = useRef('')
   const syncingDiskRef = useRef(false)
@@ -403,6 +404,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
 
   const selectFile = useCallback(async (entry: FileTreeItem | { path: string; name: string; is_dir: false }) => {
     if (entry.is_dir || !fileRoot) return
+    const generation = ++fileLoadGenerationRef.current
     const resolved = joinWorkspacePath(projectPath, entry.path)
     setFileError(null)
     setSaveState('saved')
@@ -411,6 +413,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     setTreeFocusPath(resolved)
     try {
       const result = await invoke<{ content?: string }>('workspace.read_file', { ...payloadBase, path: relativeWorkspacePath(fileRoot, resolved) })
+      if (generation !== fileLoadGenerationRef.current) return
       const content = result?.content ?? ''
       setFileContent(content)
       lastDiskContentRef.current = content
@@ -419,10 +422,11 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       setSelectedGitPath(relativeWorkspacePath(projectPath, resolved))
       setDirty(false)
     } catch (reason) {
+      if (generation !== fileLoadGenerationRef.current) return
       setFileError(errorMessage(reason, 'Não foi possível ler o ficheiro.'))
       setFileContent('')
     } finally {
-      setLoadingFile(false)
+      if (generation === fileLoadGenerationRef.current) setLoadingFile(false)
     }
   }, [fileRoot, payloadBase, projectPath])
 
@@ -898,10 +902,20 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
           </div>}
         </section>
         {isWide && <section className="files-editor-pane">
-          <div className="editor-tab"><FileCode2 className="icon" /><span>{selectedFile || 'Nenhum ficheiro selecionado'}</span>{dirty && <span aria-label="Alterações não guardadas">●</span>}<button type="button" className="compact-action" disabled={!selectedFilePath || Boolean(gitBusy)} onClick={() => void runBlame()} title="Ver autoria de cada linha"><History className="icon" />Blame</button></div>
+          <div className="editor-tab">
+            <div className="editor-tab-file">
+              <span className="editor-file-icon"><FileCode2 className="icon" /></span>
+              <div className="editor-file-copy"><strong>{selectedFile || 'Editor de ficheiros'}</strong><small>{selectedFilePath || 'Seleciona um ficheiro na árvore'}</small></div>
+            </div>
+            <div className="editor-tab-actions">
+              <span className={`editor-save-state ${saveState}`}>{saveState === 'saving' ? 'A guardar' : saveState === 'error' ? 'Erro' : dirty ? 'Não guardado' : 'Guardado'}</span>
+              <button type="button" className="compact-action" disabled={!selectedFilePath || Boolean(gitBusy)} onClick={() => void runBlame()} title="Ver autoria de cada linha"><History className="icon" />Blame</button>
+            </div>
+          </div>
+          <div className="editor-toolbar"><span className="editor-breadcrumb">{selectedFilePath ? selectedFilePath : 'Nenhum ficheiro aberto'}</span><div className="editor-toolbar-meta"><span>{selectedFile ? (selectedFile.split('.').pop() || 'TXT').toUpperCase() : 'TEXT'}</span><span>UTF-8</span><kbd>⌘S</kbd></div></div>
           {loadingFile && <div className="editor-loading"><LoaderCircle className="icon spin" />A abrir ficheiro…</div>}
           {fileError && <div className="editor-error" role="alert">{fileError}</div>}
-          <div ref={editorHostRef} className="editor-source nodrag nowheel" aria-label={selectedFile ? `Editar ${selectedFile}` : 'Nenhum ficheiro selecionado'} />
+          <div ref={editorHostRef} className={`editor-source nodrag nowheel ${selectedFilePath ? '' : 'is-empty'}`} aria-label={selectedFile ? `Editar ${selectedFile}` : 'Nenhum ficheiro selecionado'}>{!selectedFilePath && !loadingFile && <div className="editor-empty"><FileCode2 className="icon" /><strong>Seleciona um ficheiro</strong><span>O conteúdo e as ferramentas de edição aparecem aqui.</span></div>}</div>
           {blameLines.length > 0 && <div className="blame-panel"><div className="git-section-title"><span>Blame</span><button type="button" className="icon-btn" onClick={() => setBlameLines([])} aria-label="Fechar blame"><X className="icon" /></button></div>{blameLines.slice(0, 80).map((line) => <div key={line.line} className="blame-row"><small>{line.commit?.slice(0, 8) || '—'}</small><span>{line.author || '—'}</span><code>{line.content || ''}</code></div>)}</div>}
           {diagnostics.length > 0 && <div className="editor-diagnostics" role="status">{diagnostics.map((diagnostic, index) => <div key={`${diagnostic.file}:${diagnostic.line}:${index}`} className={diagnostic.severity === 'warning' ? 'warning' : 'error'}><b>{diagnostic.severity}</b><span>{diagnostic.message}</span><small>{diagnostic.line || 1}:{diagnostic.column || 1}</small></div>)}</div>}
           <footer>{saveState === 'saving' ? 'A guardar…' : saveState === 'error' ? 'Erro ao guardar' : dirty ? 'Alterações não guardadas' : 'Guardado'}<span>{selectedFile ? selectedFile.split('.').pop() : '—'}</span></footer>
