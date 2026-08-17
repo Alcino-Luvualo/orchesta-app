@@ -3,7 +3,7 @@ import path from 'path'
 import net from 'net'
 import { spawn, ChildProcess } from 'child_process'
 import fs from 'fs'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { canvasPinchGestureFactor, canvasPinchZoomFactor } from '../renderer/utils/canvasPinchZoom'
 import { clampPortalScale, getPortalGeometry, PortalBounds } from '../shared/browserPortalGeometry'
 
@@ -225,11 +225,14 @@ const orchestraWatcherFailureLogged = new Set<string>()
 
 interface PortalRecord {
   id: string
+  instanceId: string
   view: WebContentsView
   partition: string
   url: string
+  title: string
   console: string[]
   pinchSource: 'wheel' | 'gesture' | null
+  pinchAxis: 'horizontal' | 'vertical' | null
   pinchResetTimer: ReturnType<typeof setTimeout> | null
   beforeMouseEventAvailable: boolean
   lastWheelSignature: string | null
@@ -239,6 +242,21 @@ interface PortalRecord {
   // ResizeObserver is flushing. Keep a second monotonic token so an older
   // request from the same motion generation cannot restore stale geometry.
   boundsRevision: number
+  lifecycle: 'creating' | 'loading' | 'ready' | 'frozen' | 'error' | 'crashed' | 'destroying' | 'destroyed'
+  firstFrameReady: boolean
+  lastError: string | null
+  lastSnapshot: string | null
+  snapshotRefreshTimer: ReturnType<typeof setTimeout> | null
+  captureInFlight: Promise<string> | null
+  /** Requested canvas viewport in CSS/layout units (never native pixels). */
+  logicalViewport: { width: number; height: number }
+  /** Last geometry committed to the native WebContentsView. */
+  physicalBounds: PortalBounds
+  canvasScale: number
+  desiredVisible: boolean
+  presentationActive: boolean
+  presentationInteractive: boolean
+  presentationZIndex: number
   lastVisibleBounds: PortalBounds
   bounds: PortalBounds
   visible: boolean
@@ -248,6 +266,7 @@ interface PortalRecord {
   // Orca's snapshot loop. Keep the mapping in the main process so agents never
   // have to execute arbitrary page code to turn a ref into a selector.
   refs: Map<string, string>
+  refsRevision: number
 }
 
 type PortalInspection = {
@@ -319,17 +338,164 @@ const nativePortalSuppressionReasons = new Set<string>()
 let portalControlServer: net.Server | null = null
 let portalControlSocketPath: string | null = null
 let portalControlBoundPath: string | null = null
+let portalControlBoundIdentity: { dev: number; ino: number } | null = null
 let portalControlStartInFlight: Promise<void> | null = null
 let portalControlStopRequested = false
 
-function applyPortalVisibility(record: PortalRecord): void {
-  record.view.setVisible(Boolean(record.visible && nativePortalSuppressionReasons.size === 0))
+function portalShouldBeVisible(record: PortalRecord): boolean {
+  return Boolean(
+    record.desiredVisible &&
+    record.presentationActive &&
+    record.firstFrameReady &&
+    record.lifecycle === 'ready' &&
+    !record.frozen &&
+    nativePortalSuppressionReasons.size === 0
+  )
 }
 
-function setPortalTransientVisibility(record: PortalRecord, visible: boolean): void {
-  // Temporary compositor surfaces used for screenshots obey the same
-  // suppression lease as normal portal visibility.
-  record.view.setVisible(Boolean(visible && nativePortalSuppressionReasons.size === 0))
+function applyPortalVisibility(record: PortalRecord): void {
+  const shouldShow = portalShouldBeVisible(record)
+  try {
+    if (!record.view.webContents.isDestroyed()) record.view.setVisible(shouldShow)
+  } catch { /* WebContentsView teardown race */ }
+}
+
+function portalViewAlive(record: PortalRecord): boolean {
+  try { return !record.view.webContents.isDestroyed() } catch { return false }
+}
+
+function portalBoundsEqual(left: PortalBounds, right: PortalBounds): boolean {
+  return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
+}
+
+function portalZoomForScale(scale: number): number {
+  // A ReactFlow scale changes the DOM page's rendered size. Native portal
+  // bounds are physical pixels (`logical * scale`). Chromium's viewport is
+  // physical pixels divided by its page zoom, therefore using the same scale
+  // as page zoom preserves the logical CSS viewport and its breakpoints.
+  // Legacy guard: `existing.view.webContents.setZoomFactor(1)` must not reset
+  // this value on every bounds packet.
+  return clampPortalScale(scale)
+}
+
+function applyPortalPresentationOrder(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const ordered = Array.from(portals.values())
+    .filter((record) => record.lifecycle !== 'destroying' && record.lifecycle !== 'destroyed')
+    .sort((left, right) => left.presentationZIndex - right.presentationZIndex)
+  for (const record of ordered) {
+    if (!portalViewAlive(record)) continue
+    try {
+      // WebContentsView has no stable z-index API across supported Electron
+      // releases. Re-adding children in z-order is the documented contentView
+      // ordering primitive and is only done when presentation changes.
+      mainWindow.contentView.removeChildView(record.view)
+      mainWindow.contentView.addChildView(record.view)
+    } catch { /* window/view teardown race */ }
+  }
+}
+
+function updatePortalPhysicalGeometry(
+  record: PortalRecord,
+  bounds: PortalBounds,
+  scale: number,
+  visible: boolean,
+  logicalViewport?: { width?: unknown; height?: unknown }
+): { changed: boolean; scaleChanged: boolean } {
+  const safeScale = clampPortalScale(scale)
+  const nextLogical = {
+    width: Number.isFinite(Number(logicalViewport?.width)) && Number(logicalViewport?.width) > 0
+      ? Number(logicalViewport?.width)
+      : Math.max(1, bounds.width / safeScale),
+    height: Number.isFinite(Number(logicalViewport?.height)) && Number(logicalViewport?.height) > 0
+      ? Number(logicalViewport?.height)
+      : Math.max(1, bounds.height / safeScale)
+  }
+  const nextZoom = portalZoomForScale(safeScale)
+  const boundsChanged = !portalBoundsEqual(record.physicalBounds, bounds)
+  const scaleChanged = Math.abs(record.canvasScale - safeScale) > 0.0005 || Math.abs(record.zoomFactor - nextZoom) > 0.0005
+  record.logicalViewport = nextLogical
+  record.canvasScale = safeScale
+  record.bounds = bounds
+  record.physicalBounds = bounds
+  record.desiredVisible = Boolean(visible)
+  record.visible = Boolean(visible)
+  if (visible && bounds.width > 1 && bounds.height > 1) record.lastVisibleBounds = bounds
+
+  if (portalViewAlive(record)) {
+    if (boundsChanged) {
+      try { record.view.setBounds(bounds) } catch { /* WebContentsView teardown race */ }
+    }
+    // Do not reset page zoom on every bounds packet. This was the source of
+    // visible portal flicker and layout reflow while dragging the canvas.
+    if (scaleChanged) {
+      try { record.view.webContents.setZoomFactor(nextZoom) } catch { /* teardown race */ }
+    }
+  }
+  record.zoomFactor = nextZoom
+  applyPortalVisibility(record)
+  return { changed: boundsChanged || scaleChanged, scaleChanged }
+}
+
+function portalPresentationSnapshot(record: PortalRecord, stale: boolean) {
+  return {
+    ok: !stale,
+    stale,
+    portalId: record.id,
+    instanceId: record.instanceId,
+    state: record.lifecycle,
+    firstFrame: record.firstFrameReady,
+    visible: portalShouldBeVisible(record),
+    desiredVisible: record.desiredVisible,
+    frozen: record.frozen,
+    bounds: record.physicalBounds,
+    physicalBounds: record.physicalBounds,
+    logicalViewport: record.logicalViewport,
+    canvasScale: record.canvasScale,
+    zoomFactor: record.zoomFactor,
+    generation: record.motionGeneration,
+    revision: record.boundsRevision,
+    focused: record.presentationActive,
+    interactive: record.presentationInteractive,
+    zIndex: record.presentationZIndex,
+    error: record.lastError
+  }
+}
+
+function portalEnsureSnapshot(record: PortalRecord) {
+  let title = record.title
+  let loading = record.lifecycle === 'creating' || record.lifecycle === 'loading'
+  let canGoBack = false
+  let canGoForward = false
+  try {
+    if (portalViewAlive(record)) {
+      title = record.view.webContents.getTitle() || title
+      loading = loading || record.view.webContents.isLoading()
+      canGoBack = record.view.webContents.navigationHistory.canGoBack()
+      canGoForward = record.view.webContents.navigationHistory.canGoForward()
+    }
+  } catch { /* navigation can race WebContents teardown */ }
+  return {
+    portalId: record.id,
+    instanceId: record.instanceId,
+    url: record.url,
+    title,
+    loading,
+    history: { canGoBack, canGoForward },
+    canGoBack,
+    canGoForward,
+    error: record.lastError,
+    viewport: record.logicalViewport,
+    logicalViewport: record.logicalViewport,
+    physicalBounds: record.physicalBounds,
+    canvasScale: record.canvasScale,
+    state: record.lifecycle,
+    lifecycle: record.lifecycle,
+    firstFrame: record.firstFrameReady,
+    visible: portalShouldBeVisible(record),
+    generation: record.motionGeneration,
+    revision: record.boundsRevision
+  }
 }
 
 function setPortalSuppression(reason: unknown, suppressed: unknown): void {
@@ -345,12 +511,32 @@ function emitPortalEvent(type: string, portalId: string, payload: Record<string,
   }
 }
 
+function emitPortalRecordEvent(record: PortalRecord, type: string, payload: Record<string, unknown> = {}) {
+  if (portals.get(record.id) !== record || record.lifecycle === 'destroyed') return
+  emitPortalEvent(type, record.id, { instanceId: record.instanceId, ...payload })
+}
+
 function normalizePortalUrl(value: string): string {
   const url = value.trim()
   if (!url) return 'about:blank'
   if (/^https?:\/\//i.test(url) || /^about:/i.test(url)) return url
   if (url.includes('.') && !url.includes(' ')) return `https://${url}`
   return `https://search.brave.com/search?q=${encodeURIComponent(url)}`
+}
+
+function normalizePortalId(value: string): string {
+  const id = value.trim()
+  if (!id || id.length > 128 || !/^[A-Za-z0-9_-]+$/.test(id)) {
+    throw new Error('Portal id inválido')
+  }
+  return id
+}
+
+function portalPartitionForId(portalId: string): string {
+  // Do not derive a Chromium partition from a lossy character replacement:
+  // ids such as `a/b` and `a?b` would otherwise share cookies/storage.
+  const digest = createHash('sha256').update(portalId, 'utf8').digest('hex').slice(0, 32)
+  return `persist:orchestra-portal-${digest}`
 }
 
 function sanitizeExternalUrl(value: string): string | null {
@@ -387,6 +573,7 @@ function forwardPortalPinch(
   inputEventObject: Electron.Event,
   channel: 'before-mouse' | 'input-event' = 'input-event'
 ) {
+  if (!portalViewAlive(record)) return
   const input = inputEvent as unknown as Record<string, unknown>
   const type = String(input.type || '')
   const isWheel = type === 'mouseWheel'
@@ -410,7 +597,15 @@ function forwardPortalPinch(
     const altKey = inputModifier(input, ['alt'])
     const deltaX = finiteInputNumber(input, 'deltaX') ?? 0
     const deltaY = finiteInputNumber(input, 'deltaY') ?? 0
-    const isHorizontalPan = !ctrlKey && !metaKey && !altKey && deltaX !== 0 && deltaY === 0
+    const noModifier = !ctrlKey && !metaKey && !altKey
+    const dominantAxis = Math.abs(deltaX) > Math.abs(deltaY) ? 'horizontal' : 'vertical'
+    if (noModifier && (deltaX !== 0 || deltaY !== 0)) {
+      if (record.pinchAxis === null) record.pinchAxis = dominantAxis
+      // Keep one axis for the whole physical gesture. Trackpad diagonals
+      // otherwise alternate between board pan and page scroll every packet.
+      if (record.pinchAxis === 'horizontal' && deltaX === 0) return
+    }
+    const isHorizontalPan = noModifier && record.pinchAxis === 'horizontal' && deltaX !== 0
     // Once Electron has delivered its documented cancellable mouse path, the
     // later input-event notification is informational only. Handling it too
     // would duplicate every packet (and can be visible as a zoom jump).
@@ -466,17 +661,19 @@ function forwardPortalPinch(
     if (record.pinchResetTimer) clearTimeout(record.pinchResetTimer)
     record.pinchResetTimer = null
     record.pinchSource = null
+    record.pinchAxis = null
   } else {
     if (record.pinchSource && record.pinchSource !== source) return
     record.pinchSource = source
     if (record.pinchResetTimer) clearTimeout(record.pinchResetTimer)
     record.pinchResetTimer = setTimeout(() => {
       record.pinchSource = null
+      record.pinchAxis = null
       record.pinchResetTimer = null
     }, 220)
   }
 
-  emitPortalEvent('portal:pinch', record.id, {
+  emitPortalRecordEvent(record, 'portal:pinch', {
     phase,
     source,
     x,
@@ -488,18 +685,31 @@ function forwardPortalPinch(
 }
 
 function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
+  portalId = normalizePortalId(portalId)
   const existing = portals.get(portalId)
   if (existing) {
     // Canvas scale is represented by the native view bounds. Repair records
     // created by older builds that accidentally stored that transform as
     // Chromium page zoom.
-    if (existing.zoomFactor !== 1) {
-      existing.zoomFactor = 1
-      try { existing.view.webContents.setZoomFactor(1) } catch { /* teardown race */ }
+    if (existing.lifecycle === 'destroying' || existing.lifecycle === 'destroyed') {
+      portals.delete(portalId)
+      return ensurePortal(portalId, requestedUrl)
+    }
+    if (existing.lifecycle === 'error' || existing.lifecycle === 'crashed') {
+      existing.lifecycle = 'loading'
+      existing.firstFrameReady = false
+      existing.lastError = null
+      existing.url = normalizePortalUrl(requestedUrl)
+      if (portalViewAlive(existing)) existing.view.webContents.loadURL(existing.url).catch((error) => {
+        existing.lifecycle = 'error'
+        existing.lastError = String(error)
+        applyPortalVisibility(existing)
+        emitPortalRecordEvent(existing, 'portal:error', { error: existing.lastError })
+      })
     }
     return existing
   }
-  const partition = `persist:orchestra-portal-${portalId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+  const partition = portalPartitionForId(portalId)
   const portalSession = session.fromPartition(partition)
   portalSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
   const view = new WebContentsView({
@@ -514,24 +724,42 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   })
   const record: PortalRecord = {
     id: portalId,
+    instanceId: randomUUID(),
     view,
     partition,
     url: normalizePortalUrl(requestedUrl),
+    title: '',
     console: [],
     pinchSource: null,
+    pinchAxis: null,
     pinchResetTimer: null,
     beforeMouseEventAvailable: false,
     lastWheelSignature: null,
     lastWheelAt: 0,
     motionGeneration: 0,
     boundsRevision: 0,
+    lifecycle: 'creating',
+    firstFrameReady: false,
+    lastError: null,
+    lastSnapshot: null,
+    snapshotRefreshTimer: null,
+    captureInFlight: null,
+    logicalViewport: { width: 1, height: 1 },
+    physicalBounds: { x: 0, y: 0, width: 1, height: 1 },
+    canvasScale: 1,
+    desiredVisible: false,
+    presentationActive: true,
+    presentationInteractive: true,
+    presentationZIndex: 0,
     lastVisibleBounds: { x: 0, y: 0, width: 1, height: 1 },
     bounds: { x: 0, y: 0, width: 1, height: 1 },
     visible: false,
     frozen: false,
     zoomFactor: 1,
-    refs: new Map()
+    refs: new Map(),
+    refsRevision: 0
   }
+  record.lifecycle = 'loading'
   portals.set(portalId, record)
   mainWindow?.contentView.addChildView(view)
   applyPortalVisibility(record)
@@ -550,7 +778,10 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
       forwardPortalPinch(record, mouseEvent as Electron.InputEvent, event, 'before-mouse')
     }
   })
-  view.webContents.on('input-event', (event, inputEvent) => forwardPortalPinch(record, inputEvent, event, 'input-event'))
+  view.webContents.on('input-event', (event, inputEvent) => {
+    forwardPortalPinch(record, inputEvent, event, 'input-event')
+    schedulePortalSnapshot(record)
+  })
   view.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url) || /^about:/i.test(url)) {
       view.webContents.loadURL(normalizePortalUrl(url))
@@ -561,31 +792,103 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
     if (!/^https?:\/\//i.test(url) && !/^about:/i.test(url)) event.preventDefault()
   })
   view.webContents.on('did-start-loading', () => {
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    record.lifecycle = 'loading'
+    record.firstFrameReady = false
+    record.lastError = null
     clearPortalRefs(record)
-    emitPortalEvent('portal:loading', portalId, { loading: true })
+    emitPortalRecordEvent(record, 'portal:loading', { loading: true })
+    applyPortalVisibility(record)
   })
-  view.webContents.on('did-stop-loading', () => emitPortalEvent('portal:loading', portalId, { loading: false }))
+  view.webContents.on('did-finish-load', () => {
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    // A completed navigation only guarantees that the document exists. Keep
+    // the native child hidden until a compositor-backed capture confirms that
+    // at least one frame was painted; this avoids a blank/white native surface
+    // flashing over the renderer during portal creation.
+    record.firstFrameReady = false
+    record.lifecycle = record.frozen ? 'frozen' : 'ready'
+    record.lastError = null
+    applyPortalVisibility(record)
+    void screenshotPortal(record).then(() => {
+      if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+      emitPortalRecordEvent(record, 'portal:ready', {
+        url: record.url,
+        state: record.lifecycle,
+        firstFrame: record.firstFrameReady
+      })
+    }).catch(() => {
+      if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+      // A loaded document can need a few compositor ticks before capturePage
+      // returns a non-empty frame. Retry with bounded backoff; this is a paint
+      // readiness issue, not a navigation error to surface to the user.
+      schedulePortalSnapshot(record, 120, 0)
+    })
+  })
+  view.webContents.on('did-stop-loading', () => {
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    emitPortalRecordEvent(record, 'portal:loading', { loading: false, state: record.lifecycle })
+  })
   view.webContents.on('did-navigate', (_event, url) => {
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
     clearPortalRefs(record)
     record.url = url
-    emitPortalEvent('portal:navigation', portalId, { url, canGoBack: view.webContents.navigationHistory.canGoBack(), canGoForward: view.webContents.navigationHistory.canGoForward() })
+    emitPortalRecordEvent(record, 'portal:navigation', { url, canGoBack: view.webContents.navigationHistory.canGoBack(), canGoForward: view.webContents.navigationHistory.canGoForward() })
   })
   view.webContents.on('did-navigate-in-page', (_event, url) => {
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
     clearPortalRefs(record)
     record.url = url
-    emitPortalEvent('portal:navigation', portalId, { url, canGoBack: view.webContents.navigationHistory.canGoBack(), canGoForward: view.webContents.navigationHistory.canGoForward() })
+    emitPortalRecordEvent(record, 'portal:navigation', { url, canGoBack: view.webContents.navigationHistory.canGoBack(), canGoForward: view.webContents.navigationHistory.canGoForward() })
   })
-  view.webContents.on('page-title-updated', (_event, title) => emitPortalEvent('portal:title', portalId, { title }))
+  view.webContents.on('page-title-updated', (_event, title) => {
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    record.title = title
+    emitPortalRecordEvent(record, 'portal:title', { title })
+  })
   view.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-    emitPortalEvent('portal:error', portalId, { errorCode, errorDescription, url: validatedURL })
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    // -3 is ERR_ABORTED, normally emitted when a user starts another
+    // navigation. Do not turn an expected navigation replacement into a
+    // permanent error state.
+    if (errorCode !== -3) {
+      record.lifecycle = 'error'
+      record.firstFrameReady = false
+      record.lastError = errorDescription || `Portal load failed (${errorCode})`
+      record.desiredVisible = false
+      applyPortalVisibility(record)
+    }
+    if (errorCode !== -3) emitPortalRecordEvent(record, 'portal:error', { errorCode, errorDescription, url: validatedURL })
+  })
+  view.webContents.on('render-process-gone', (_event, details) => {
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    record.lifecycle = 'crashed'
+    record.firstFrameReady = false
+    record.lastError = `Portal renderer terminou: ${String(details?.reason || 'unknown')}`
+    record.desiredVisible = false
+    applyPortalVisibility(record)
+    emitPortalRecordEvent(record, 'portal:crash', { reason: details?.reason, exitCode: details?.exitCode })
+  })
+  view.webContents.on('unresponsive', () => {
+    if (record.lifecycle !== 'destroying' && record.lifecycle !== 'destroyed') {
+      emitPortalRecordEvent(record, 'portal:unresponsive', { state: record.lifecycle })
+    }
   })
   view.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
     const entry = `[${level}] ${message} (${sourceId}:${line})`
     record.console.push(entry)
     if (record.console.length > 200) record.console.splice(0, record.console.length - 200)
-    emitPortalEvent('portal:console', portalId, { level, message, line, sourceId })
+    emitPortalRecordEvent(record, 'portal:console', { level, message, line, sourceId })
   })
-  view.webContents.loadURL(record.url).catch((error) => emitPortalEvent('portal:error', portalId, { error: String(error) }))
+  view.webContents.loadURL(record.url).catch((error) => {
+    record.lifecycle = 'error'
+    record.firstFrameReady = false
+    record.lastError = String(error)
+    record.desiredVisible = false
+    applyPortalVisibility(record)
+    emitPortalRecordEvent(record, 'portal:error', { error: record.lastError })
+  })
   return record
 }
 
@@ -598,9 +901,15 @@ function destroyPortal(portalId: string) {
   // app's before-quit path may call this function again while those events are
   // unwinding. Making the map removal first makes destruction idempotent.
   portals.delete(portalId)
+  record.lifecycle = 'destroying'
+  record.desiredVisible = false
+  record.firstFrameReady = false
   if (record.pinchResetTimer) clearTimeout(record.pinchResetTimer)
   record.pinchResetTimer = null
+  if (record.snapshotRefreshTimer) clearTimeout(record.snapshotRefreshTimer)
+  record.snapshotRefreshTimer = null
   record.pinchSource = null
+  record.pinchAxis = null
   record.beforeMouseEventAvailable = false
   record.lastWheelSignature = null
   record.lastWheelAt = 0
@@ -611,12 +920,16 @@ function destroyPortal(portalId: string) {
   // to surface as `TypeError: Object has been destroyed` from main.
   const windowRef = mainWindow
   if (windowRef && !windowRef.isDestroyed()) {
-    try { windowRef.contentView.removeChildView(record.view) } catch { /* teardown race */ }
+    try {
+      if (portalViewAlive(record)) record.view.setVisible(false)
+      windowRef.contentView.removeChildView(record.view)
+    } catch { /* teardown race */ }
   }
   try {
     const webContents = record.view.webContents
     if (!webContents.isDestroyed()) webContents.close()
   } catch { /* WebContentsView already destroyed */ }
+  record.lifecycle = 'destroyed'
 }
 
 function portalGeneration(value: unknown, fallback: number) {
@@ -698,9 +1011,18 @@ const PORTAL_INSPECTABLE_SELECTOR = 'a,button,input,textarea,select,[role],[aria
 
 function clearPortalRefs(record: PortalRecord): void {
   record.refs.clear()
+  record.refsRevision += 1
 }
 
 function resolvePortalSelector(record: PortalRecord, selector: unknown): string {
+  if (selector && typeof selector === 'object') {
+    const value = selector as Record<string, unknown>
+    const revision = Number(value.refsRevision ?? value.revision)
+    if (Number.isFinite(revision) && Math.floor(revision) !== record.refsRevision) {
+      throw new Error('Referências de portal expiradas; execute portal inspect novamente')
+    }
+    selector = value.selector ?? value.ref
+  }
   assertPortalSelector(selector)
   if (!selector.startsWith('@')) return selector
   if (!/^@e[1-9][0-9]*$/.test(selector)) {
@@ -717,8 +1039,9 @@ async function inspectPortal(record: PortalRecord): Promise<PortalInspection> {
   const result = await record.view.webContents.executeJavaScript(`(() => {
     const inspectable = ${JSON.stringify(PORTAL_INSPECTABLE_SELECTOR)};
     const selectorFor = (element) => {
-      if (element.id && /^[A-Za-z][A-Za-z0-9_:-]*$/.test(element.id) && document.querySelectorAll('#' + element.id).length === 1) {
-        return '#' + element.id;
+      if (element.id) {
+        const escapedId = CSS.escape(element.id);
+        if (document.querySelectorAll('#' + escapedId).length === 1) return '#' + escapedId;
       }
       const parts = [];
       let current = element;
@@ -736,7 +1059,8 @@ async function inspectPortal(record: PortalRecord): Promise<PortalInspection> {
     const elements = Array.from(document.querySelectorAll(inspectable)).filter((element) => {
       if (!(element instanceof Element)) return false;
       const style = window.getComputedStyle(element);
-      return style.display !== 'none' && style.visibility !== 'hidden';
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && !element.closest('[hidden],[inert]') && rect.width > 0 && rect.height > 0;
     });
     return {
       url: location.href,
@@ -751,7 +1075,8 @@ async function inspectPortal(record: PortalRecord): Promise<PortalInspection> {
         selector: selectorFor(element),
         role: element.getAttribute('role') || element.tagName.toLowerCase(),
         name: element.getAttribute('aria-label') || element.getAttribute('placeholder') || (element.textContent || '').trim().slice(0, 200),
-        disabled: Boolean(element.disabled)
+        disabled: Boolean(element.disabled),
+        bounds: (() => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; })()
       }))
     };
   })()`, true) as PortalInspection
@@ -765,64 +1090,144 @@ async function inspectPortal(record: PortalRecord): Promise<PortalInspection> {
   return result
 }
 
-async function clickPortal(record: PortalRecord, selector: unknown) {
+async function focusPortalElement(record: PortalRecord, selector: unknown, selectText = false): Promise<{ x: number; y: number }> {
   const resolvedSelector = resolvePortalSelector(record, selector)
   const encodedSelector = JSON.stringify(resolvedSelector)
-  return record.view.webContents.executeJavaScript(`(() => {
+  const point = await record.view.webContents.executeJavaScript(`(() => {
     const element = document.querySelector(${encodedSelector});
     if (!element) throw new Error('Elemento não encontrado');
     element.scrollIntoView({ block: 'center', inline: 'center' });
     element.focus?.();
-    element.click();
-    return true;
-  })()`, true)
-    .then((value) => {
-      // A click can re-render a SPA without a full navigation. Force the next
-      // action through a fresh snapshot instead of reusing a stale ref.
-      clearPortalRefs(record)
-      return value
-    })
+    if (${selectText ? 'true' : 'false'}) {
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) element.select();
+      else if (element instanceof HTMLElement && element.isContentEditable) {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+    }
+    const rect = element.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`, true) as { x?: unknown; y?: unknown }
+  const x = Number(point?.x)
+  const y = Number(point?.y)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Elemento sem coordenadas interativas')
+  return { x, y }
+}
+
+function portalInputPoint(record: PortalRecord, point: { x: number; y: number }): { x: number; y: number } {
+  const bounds = record.physicalBounds
+  return {
+    x: Math.max(0, Math.min(Math.max(0, bounds.width - 1), Math.round(point.x * record.zoomFactor))),
+    y: Math.max(0, Math.min(Math.max(0, bounds.height - 1), Math.round(point.y * record.zoomFactor)))
+  }
+}
+
+async function clickPortal(record: PortalRecord, selector: unknown) {
+  if (!portalViewAlive(record)) throw new Error('Portal WebContents indisponível')
+  const point = portalInputPoint(record, await focusPortalElement(record, selector))
+  record.view.webContents.sendInputEvent({ type: 'mouseMove', ...point })
+  record.view.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point })
+  record.view.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point })
+  clearPortalRefs(record)
+  schedulePortalSnapshot(record)
+  return { ok: true, point }
 }
 
 async function typePortal(record: PortalRecord, selector: unknown, text: unknown) {
-  const resolvedSelector = resolvePortalSelector(record, selector)
+  if (!portalViewAlive(record)) throw new Error('Portal WebContents indisponível')
   if (typeof text !== 'string' || text.length > 10000) throw new Error('Texto de portal inválido')
-  const encodedSelector = JSON.stringify(resolvedSelector)
-  const encodedText = JSON.stringify(text)
-  return record.view.webContents.executeJavaScript(`(() => {
-    const element = document.querySelector(${encodedSelector});
-    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLElement && element.isContentEditable)) throw new Error('Elemento não editável');
-    element.focus();
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      const setter = Object.getOwnPropertyDescriptor(element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype, 'value')?.set;
-      setter?.call(element, ${encodedText});
-    } else {
-      element.textContent = ${encodedText};
+  await focusPortalElement(record, selector, true)
+  record.view.webContents.insertText(text)
+  // Native insertion emits beforeinput/input with framework-compatible
+  // semantics. Change remains useful for controls that commit on blur.
+  await record.view.webContents.executeJavaScript(`document.activeElement?.dispatchEvent(new Event('change', { bubbles: true })); true`, true)
+  clearPortalRefs(record)
+  schedulePortalSnapshot(record)
+  return { ok: true }
+}
+
+async function pressPortal(record: PortalRecord, payload: Record<string, unknown>) {
+  if (!portalViewAlive(record)) throw new Error('Portal WebContents indisponível')
+  if (payload.selector) await focusPortalElement(record, payload.selector)
+  const key = String(payload.key || payload.text || '').trim()
+  if (!key || key.length > 64) throw new Error('Tecla de portal inválida')
+  type PortalKeyModifier = 'shift' | 'control' | 'ctrl' | 'alt' | 'meta' | 'command' | 'cmd' | 'isKeypad' | 'isAutoRepeat' | 'leftButtonDown' | 'middleButtonDown' | 'rightButtonDown' | 'capsLock' | 'numLock' | 'left' | 'right'
+  const allowedModifiers = new Set<PortalKeyModifier>(['shift', 'control', 'ctrl', 'alt', 'meta', 'command', 'cmd', 'isKeypad', 'isAutoRepeat', 'leftButtonDown', 'middleButtonDown', 'rightButtonDown', 'capsLock', 'numLock', 'left', 'right'])
+  const modifiers = (Array.isArray(payload.modifiers)
+    ? payload.modifiers.map((modifier) => String(modifier).toLowerCase()).filter((modifier): modifier is PortalKeyModifier => allowedModifiers.has(modifier as PortalKeyModifier))
+    : []) as PortalKeyModifier[]
+  if (typeof payload.text === 'string' && !payload.key) {
+    record.view.webContents.sendInputEvent({ type: 'char', keyCode: payload.text })
+    schedulePortalSnapshot(record)
+    return { ok: true, key, modifiers }
+  }
+  record.view.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers })
+  record.view.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers })
+  schedulePortalSnapshot(record)
+  return { ok: true, key, modifiers }
+}
+
+async function scrollPortal(record: PortalRecord, payload: Record<string, unknown>) {
+  if (!portalViewAlive(record)) throw new Error('Portal WebContents indisponível')
+  const deltaX = Math.max(-10000, Math.min(10000, Number(payload.deltaX || payload.x || 0)))
+  const deltaY = Math.max(-10000, Math.min(10000, Number(payload.deltaY || payload.y || 0)))
+  if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY) || (deltaX === 0 && deltaY === 0)) {
+    throw new Error('Delta de scroll inválido')
+  }
+  const selectedPoint = payload.selector ? portalInputPoint(record, await focusPortalElement(record, payload.selector)) : null
+  const x = selectedPoint?.x ?? Math.max(0, Math.floor(Number(payload.clientX ?? record.physicalBounds.width / 2) || 0))
+  const y = selectedPoint?.y ?? Math.max(0, Math.floor(Number(payload.clientY ?? record.physicalBounds.height / 2) || 0))
+  record.view.webContents.sendInputEvent({ type: 'mouseWheel', x, y, deltaX, deltaY })
+  schedulePortalSnapshot(record)
+  return { ok: true, deltaX, deltaY }
+}
+
+async function waitPortal(record: PortalRecord, payload: Record<string, unknown>) {
+  const timeout = Math.max(0, Math.min(300000, Number(payload.timeoutMs ?? payload.ms ?? 250) || 0))
+  const selector = typeof payload.selector === 'string' ? payload.selector.trim() : ''
+  const expectedText = typeof payload.text === 'string' ? payload.text : ''
+  const started = Date.now()
+  do {
+    if (record.lifecycle === 'error' || record.lifecycle === 'crashed') {
+      return { ok: false, state: record.lifecycle, error: record.lastError }
     }
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${encodedText} }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  })()`, true).then((value) => {
-    clearPortalRefs(record)
-    return value
-  })
+    if ((selector || expectedText) && portalViewAlive(record)) {
+      try {
+        const found = await record.view.webContents.executeJavaScript(`(() => {
+          const element = ${selector ? `document.querySelector(${JSON.stringify(selector)})` : 'document.body'};
+          if (!element) return false;
+          return ${expectedText ? `(element.textContent || '').includes(${JSON.stringify(expectedText)})` : 'true'};
+        })()`, true)
+        if (found) return { ok: true, state: record.lifecycle, selector: selector || undefined, text: expectedText || undefined }
+      } catch { /* page can be between navigations */ }
+    } else if (record.firstFrameReady) {
+      return { ok: true, state: record.lifecycle }
+    }
+    if (Date.now() - started >= timeout) break
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, timeout)))
+  } while (Date.now() - started < timeout)
+  return { ok: !selector && !expectedText && record.firstFrameReady, timedOut: true, state: record.lifecycle, selector: selector || undefined, text: expectedText || undefined }
 }
 
 function portalCaptureSize(record: PortalRecord): { width: number; height: number } {
-  const current = record.view.getBounds()
+  const current = (() => {
+    try { return record.view.getBounds() } catch { return record.physicalBounds } })()
   const windowSize = portalContentSize()
   // A portal is commonly hidden at 1x1 while a modal or motion lease owns the
   // renderer. Preserve the last real node viewport for screenshots instead of
   // falling back to the whole window (or Chromium's full document size).
   const fallback = record.lastVisibleBounds
-  const width = record.visible && current.width > 1
+  const width = record.desiredVisible && current.width > 1
     ? current.width
     : fallback.width > 1
       ? fallback.width
       : current.width > 1
         ? current.width
         : Math.min(windowSize.width, 1280)
-  const height = record.visible && current.height > 1
+  const height = record.desiredVisible && current.height > 1
     ? current.height
     : fallback.height > 1
       ? fallback.height
@@ -846,100 +1251,22 @@ async function withPortalTimeout<T>(promise: Promise<T>, timeoutMs: number): Pro
   }
 }
 
-async function capturePortalOffscreen(record: PortalRecord, captureSize: { width: number; height: number }): Promise<string> {
-  // A WebContentsView can be fully loaded yet have no compositor surface when
-  // it is hidden behind a modal or while a canvas motion lease is active. Use a
-  // short-lived offscreen BrowserWindow with the same persistent partition as
-  // a compositor-backed fallback. Cookies and local storage remain shared,
-  // while no native child is ever painted over the user's window.
-  const offscreenWindow = new BrowserWindow({
-    show: false,
-    width: captureSize.width,
-    height: captureSize.height,
-    webPreferences: {
-      partition: record.partition,
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: true,
-      allowRunningInsecureContent: false,
-      offscreen: true
-    }
-  })
+async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
+  if (!portalViewAlive(record)) throw new Error('Portal WebContents indisponível')
+  if (record.physicalBounds.width <= 1 || record.physicalBounds.height <= 1 || record.logicalViewport.width <= 1 || record.logicalViewport.height <= 1) {
+    throw new Error('Geometria do portal ainda não está pronta para o primeiro frame')
+  }
+  const webContents = record.view.webContents
+  const captureSize = portalCaptureSize(record)
+
+  try {
+      webContents.invalidate()
+  } catch {
+      // Repaint is best-effort; CDP can still capture a loaded document.
+  }
+
   let debuggerAttachedHere = false
   try {
-    await withPortalTimeout(offscreenWindow.loadURL(record.url), 10000)
-    const webContents = offscreenWindow.webContents
-    webContents.invalidate()
-    if (!webContents.debugger.isAttached()) {
-      webContents.debugger.attach('1.3')
-      debuggerAttachedHere = true
-    }
-    await new Promise((resolve) => setTimeout(resolve, 80))
-    const metrics = await withPortalTimeout(
-      webContents.debugger.sendCommand('Page.getLayoutMetrics') as Promise<{
-        cssVisualViewport?: { clientWidth?: number; clientHeight?: number }
-      }>,
-      8000
-    )
-      // The page's document size can be thousands of pixels tall. A portal
-      // screenshot must match the node viewport, not the page's scrollable
-    // scrollable content. Clamp to the compositor viewport when Chromium
-    // reports it, otherwise use the explicit offscreen window size.
-    const visualViewport = metrics.cssVisualViewport
-    const width = Number.isFinite(visualViewport?.clientWidth) && (visualViewport?.clientWidth || 0) > 0
-      ? Math.min(captureSize.width, Math.ceil(visualViewport!.clientWidth!))
-      : captureSize.width
-    const height = Number.isFinite(visualViewport?.clientHeight) && (visualViewport?.clientHeight || 0) > 0
-      ? Math.min(captureSize.height, Math.ceil(visualViewport!.clientHeight!))
-      : captureSize.height
-    const response = await withPortalTimeout(
-      webContents.debugger.sendCommand('Page.captureScreenshot', {
-        format: 'png',
-        fromSurface: true,
-        captureBeyondViewport: false,
-        clip: { x: 0, y: 0, width, height, scale: 1 }
-      }) as Promise<{ data?: string }>,
-      8000
-    )
-    if (!response?.data) throw new Error('O compositor offscreen devolveu uma imagem vazia')
-    return `data:image/png;base64,${response.data}`
-  } finally {
-    if (debuggerAttachedHere && !offscreenWindow.isDestroyed() && offscreenWindow.webContents.debugger.isAttached()) {
-      try { offscreenWindow.webContents.debugger.detach() } catch { /* teardown race */ }
-    }
-    if (!offscreenWindow.isDestroyed()) offscreenWindow.destroy()
-  }
-}
-
-async function screenshotPortal(record: PortalRecord): Promise<string> {
-  const webContents = record.view.webContents
-  const originalBounds = record.view.getBounds()
-  const captureSize = portalCaptureSize(record)
-  const isNativeVisible = Boolean(record.visible && nativePortalSuppressionReasons.size === 0)
-  const needsTemporaryViewport = originalBounds.width <= 1 || originalBounds.height <= 1 || !isNativeVisible
-  const temporaryBounds = { x: -captureSize.width, y: -captureSize.height, ...captureSize }
-  if (needsTemporaryViewport) {
-    // Chromium may return an empty image for a hidden WebContentsView. Give it
-    // a real compositor surface briefly, but place that surface entirely
-    // outside the app viewport so a modal can never flash a page over the UI.
-    // The desired portal visibility/bounds are restored in the finally block.
-    record.view.setBounds(temporaryBounds)
-    // A modal/screen suppression is a hard invariant: do not briefly reveal a
-    // native child above its DOM overlay just to obtain a screenshot. The
-    // offscreen BrowserWindow fallback remains compositor-backed.
-    setPortalTransientVisibility(record, true)
-  }
-
-  try {
-    try {
-      webContents.invalidate()
-    } catch {
-      // Repaint is best-effort; CDP can still capture a loaded document.
-    }
-
-    let debuggerAttachedHere = false
-    try {
       if (!webContents.debugger.isAttached()) {
         webContents.debugger.attach('1.3')
         debuggerAttachedHere = true
@@ -955,56 +1282,101 @@ async function screenshotPortal(record: PortalRecord): Promise<string> {
       // render with the wrong aspect/size.
       const visualViewport = metrics.cssVisualViewport
       const width = Number.isFinite(visualViewport?.clientWidth) && (visualViewport?.clientWidth || 0) > 0
-        ? Math.min(captureSize.width, Math.ceil(visualViewport!.clientWidth!))
-        : captureSize.width
+        ? Math.min(record.logicalViewport.width, Math.ceil(visualViewport!.clientWidth!))
+        : record.logicalViewport.width
       const height = Number.isFinite(visualViewport?.clientHeight) && (visualViewport?.clientHeight || 0) > 0
-        ? Math.min(captureSize.height, Math.ceil(visualViewport!.clientHeight!))
-        : captureSize.height
+        ? Math.min(record.logicalViewport.height, Math.ceil(visualViewport!.clientHeight!))
+        : record.logicalViewport.height
       const response = await withPortalTimeout(
         webContents.debugger.sendCommand('Page.captureScreenshot', {
           format: 'png',
           fromSurface: true,
           captureBeyondViewport: false,
-          clip: { x: 0, y: 0, width, height, scale: 1 }
+          // Capture logical CSS dimensions at the canvas pixel scale. The DOM
+          // snapshot is then transformed by ReactFlow without becoming blurry
+          // or being stretched from a CSS-sized bitmap at zoom > 100%.
+          clip: { x: 0, y: 0, width, height, scale: record.canvasScale }
         }) as Promise<{ data?: string }>,
         8000
       )
       if (response?.data) {
-        return `data:image/png;base64,${response.data}`
+        const snapshot = `data:image/png;base64,${response.data}`
+        if (portals.get(record.id) !== record) throw new Error('Portal substituído durante a captura')
+        record.firstFrameReady = true
+        if (record.lifecycle === 'loading' || record.lifecycle === 'creating') record.lifecycle = record.frozen ? 'frozen' : 'ready'
+        record.lastSnapshot = snapshot
+        applyPortalVisibility(record)
+        return snapshot
       }
     } catch {
       // Fall back to Electron's native capture below. Some Chromium builds do
       // not allow a second debugger attachment while DevTools is open.
     } finally {
-      if (debuggerAttachedHere && webContents.debugger.isAttached()) {
-        try { webContents.debugger.detach() } catch { /* teardown race */ }
-      }
+      try {
+        if (debuggerAttachedHere && !webContents.isDestroyed() && webContents.debugger.isAttached()) {
+          try { webContents.debugger.detach() } catch { /* teardown race */ }
+        }
+      } catch { /* WebContents teardown race */ }
     }
 
+  // Capture the existing native surface in place. Moving a WebContentsView
+  // to a temporary negative rectangle changes compositor layout and used to
+  // race bounds updates, producing portal jumps/white flashes on focus.
+  // Hidden/suppressed views use the existing surface/cache; never relocate
+  // or reload the portal just to obtain a frame.
+  if (portalViewAlive(record)) {
     const image = await withPortalTimeout(
       webContents.capturePage({ x: 0, y: 0, width: captureSize.width, height: captureSize.height }),
       8000
     )
     if (!image.isEmpty()) {
       const bytes = image.toPNG()
-      if (bytes.length > 0) return `data:image/png;base64,${bytes.toString('base64')}`
-    }
-    return await capturePortalOffscreen(record, captureSize)
-  } finally {
-    if (needsTemporaryViewport) {
-      // A drag/resize can arrive while CDP is capturing. Only restore the
-      // temporary bounds if this request still owns them; otherwise restoring
-      // the stale snapshot would jump the portal back over the user's latest
-      // position.
-      const currentBounds = record.view.getBounds()
-      const stillTemporary = currentBounds.x === temporaryBounds.x &&
-        currentBounds.y === temporaryBounds.y &&
-        currentBounds.width === temporaryBounds.width &&
-        currentBounds.height === temporaryBounds.height
-      if (stillTemporary) record.view.setBounds(originalBounds)
-      applyPortalVisibility(record)
+      if (bytes.length > 0) {
+        const snapshot = `data:image/png;base64,${bytes.toString('base64')}`
+        if (portals.get(record.id) !== record) throw new Error('Portal substituído durante a captura')
+        record.firstFrameReady = true
+        if (record.lifecycle === 'loading' || record.lifecycle === 'creating') record.lifecycle = record.frozen ? 'frozen' : 'ready'
+        record.lastSnapshot = snapshot
+        applyPortalVisibility(record)
+        return snapshot
+      }
     }
   }
+  if (record.lastSnapshot) return record.lastSnapshot
+  throw new Error('O compositor do portal ainda não tem um primeiro frame')
+}
+
+function screenshotPortal(record: PortalRecord): Promise<string> {
+  if (record.captureInFlight) return record.captureInFlight
+  const capture = capturePortalSnapshotNow(record).finally(() => {
+    if (record.captureInFlight === capture) record.captureInFlight = null
+  })
+  record.captureInFlight = capture
+  return capture
+}
+
+function schedulePortalSnapshot(record: PortalRecord, delayMs = 90, retry = 0): void {
+  if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+  if (record.snapshotRefreshTimer) clearTimeout(record.snapshotRefreshTimer)
+  record.snapshotRefreshTimer = setTimeout(() => {
+    record.snapshotRefreshTimer = null
+    if (!portalViewAlive(record) || record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    const wasReady = record.firstFrameReady
+    void screenshotPortal(record).then(() => {
+      if (!wasReady && record.firstFrameReady) {
+        emitPortalRecordEvent(record, 'portal:ready', {
+          url: record.url,
+          state: record.lifecycle,
+          firstFrame: true,
+          retry
+        })
+      }
+    }).catch(() => {
+      if (!record.firstFrameReady && retry < 5) {
+        schedulePortalSnapshot(record, Math.min(1200, delayMs * 2), retry + 1)
+      }
+    })
+  }, delayMs)
 }
 
 function canonicalOrchestraDir(orchestraDir: string): string {
@@ -1254,13 +1626,38 @@ function portalControlFrame(value: unknown): Buffer {
 
 async function dispatchPortalControl(type: string, payload: Record<string, unknown>): Promise<unknown> {
   if (type === 'portal.list') {
-    return Array.from(portals.values()).map((record) => ({
+    const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+    const terminalToken = typeof payload.authToken === 'string' ? payload.authToken : ''
+    if (!sessionId || !terminalToken) throw new Error('Portal list requer uma sessão de terminal autenticada')
+    await waitForCore()
+    const authorized: PortalRecord[] = []
+    for (const record of portals.values()) {
+      try {
+        await sendCoreRequest('portal.authorize', {
+          sessionId,
+          token: terminalToken,
+          portalId: record.id,
+          permission: 'inspect',
+          clientToken: coreClientToken
+        })
+        authorized.push(record)
+      } catch { /* A list never reveals portals outside this terminal's cables. */ }
+    }
+    return authorized.map((record) => ({
       portalId: record.id,
       url: record.url,
       partition: record.partition,
       bounds: record.bounds,
-      visible: record.visible,
+      visible: portalShouldBeVisible(record),
       frozen: record.frozen,
+      state: record.lifecycle,
+      firstFrame: record.firstFrameReady,
+      logicalViewport: record.logicalViewport,
+      physicalBounds: record.physicalBounds,
+      canvasScale: record.canvasScale,
+      desiredVisible: record.desiredVisible,
+      focused: record.presentationActive,
+      zIndex: record.presentationZIndex,
       generation: record.motionGeneration,
       revision: record.boundsRevision,
       zoomFactor: record.zoomFactor
@@ -1272,9 +1669,14 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
     const terminalToken = typeof payload.authToken === 'string' ? payload.authToken : ''
     if (!sessionId || !terminalToken) throw new Error('Portal open requer uma sessão de terminal autenticada')
     const url = normalizePortalUrl(typeof payload.url === 'string' ? payload.url : 'about:blank')
-    const portalId = typeof payload.portalId === 'string' && payload.portalId.trim()
-      ? payload.portalId.trim()
-      : `browser_${randomUUID()}`
+    // A caller-provided id is only a readable prefix. The server-owned random
+    // suffix prevents `canvas.node.save` from overwriting an existing node in
+    // another workspace and prevents a terminal from grafting permissions
+    // onto a guessed live portal id.
+    const requestedPrefix = typeof payload.portalId === 'string' && payload.portalId.trim()
+      ? normalizePortalId(payload.portalId).slice(0, 48)
+      : 'browser'
+    const portalId = `${requestedPrefix}_${randomUUID()}`
     await waitForCore()
     const context = await sendCoreRequest('canvas.node.context', {
       sessionId,
@@ -1325,14 +1727,24 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('orchestra:event', { type: 'canvas.external-change', payload: { workspaceId, nodeId: portalId } })
     }
-    return { portalId, nodeId: portalId, workspaceId, connectedTo: sessionId, url: record.url, visible: true }
+    return {
+      portalId,
+      instanceId: record.instanceId,
+      nodeId: portalId,
+      workspaceId,
+      connectedTo: sessionId,
+      url: record.url,
+      visible: portalShouldBeVisible(record),
+      state: record.lifecycle,
+      firstFrame: record.firstFrameReady
+    }
   }
 
   const portalId = typeof payload.portalId === 'string' ? payload.portalId : ''
   if (!portalId) throw new Error('Portal id obrigatório')
   if (type === 'portal.ensure') {
     const record = ensurePortal(portalId, typeof payload.url === 'string' ? payload.url : 'about:blank')
-    return { portalId: record.id, url: record.url, generation: record.motionGeneration }
+    return portalEnsureSnapshot(record)
   }
   const record = portals.get(portalId)
   if (!record) throw new Error('Portal não encontrado')
@@ -1340,9 +1752,9 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
     ? 'inspect'
     : type === 'portal.navigate'
       ? 'navigate'
-      : type === 'portal.screenshot'
-        ? 'screenshot'
-        : type === 'portal.click' || type === 'portal.type'
+        : type === 'portal.screenshot'
+          ? 'screenshot'
+        : type === 'portal.click' || type === 'portal.type' || type === 'portal.press' || type === 'portal.scroll' || type === 'portal.wait' || type === 'portal.action' || type === 'portal.destroy'
           ? 'control'
           : null
   if (permission) {
@@ -1358,22 +1770,37 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
       clientToken: coreClientToken
     })
   }
-  if (type === 'portal.inspect') return inspectPortal(record)
+  if (type === 'portal.inspect') return { ...(await inspectPortal(record)), refsRevision: record.refsRevision }
   if (type === 'portal.click') return clickPortal(record, payload.selector)
   if (type === 'portal.type') return typePortal(record, payload.selector, payload.text)
+  if (type === 'portal.press') return pressPortal(record, payload)
+  if (type === 'portal.scroll') return scrollPortal(record, payload)
+  if (type === 'portal.wait') return waitPortal(record, payload)
   if (type === 'portal.screenshot') return { data: await screenshotPortal(record) }
   if (type === 'portal.console') return record.console
   if (type === 'portal.navigate') {
     const url = normalizePortalUrl(typeof payload.url === 'string' ? payload.url : 'about:blank')
     record.url = url
+    record.lifecycle = 'loading'
+    record.firstFrameReady = false
+    record.lastError = null
+    applyPortalVisibility(record)
+    if (!portalViewAlive(record)) return { url, state: 'destroyed' }
     await record.view.webContents.loadURL(url)
-    return { url }
+    return { url, state: record.lifecycle }
   }
   if (type === 'portal.action') {
     const action = payload.action
+    if (!portalViewAlive(record)) return { url: record.url, state: 'destroyed' }
     if (action === 'back' && record.view.webContents.navigationHistory.canGoBack()) record.view.webContents.goBack()
     else if (action === 'forward' && record.view.webContents.navigationHistory.canGoForward()) record.view.webContents.goForward()
-    else if (action === 'reload') record.view.webContents.reload()
+    else if (action === 'reload') {
+      record.lifecycle = 'loading'
+      record.firstFrameReady = false
+      record.lastError = null
+      applyPortalVisibility(record)
+      record.view.webContents.reload()
+    }
     else if (action === 'stop') record.view.webContents.stop()
     else throw new Error('Ação de portal inválida')
     return { url: record.url }
@@ -1499,7 +1926,11 @@ async function startPortalControlServer() {
     })
     server.listen(socketPath, () => {
       portalControlBoundPath = socketPath
-      try { fs.chmodSync(socketPath, 0o600) } catch (error) { console.error('Não foi possível proteger o socket de portais:', error) }
+      try {
+        fs.chmodSync(socketPath, 0o600)
+        const stat = fs.lstatSync(socketPath)
+        portalControlBoundIdentity = { dev: stat.dev, ino: stat.ino }
+      } catch (error) { console.error('Não foi possível proteger o socket de portais:', error) }
     })
   })()
   try {
@@ -1511,13 +1942,22 @@ async function startPortalControlServer() {
 
 function stopPortalControlServer() {
   portalControlStopRequested = true
-  portalControlServer?.close()
+  const server = portalControlServer
+  const boundPath = portalControlBoundPath
+  const boundIdentity = portalControlBoundIdentity
   portalControlServer = null
-  if (portalControlBoundPath) {
-    try { if (fs.existsSync(portalControlBoundPath)) fs.unlinkSync(portalControlBoundPath) } catch { /* best effort cleanup */ }
-  }
   portalControlBoundPath = null
+  portalControlBoundIdentity = null
   portalControlSocketPath = null
+  const unlinkOwnedSocket = () => {
+    if (!boundPath || !boundIdentity) return
+    try {
+      const stat = fs.lstatSync(boundPath)
+      if (stat.isSocket() && stat.dev === boundIdentity.dev && stat.ino === boundIdentity.ino) fs.unlinkSync(boundPath)
+    } catch { /* already removed or replaced */ }
+  }
+  if (server) server.close(unlinkOwnedSocket)
+  else unlinkOwnedSocket()
 }
 
 function isLiveChild(process: ChildProcess | null): process is ChildProcess {
@@ -2052,7 +2492,80 @@ app.whenReady().then(() => {
 
   ipcMain.handle('portal:ensure', async (_event, { portalId, url }) => {
     const record = ensurePortal(String(portalId), String(url || 'about:blank'))
-    return { portalId: record.id, url: record.url, generation: record.motionGeneration, revision: record.boundsRevision }
+    return portalEnsureSnapshot(record)
+  })
+
+  // Single portal presentation/update primitive. The renderer may send a
+  // burst of geometry packets while ReactFlow is moving; keep logical layout
+  // dimensions, physical native bounds and canvas scale as separate state and
+  // commit only the pieces that actually changed. Legacy bounds/freeze/resume
+  // handlers below remain supported for older renderer clients.
+  ipcMain.handle('portal:update', async (_event, payload = {}) => {
+    const portalId = String((payload as Record<string, unknown>).portalId || '')
+    if (!portalId) throw new Error('Portal id obrigatório')
+    const record = portals.get(portalId)
+    if (!record) return { ok: false, state: 'destroyed', stale: true, portalId }
+    const value = payload as Record<string, unknown>
+    if (typeof value.instanceId === 'string' && value.instanceId !== record.instanceId) {
+      return portalPresentationSnapshot(record, true)
+    }
+    const acceptedGeneration = acceptPortalGeneration(record, value.generation)
+    if (acceptedGeneration === null) return portalPresentationSnapshot(record, true)
+    const acceptedRevision = acceptPortalRevision(record, value.revision)
+    if (acceptedRevision === null) return portalPresentationSnapshot(record, true)
+
+    const mode = typeof value.mode === 'string' ? value.mode : 'live'
+    const rawBounds = value.bounds && typeof value.bounds === 'object' ? value.bounds as Record<string, unknown> : record.bounds
+    const canvasScale = clampPortalScale(value.canvasScale ?? value.scale ?? record.canvasScale)
+    const safe = safePortalBounds({ ...rawBounds, scale: canvasScale })
+    const logical = value.logicalViewport && typeof value.logicalViewport === 'object'
+      ? value.logicalViewport as { width?: unknown; height?: unknown }
+      : undefined
+    const snapshotMode = mode === 'snapshot'
+    const requestedVisible = mode === 'hidden' || mode === 'destroyed' || mode === 'transition' || mode === 'transitioning' || snapshotMode
+      ? false
+      : Boolean(value.visible ?? true) && safe.fullyInside
+    let presentationOrderChanged = false
+    if (typeof value.zIndex === 'number' && Number.isFinite(value.zIndex)) {
+      const nextZIndex = Math.floor(value.zIndex)
+      presentationOrderChanged = presentationOrderChanged || nextZIndex !== record.presentationZIndex
+      record.presentationZIndex = nextZIndex
+    }
+    if (typeof value.focused === 'boolean') {
+      presentationOrderChanged = presentationOrderChanged || value.focused !== record.presentationActive
+      record.presentationActive = value.focused
+    }
+    if (typeof value.interactive === 'boolean') record.presentationInteractive = value.interactive
+    // Snapshot mode captures the currently painted native frame first, then
+    // commits the hidden/frozen state. This avoids returning an image while a
+    // newer hidden state is already visible above the DOM placeholder.
+    let data: string | undefined = snapshotMode ? record.lastSnapshot || undefined : undefined
+    if (snapshotMode && !data && portalViewAlive(record)) {
+      try { data = await screenshotPortal(record) } catch { /* first frame retry remains on the loading path */ }
+    }
+    if (portals.get(portalId) !== record || acceptedGeneration !== record.motionGeneration || acceptedRevision !== record.boundsRevision) {
+      return portalPresentationSnapshot(record, true)
+    }
+    record.frozen = snapshotMode
+    if (snapshotMode && record.firstFrameReady) record.lifecycle = 'frozen'
+    if (mode === 'live' && record.firstFrameReady && record.lifecycle === 'frozen') record.lifecycle = 'ready'
+    const geometry = updatePortalPhysicalGeometry(record, safe.bounds, canvasScale, requestedVisible, logical)
+    if (presentationOrderChanged) applyPortalPresentationOrder()
+    const presentation = portalPresentationSnapshot(record, false)
+    emitPortalRecordEvent(record, 'portal:presentation', {
+      ...presentation,
+      mode,
+      changed: geometry.changed,
+      scaleChanged: geometry.scaleChanged
+    })
+    return {
+      ...presentation,
+      generation: acceptedGeneration,
+      revision: acceptedRevision,
+      changed: geometry.changed,
+      scaleChanged: geometry.scaleChanged,
+      ...(data ? { data } : {})
+    }
   })
 
   ipcMain.handle('portal:suppress', (_event, { reason, suppressed }) => {
@@ -2070,33 +2583,30 @@ app.whenReady().then(() => {
     if (acceptedGeneration === null) return { portalId: record.id, url: record.url, stale: true, generation: record.motionGeneration, revision: record.boundsRevision }
     const acceptedRevision = acceptPortalRevision(record, revision)
     if (acceptedRevision === null) return { portalId: record.id, url: record.url, stale: true, generation: record.motionGeneration, revision: record.boundsRevision }
-    // `scale` is the ReactFlow canvas transform, not browser page zoom. The
-    // native view is already resized in screen pixels below; applying it to
-    // Chromium as well would render the page at a fraction of the node size.
-    void scale
-    // Hide before awaiting Chromium. A capture/resume from an older motion
-    // generation must never leave a native page visible over the moving DOM.
-    record.frozen = true
-    record.visible = false
-    applyPortalVisibility(record)
-    // The renderer hides the native view immediately after starting the
-    // freeze. Restore only a hidden compositor surface at the last real node
-    // size for the capture; never expose it while the DOM is moving.
-    const captureBounds = record.lastVisibleBounds.width > 1 && record.lastVisibleBounds.height > 1
-      ? record.lastVisibleBounds
-      : record.bounds
-    if (captureBounds.width > 1 && captureBounds.height > 1) {
-      record.view.setBounds(captureBounds)
+    const freezeScale = typeof scale === 'number' && Number.isFinite(scale)
+      ? clampPortalScale(scale)
+      : record.canvasScale
+    let snapshot = record.lastSnapshot
+    if (!snapshot) {
+      try {
+        snapshot = await screenshotPortal(record)
+      } catch (error) {
+        record.lastError = String(error)
+        emitPortalRecordEvent(record, 'portal:error', { error: record.lastError, state: record.lifecycle })
+        throw error
+      }
     }
-    const image = await record.view.webContents.capturePage({
-      x: 0,
-      y: 0,
-      width: Math.max(1, captureBounds.width),
-      height: Math.max(1, captureBounds.height)
-    })
+    if (portals.get(record.id) !== record || acceptedGeneration !== record.motionGeneration || acceptedRevision !== record.boundsRevision) {
+      return { portalId: record.id, instanceId: record.instanceId, url: record.url, stale: true, generation: record.motionGeneration, revision: record.boundsRevision }
+    }
+    // Hide only after obtaining the current frame. A capture/resume from an
+    // older motion generation must never leave a native page visible over the
+    // moving DOM, but the frame itself must represent the live page.
+    record.frozen = true
+    updatePortalPhysicalGeometry(record, record.bounds, freezeScale, false)
     // A newer resume/bounds request may have won while capturePage was
     // awaiting Chromium. Never let this older capture hide a live portal.
-    if (acceptedGeneration !== record.motionGeneration || acceptedRevision !== record.boundsRevision) {
+    if (portals.get(record.id) !== record || acceptedGeneration !== record.motionGeneration || acceptedRevision !== record.boundsRevision) {
       return { portalId: record.id, url: record.url, stale: true, generation: record.motionGeneration, revision: record.boundsRevision }
     }
     applyPortalVisibility(record)
@@ -2106,7 +2616,7 @@ app.whenReady().then(() => {
       stale: false,
       generation: acceptedGeneration,
       revision: acceptedRevision,
-      data: `data:image/png;base64,${image.toPNG().toString('base64')}`
+      data: snapshot
     }
   })
 
@@ -2118,16 +2628,13 @@ app.whenReady().then(() => {
     const acceptedRevision = acceptPortalRevision(record, revision)
     if (acceptedRevision === null) return { ok: false, stale: true, generation: record.motionGeneration, revision: record.boundsRevision }
     const safe = safePortalBounds({ ...(bounds || {}), scale })
-    record.bounds = safe.bounds
-    if (safe.fullyInside && safe.bounds.width > 1 && safe.bounds.height > 1) record.lastVisibleBounds = safe.bounds
-    record.zoomFactor = 1
-    record.view.setBounds(safe.bounds)
+    updatePortalPhysicalGeometry(record, safe.bounds, safe.scale, safe.fullyInside)
     // A native child is not clipped by the DOM. It must be fully inside the
     // content viewport before it is made visible.
-    record.visible = safe.fullyInside
     record.frozen = !safe.fullyInside
+    if (record.firstFrameReady && record.lifecycle === 'frozen' && safe.fullyInside) record.lifecycle = 'ready'
     applyPortalVisibility(record)
-    return { ok: record.visible, visible: record.visible, generation: acceptedGeneration, revision: acceptedRevision, bounds: safe.bounds }
+    return { ok: portalShouldBeVisible(record), visible: portalShouldBeVisible(record), generation: acceptedGeneration, revision: acceptedRevision, bounds: safe.bounds, state: record.lifecycle, logicalViewport: record.logicalViewport, canvasScale: record.canvasScale }
   })
 
   ipcMain.handle('portal:bounds', (_event, { portalId, bounds, visible, generation, scale, revision }) => {
@@ -2138,21 +2645,23 @@ app.whenReady().then(() => {
     const acceptedRevision = acceptPortalRevision(record, revision)
     if (acceptedRevision === null) return { ok: false, stale: true, generation: record.motionGeneration, revision: record.boundsRevision }
     const safe = safePortalBounds({ ...(bounds || {}), scale })
-    record.bounds = safe.bounds
-    if (Boolean(visible) && safe.fullyInside && safe.bounds.width > 1 && safe.bounds.height > 1) record.lastVisibleBounds = safe.bounds
-    record.zoomFactor = 1
-    record.view.setBounds(safe.bounds)
     const shouldShow = Boolean(visible) && safe.fullyInside
-    record.visible = shouldShow
+    updatePortalPhysicalGeometry(record, safe.bounds, safe.scale, shouldShow)
     record.frozen = !shouldShow
+    if (record.firstFrameReady && record.lifecycle === 'frozen' && shouldShow) record.lifecycle = 'ready'
     applyPortalVisibility(record)
-    return { ok: true, visible: shouldShow, generation: acceptedGeneration, revision: acceptedRevision, bounds: safe.bounds }
+    return { ok: true, visible: portalShouldBeVisible(record), generation: acceptedGeneration, revision: acceptedRevision, bounds: safe.bounds, state: record.lifecycle, logicalViewport: record.logicalViewport, canvasScale: record.canvasScale }
   })
 
   ipcMain.handle('portal:navigate', async (_event, { portalId, url }) => {
     const record = portals.get(String(portalId)) || ensurePortal(String(portalId), String(url || 'about:blank'))
     const nextUrl = normalizePortalUrl(String(url || 'about:blank'))
     record.url = nextUrl
+    record.lifecycle = 'loading'
+    record.firstFrameReady = false
+    record.lastError = null
+    applyPortalVisibility(record)
+    if (!portalViewAlive(record)) return { url: nextUrl, state: 'destroyed' }
     await record.view.webContents.loadURL(nextUrl)
     return { url: nextUrl }
   })
@@ -2160,9 +2669,16 @@ app.whenReady().then(() => {
   ipcMain.handle('portal:action', (_event, { portalId, action }) => {
     const record = portals.get(String(portalId))
     if (!record) throw new Error('Portal não encontrado')
+    if (!portalViewAlive(record)) return { url: record.url, state: 'destroyed' }
     if (action === 'back' && record.view.webContents.navigationHistory.canGoBack()) record.view.webContents.goBack()
     else if (action === 'forward' && record.view.webContents.navigationHistory.canGoForward()) record.view.webContents.goForward()
-    else if (action === 'reload') record.view.webContents.reload()
+    else if (action === 'reload') {
+      record.lifecycle = 'loading'
+      record.firstFrameReady = false
+      record.lastError = null
+      applyPortalVisibility(record)
+      record.view.webContents.reload()
+    }
     else if (action === 'stop') record.view.webContents.stop()
     return { url: record.url }
   })
@@ -2188,7 +2704,7 @@ app.whenReady().then(() => {
   ipcMain.handle('portal:inspect', async (_event, { portalId }) => {
     const record = portals.get(String(portalId))
     if (!record) throw new Error('Portal não encontrado')
-    return inspectPortal(record)
+    return { ...(await inspectPortal(record)), refsRevision: record.refsRevision }
   })
 
   ipcMain.handle('portal:click', async (_event, { portalId, selector }) => {
