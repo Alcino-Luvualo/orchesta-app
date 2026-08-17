@@ -84,6 +84,9 @@ if (portalCaptureStart < 0 || portalCaptureEnd < 0 || !portalCaptureSource.inclu
 if (portalCaptureSource.includes('capturePage({') || portalCaptureSource.includes('clip:') || portalCaptureSource.includes('scale: record.canvasScale')) {
   throw new Error('Portal snapshot capture applies viewport bounds or canvas scale twice')
 }
+if (!mainSource.includes("ipcMain.handle('portal:screenshot'") || !mainSource.includes("if (!record) return ''") || !mainSource.includes("return record.lastSnapshot || ''")) {
+  throw new Error('Portal screenshot startup retries must remain non-fatal')
+}
 
 if (indexHtml.includes('frame-ancestors')) throw new Error('Meta CSP must not contain ineffective frame-ancestors')
 if (!fs.existsSync(viteConfigPath) || fs.existsSync(path.join(appRoot, 'vite.config.ts'))) {
