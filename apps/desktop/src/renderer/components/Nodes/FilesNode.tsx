@@ -119,7 +119,11 @@ function resolveProjectPath(workspaceRoot: string, requested: string): { path: s
   const raw = requested.trim()
   const candidate = normalizeUnixPath(raw.startsWith('/') ? raw : `${root}/${raw}`)
   const inside = candidate === root || candidate.startsWith(`${root}/`)
-  return { path: inside ? candidate : root, outside: Boolean(raw) && !inside }
+  // An explicitly selected absolute directory is a valid File Tree root even
+  // when it is outside the active workspace. The core treats a request that
+  // omits workspaceId as an independent, user-selected root and still applies
+  // its normal canonical-path/symlink checks within that root.
+  return { path: candidate || root, outside: Boolean(raw) && !inside }
 }
 
 function languageExtension(fileName: string) {
