@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orchestra responsive portal fixture</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.45 system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 0; background: #10131a; color: #ecf1ff; }
+    main { min-height: 100vh; padding: clamp(12px, 4vw, 48px); }
+    .card { max-width: 920px; margin: 0 auto; border: 1px solid #2d3850; border-radius: 18px; padding: clamp(14px, 3vw, 30px); background: #171d29; box-shadow: 0 18px 60px #0005; }
+    h1 { margin: 0 0 8px; font-size: clamp(1.2rem, 4vw, 2rem); }
+    #state { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
+    .metric { min-width: 0; padding: 10px; border-radius: 10px; background: #202a3c; }
+    .metric b { display: block; font-variant-numeric: tabular-nums; }
+    #responsive-label { --breakpoint: desktop; margin-top: 18px; padding: 10px 12px; border-radius: 9px; background: #2d3b55; }
+    #responsive-label::after { content: var(--breakpoint); }
+    @media (max-width: 1000px) { #responsive-label { --breakpoint: tablet; } }
+    @media (max-width: 520px) {
+      #state { grid-template-columns: 1fr; }
+      #responsive-label { --breakpoint: phone; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card" id="portal-card" data-portal-state="created">
+      <h1>Responsive browser portal</h1>
+      <p>This local page is deliberately responsive so native portal bounds can be tested without the Orchestra app.</p>
+      <div id="responsive-label">Breakpoint: </div>
+      <div id="state" aria-label="viewport metrics">
+        <div class="metric">innerWidth <b id="inner-width">0</b></div>
+        <div class="metric">innerHeight <b id="inner-height">0</b></div>
+        <div class="metric">visual scale <b id="visual-scale">0</b></div>
+      </div>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const card = document.getElementById('portal-card')
+      const state = { created: true, lifecycle: 'live', x: 0, y: 0, generation: 0, revision: 0 }
+      const readViewport = () => ({
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+        visualScale: Number(window.visualViewport?.scale || 1),
+        breakpoint: getComputedStyle(document.getElementById('responsive-label')).getPropertyValue('--breakpoint').trim()
+      })
+      const render = () => {
+        const viewport = readViewport()
+        document.getElementById('inner-width').textContent = String(viewport.innerWidth)
+        document.getElementById('inner-height').textContent = String(viewport.innerHeight)
+        document.getElementById('visual-scale').textContent = String(viewport.visualScale)
+        card.dataset.breakpoint = viewport.breakpoint
+      }
+      window.portalFixture = {
+        readViewport,
+        create() {
+          state.created = true
+          state.lifecycle = 'live'
+          state.generation += 1
+          state.revision += 1
+          card.dataset.portalState = state.lifecycle
+          render()
+          return { ...state }
+        },
+        drag(dx, dy) {
+          if (!state.created) throw new Error('portal is not created')
+          state.x += Number(dx) || 0
+          state.y += Number(dy) || 0
+          state.generation += 1
+          state.revision += 1
+          return { ...state }
+        },
+        snapshot() {
+          return { ...state, viewport: readViewport() }
+        }
+      }
+      window.addEventListener('resize', render)
+      window.visualViewport?.addEventListener('resize', render)
+      render()
+    })()
+  </script>
+</body>
+</html>
