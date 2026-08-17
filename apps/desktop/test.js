@@ -84,6 +84,9 @@ if (portalCaptureStart < 0 || portalCaptureEnd < 0 || !portalCaptureSource.inclu
 if (portalCaptureSource.includes('capturePage({') || portalCaptureSource.includes('clip:') || portalCaptureSource.includes('scale: record.canvasScale')) {
   throw new Error('Portal snapshot capture applies viewport bounds or canvas scale twice')
 }
+if (!portalCaptureSource.includes('revealedForCapture') || !portalCaptureSource.includes('record.desiredVisible') || !portalCaptureSource.includes('nativePortalSuppressionReasons.size === 0')) {
+  throw new Error('First portal frame capture must wake a valid hidden compositor surface')
+}
 if (!mainSource.includes("ipcMain.handle('portal:screenshot'") || !mainSource.includes("if (!record) return ''") || !mainSource.includes("return record.lastSnapshot || ''")) {
   throw new Error('Portal screenshot startup retries must remain non-fatal')
 }
