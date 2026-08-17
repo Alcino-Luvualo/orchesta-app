@@ -65,14 +65,24 @@ const authChecks = [
   ['portal bounds track same-generation revisions', /boundsRevision/],
   ['portal bounds reject stale revisions', /revision < record\.boundsRevision/],
   ['portal handlers accept bounds revisions', /acceptedRevision/],
-  ['portal capture tracks the last node viewport', /lastVisibleBounds[\s\S]*?portalCaptureSize/],
-  ['portal captures never move the native view offscreen', /Moving a WebContentsView[\s\S]*?record\.lastSnapshot/],
+  ['portal snapshots use the exact native compositor surface', /capturePortalSnapshotNow[\s\S]*?webContents\.capturePage\(\)/],
+  ['portal snapshots do not apply canvas scale twice', /Page\.captureScreenshot[\s\S]*?captureBeyondViewport: false[\s\S]*?acceptSnapshot/],
   ['portal destruction is idempotent during Electron teardown', /function destroyPortal\(portalId: string\)[\s\S]*?portals\.delete\(portalId\)[\s\S]*?windowRef\.isDestroyed\(\)[\s\S]*?webContents\.isDestroyed\(\)/],
   ['portal socket is unique per core socket', /function getPortalControlSocketPath\(\)[\s\S]*?coreSocketPath[\s\S]*?\.portal\.sock/],
   ['active portal socket is never unlinked', /probeUnixSocket\(socketPath\)[\s\S]*?fs\.unlinkSync\(socketPath\)/]
 ]
 for (const [label, pattern] of authChecks) {
   if (!pattern.test(mainSource)) throw new Error(`Terminal/core regression guard missing: ${label}`)
+}
+
+const portalCaptureStart = mainSource.indexOf('async function capturePortalSnapshotNow')
+const portalCaptureEnd = mainSource.indexOf('\nfunction screenshotPortal', portalCaptureStart)
+const portalCaptureSource = mainSource.slice(portalCaptureStart, portalCaptureEnd)
+if (portalCaptureStart < 0 || portalCaptureEnd < 0 || !portalCaptureSource.includes('webContents.capturePage()')) {
+  throw new Error('Portal snapshots must capture the exact native compositor surface')
+}
+if (portalCaptureSource.includes('capturePage({') || portalCaptureSource.includes('clip:') || portalCaptureSource.includes('scale: record.canvasScale')) {
+  throw new Error('Portal snapshot capture applies viewport bounds or canvas scale twice')
 }
 
 if (indexHtml.includes('frame-ancestors')) throw new Error('Meta CSP must not contain ineffective frame-ancestors')
@@ -236,6 +246,7 @@ if (!cssSource.includes('.portal-placeholder { display: flex;')) throw new Error
 if (cssSource.includes('.canvas-focus-active .react-flow__pane')) throw new Error('Focus mode must not dim the React Flow pane parent of the focused node')
 if (cssSource.includes('.canvas-focus-active .react-flow__node.canvas-node-focus { max-width:')) throw new Error('Focus node sizing must stay in flow coordinates')
 if (!canvasSource.includes('onNodeDrag={() => window.dispatchEvent')) throw new Error('Portal motion watchdog has no node-drag heartbeat')
+if (/onMoveStart=\{\(\) => window\.dispatchEvent\(new CustomEvent\('orchestra:canvas-motion'/.test(canvasSource)) throw new Error('A simple board pointer-down still snapshots every browser portal')
 if (!mainSource.includes('record.view.webContents.setZoomFactor(nextZoom)')) throw new Error('Browser logical viewport no longer follows the canvas scale')
 const modalSources = [
   'components/Modals/RecruitAgentModal.tsx',
