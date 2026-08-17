@@ -255,6 +255,8 @@ if (cssSource.includes('.canvas-focus-active .react-flow__pane')) throw new Erro
 if (cssSource.includes('.canvas-focus-active .react-flow__node.canvas-node-focus { max-width:')) throw new Error('Focus node sizing must stay in flow coordinates')
 if (!canvasSource.includes('onNodeDrag={() => window.dispatchEvent')) throw new Error('Portal motion watchdog has no node-drag heartbeat')
 if (/onMoveStart=\{\(\) => window\.dispatchEvent\(new CustomEvent\('orchestra:canvas-motion'/.test(canvasSource)) throw new Error('A simple board pointer-down still snapshots every browser portal')
+const workspaceStoreSource = fs.readFileSync(path.join(sourceRoot, 'renderer/store/workspaceStore.ts'), 'utf8')
+if (!workspaceStoreSource.includes("orchestra:node-deleting") || !canvasSource.includes("orchestra:node-deleting") || !canvasSource.includes('restoreFocus(false)')) throw new Error('Deleting a focused node must exit focus before removal')
 if (!mainSource.includes('record.view.webContents.setZoomFactor(nextZoom)')) throw new Error('Browser logical viewport no longer follows the canvas scale')
 const modalSources = [
   'components/Modals/RecruitAgentModal.tsx',
