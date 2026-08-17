@@ -356,7 +356,10 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
       fontSize: 13,
       lineHeight: 1.24,
       letterSpacing: 0.1,
-      scrollback: 10000,
+      // Long agent sessions commonly exceed ten thousand lines. Keep a
+      // generous bounded client buffer so the user can scroll back through
+      // build logs without allowing an unbounded DOM/memory growth.
+      scrollback: 50000,
       cursorBlink: true,
       cursorStyle: 'bar',
       rightClickSelectsWord: false,
