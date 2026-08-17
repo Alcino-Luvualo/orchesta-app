@@ -1809,8 +1809,11 @@ main {
 }
 
 .chrome-content {
+  position: relative;
   flex: 1;
-  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: #0d0e10;
   display: flex;
   align-items: center;
@@ -1826,10 +1829,14 @@ main {
 }
 
 .portal-snapshot {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: fill;
+  background: #101318;
   user-select: none;
   pointer-events: none;
 }
@@ -1843,13 +1850,14 @@ main {
 .chrome-divider { width: 1px; height: 17px; margin: 0 3px; background: #c6cbd0; }
 .chrome-nav { width: 23px; height: 23px; padding: 0; color: #57606a; }.chrome-nav .icon { width: 13px; height: 13px; }
 .chrome-address { height: 25px; background: #fff; border-color: #c9cfd5; border-radius: 7px; color: #4b5660; }.chrome-address .icon { width: 12px; height: 12px; margin-right: 5px; color: #58a56d; }.chrome-address input { width: 100%; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
-.chrome-content { align-items: stretch; justify-content: stretch; background: #fafbfd; color: #222934; }
+.chrome-content { align-items: stretch; justify-content: stretch; background: #eef1f4; color: #222934; }
 .portal-placeholder { display: flex; width: 100%; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 7px; padding: 24px; color: #64707c; text-align: center; }
 .portal-placeholder span { max-width: min(100%, 520px); overflow: hidden; color: #47525d; font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .portal-placeholder small { color: #8a949d; font: 10px var(--ui); }
 .portal-placeholder b { color: #a24c55; font-size: 11px; }
+.portal-error-overlay { position: absolute; z-index: 3; right: 10px; bottom: 10px; left: 10px; display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; color: #ffd7d7; border: 1px solid rgba(240,120,120,.4); border-radius: 7px; background: rgba(72,20,26,.92); box-shadow: 0 8px 20px rgba(0,0,0,.28); font-size: 9px; }.portal-error-overlay span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .portal-page { width: 100%; max-width: 460px; margin: auto; padding: 24px; }.portal-kicker { color: #77808a; font: 9px var(--mono); }.portal-page h3 { margin: 9px 0 5px; font-size: 20px; letter-spacing: -.04em; }.portal-page p { margin: 0 0 18px; color: #65707b; font-size: 11px; line-height: 1.55; }.portal-page label { display: block; color: #59636c; font-size: 10px; font-weight: 650; }.portal-page input { display: block; width: 100%; height: 30px; margin-top: 6px; padding: 0 9px; color: #35404a; border: 1px solid #d3d9df; border-radius: 6px; background: #fff; font: 10px var(--ui); }.portal-page button { height: 30px; width: 100%; margin-top: 11px; color: #172000; border: 0; border-radius: 6px; background: var(--primary); font-size: 10px; font-weight: 700; }
-[data-theme="dark"] .chrome-shell { background: #17191d; }.chrome-toolbar { background: #202329; border-bottom-color: #343941; }.chrome-divider { background: #3a4048; }.chrome-nav { color: #a6afb8; }.chrome-address { background: #13161a; border-color: #363c44; color: #b8c0c8; }.chrome-content { background: #f8fafb; }
+[data-theme="dark"] .chrome-shell { background: #17191d; }.chrome-toolbar { background: #202329; border-bottom-color: #343941; }.chrome-divider { background: #3a4048; }.chrome-nav { color: #a6afb8; }.chrome-address { background: #13161a; border-color: #363c44; color: #b8c0c8; }[data-theme="dark"] .chrome-content { background: #101318; color: #a6afb8; }[data-theme="dark"] .portal-placeholder span { color: #a6afb8; }[data-theme="dark"] .portal-placeholder small { color: #747f8a; }
 
 /* Command Palette */
 .palette {
