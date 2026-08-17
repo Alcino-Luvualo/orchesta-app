@@ -356,10 +356,11 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
       fontSize: 13,
       lineHeight: 1.24,
       letterSpacing: 0.1,
-      // Long agent sessions commonly exceed ten thousand lines. Keep a
-      // generous bounded client buffer so the user can scroll back through
-      // build logs without allowing an unbounded DOM/memory growth.
-      scrollback: 50000,
+      // Match terminals configured with effectively unlimited scrollback.
+      // xterm keeps the buffer in its internal line store, not as DOM nodes,
+      // so long agent/build sessions remain navigable without truncating at a
+      // small fixed history window.
+      scrollback: 1_000_000,
       cursorBlink: true,
       cursorStyle: 'bar',
       rightClickSelectsWord: false,
