@@ -218,6 +218,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   })),
   deleteNode: (id) => {
     const node = get().nodes.find((item) => item.id === id)
+    // Canvas focus is local renderer state. Notify CanvasArea before removing
+    // the node so a focused close exits focus atomically instead of leaving a
+    // black canvas with a stale focus snapshot that can rehydrate the node.
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('orchestra:node-deleting', { detail: { nodeId: id, kind: node?.kind } }))
+    }
     if (node?.kind === 'terminal') window.orchestra?.invoke('terminal.kill', { sessionId: id }).catch(() => undefined)
     if (node?.kind === 'browser') {
       const portalId = String(node.properties?.portalId || node.id)
