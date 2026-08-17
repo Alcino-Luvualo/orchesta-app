@@ -2674,8 +2674,11 @@ app.whenReady().then(() => {
 
   ipcMain.handle('portal:screenshot', async (_event, { portalId }) => {
     const record = portals.get(String(portalId))
-    if (!record) throw new Error('Portal não encontrado')
-    return screenshotPortal(record)
+    if (!record) return ''
+    // Screenshot requests also refresh the DOM fallback while a portal waits
+    // for its first compositor frame. That startup state is transient, not an
+    // IPC failure: keep the stable placeholder without rejected-handler logs.
+    try { return await screenshotPortal(record) } catch { return record.lastSnapshot || '' }
   })
 
   ipcMain.handle('terminal:relay', async (_, { fromSessionId, toSessionId, message }) => {
