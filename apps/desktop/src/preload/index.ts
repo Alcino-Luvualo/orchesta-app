@@ -3,6 +3,19 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 type BridgeEvent = { type?: string; eventId?: string; payload?: Record<string, unknown> }
 type BridgePayload = Record<string, unknown>
 type PortalMotionOptions = { generation?: number; scale?: number; revision?: number }
+type PortalPresentationUpdate = {
+  instanceId?: string
+  bounds: { x: number; y: number; width: number; height: number }
+  visible: boolean
+  mode: 'creating' | 'live' | 'transitioning' | 'snapshot' | 'hidden'
+  generation: number
+  revision: number
+  canvasScale: number
+  logicalViewport: { width: number; height: number }
+  zIndex?: number
+  focused?: boolean
+  interactive?: boolean
+}
 
 contextBridge.exposeInMainWorld('orchestra', {
   invoke: (type: string, payload: BridgePayload = {}) => ipcRenderer.invoke('orchestra:invoke', { type, payload }),
@@ -12,6 +25,7 @@ contextBridge.exposeInMainWorld('orchestra', {
   openExternalUrl: (url: string) => ipcRenderer.invoke('terminal:open-external', { url }),
   portal: {
     ensure: (portalId: string, url: string) => ipcRenderer.invoke('portal:ensure', { portalId, url }),
+    update: (portalId: string, update: PortalPresentationUpdate) => ipcRenderer.invoke('portal:update', { portalId, ...update }),
     suppress: (reason: string, suppressed: boolean) => ipcRenderer.invoke('portal:suppress', { reason, suppressed }),
     freeze: (portalId: string, options: PortalMotionOptions = {}) => ipcRenderer.invoke('portal:freeze', { portalId, ...options }),
     resume: (portalId: string, bounds: { x: number; y: number; width: number; height: number }, options: PortalMotionOptions = {}) => ipcRenderer.invoke('portal:resume', { portalId, bounds, ...options }),
