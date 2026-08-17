@@ -695,14 +695,16 @@ export const CanvasArea: React.FC = () => {
     return () => window.removeEventListener('keydown', finishOnEnter)
   }, [addEdge, connectMode, connectionPermissions, connectionSourceId, connectionHoverId, setSelectedNodeId, storeEdges])
 
-  const restoreFocus = useCallback(() => {
+  const restoreFocus = useCallback((keepFocusedNode = true) => {
     if (!focusSnapshot) return
     const transition = ++focusTransitionRef.current
     const previousViewport = focusViewportRef.current
     focusViewportRef.current = null
-    const restoredNodes = storeNodes.map((node) => node.id === focusSnapshot.id
-      ? { ...node, x: focusSnapshot.x, y: focusSnapshot.y, width: focusSnapshot.width, height: focusSnapshot.height, zIndex: focusSnapshot.zIndex, locked: focusSnapshot.locked, collapsed: focusSnapshot.collapsed }
-      : node)
+    const restoredNodes = keepFocusedNode
+      ? storeNodes.map((node) => node.id === focusSnapshot.id
+        ? { ...node, x: focusSnapshot.x, y: focusSnapshot.y, width: focusSnapshot.width, height: focusSnapshot.height, zIndex: focusSnapshot.zIndex, locked: focusSnapshot.locked, collapsed: focusSnapshot.collapsed }
+        : node)
+      : storeNodes.filter((node) => node.id !== focusSnapshot.id)
     const finish = () => {
       if (focusTransitionRef.current !== transition) return
       setNodes(restoredNodes)
@@ -798,6 +800,14 @@ export const CanvasArea: React.FC = () => {
   useEffect(() => {
     focusSnapshotRef.current = focusSnapshot
   }, [focusSnapshot])
+  useEffect(() => {
+    const onNodeDeleting = (event: Event) => {
+      const nodeId = (event as CustomEvent<{ nodeId?: string }>).detail?.nodeId
+      if (nodeId && focusSnapshotRef.current?.id === nodeId) restoreFocus(false)
+    }
+    window.addEventListener('orchestra:node-deleting', onNodeDeleting)
+    return () => window.removeEventListener('orchestra:node-deleting', onNodeDeleting)
+  }, [restoreFocus])
   useEffect(() => {
     // Include the floor record id even for a landing floor. This makes a
     // workspace/floor transition a hard focus boundary rather than relying on
@@ -1137,7 +1147,7 @@ export const CanvasArea: React.FC = () => {
 
       {drawRect && <div className="canvas-draw-rect" style={{ left: drawRect.left, top: drawRect.top, width: drawRect.width, height: drawRect.height }} />}
       {pendingRope && <svg className="pending-rope" aria-hidden="true"><path d={pendingRope.d} /></svg>}
-      {focusSnapshot && <div className="focus-mode-pill">Modo foco <button onClick={restoreFocus}>Esc · Voltar</button></div>}
+      {focusSnapshot && <div className="focus-mode-pill">Modo foco <button onClick={() => restoreFocus()}>Esc · Voltar</button></div>}
       {tool !== 'select' && <div className="canvas-mode-banner"><b>{toolLabel[tool]}</b><span>Arrasta no canvas para criar</span><kbd>Esc</kbd></div>}
 
       {storeNodes.length === 0 && (
