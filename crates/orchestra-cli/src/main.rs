@@ -420,6 +420,50 @@ enum PortalCommands {
         #[arg(long)]
         selector: String,
     },
+    /// Press a browser key (for example Enter, Escape or ArrowDown)
+    Press {
+        id: String,
+        key: String,
+        /// Optionally focus the matching editable/control element first.
+        #[arg(long)]
+        selector: Option<String>,
+    },
+    /// Scroll the browser page or a selected scroll container by pixel deltas.
+    /// Positive delta-y moves down; positive delta-x moves right.
+    Scroll {
+        id: String,
+        #[arg(
+            long = "delta-x",
+            alias = "x",
+            allow_hyphen_values = true,
+            default_value_t = 0.0
+        )]
+        delta_x: f64,
+        #[arg(
+            long = "delta-y",
+            alias = "y",
+            allow_hyphen_values = true,
+            default_value_t = 0.0
+        )]
+        delta_y: f64,
+        /// Optionally scroll the matching element instead of the page.
+        #[arg(long)]
+        selector: Option<String>,
+    },
+    /// Wait for a browser state to settle, or until a selector/text appears.
+    Wait {
+        id: String,
+        /// Wait for this selector to become available/visible.
+        #[arg(long)]
+        selector: Option<String>,
+        /// Wait for this visible text to appear.
+        #[arg(long)]
+        text: Option<String>,
+        /// Maximum wait in milliseconds (also used as a plain delay when no
+        /// selector/text is supplied).
+        #[arg(long, default_value_t = 1000)]
+        timeout_ms: u64,
+    },
     /// Type into an input or editable element
     Type {
         id: String,
@@ -519,6 +563,79 @@ fn workspace_payload(workspace_id: Option<&str>, path: &str) -> Result<Value> {
     Ok(payload)
 }
 
+/// Convert the public browser command into the small control-protocol
+/// envelope. Keeping this mapping pure makes the CLI surface testable without
+/// opening a Unix socket or requiring a running Electron process.
+fn portal_command_parts(command: PortalCommands) -> (&'static str, Value, Option<PathBuf>) {
+    match command {
+        PortalCommands::Open {
+            url,
+            portal_id,
+            connect_to,
+        } => (
+            "portal.open",
+            json!({ "url": url, "portalId": portal_id, "connectTo": connect_to }),
+            None,
+        ),
+        PortalCommands::List => ("portal.list", json!({}), None),
+        PortalCommands::Inspect { id } => ("portal.inspect", json!({ "portalId": id }), None),
+        PortalCommands::Navigate { id, url } => (
+            "portal.navigate",
+            json!({ "portalId": id, "url": url }),
+            None,
+        ),
+        PortalCommands::Click { id, selector } => (
+            "portal.click",
+            json!({ "portalId": id, "selector": selector }),
+            None,
+        ),
+        PortalCommands::Press { id, key, selector } => (
+            "portal.press",
+            json!({ "portalId": id, "key": key, "selector": selector }),
+            None,
+        ),
+        PortalCommands::Scroll {
+            id,
+            delta_x,
+            delta_y,
+            selector,
+        } => (
+            "portal.scroll",
+            json!({
+                "portalId": id,
+                "deltaX": delta_x,
+                "deltaY": delta_y,
+                "selector": selector
+            }),
+            None,
+        ),
+        PortalCommands::Wait {
+            id,
+            selector,
+            text,
+            timeout_ms,
+        } => (
+            "portal.wait",
+            json!({
+                "portalId": id,
+                "selector": selector,
+                "text": text,
+                "timeoutMs": timeout_ms.clamp(1, 300_000)
+            }),
+            None,
+        ),
+        PortalCommands::Type { id, selector, text } => (
+            "portal.type",
+            json!({ "portalId": id, "selector": selector, "text": text }),
+            None,
+        ),
+        PortalCommands::Screenshot { id, output } => {
+            ("portal.screenshot", json!({ "portalId": id }), output)
+        }
+        PortalCommands::Console { id } => ("portal.console", json!({ "portalId": id }), None),
+    }
+}
+
 async fn run_portal_command(command: PortalCommands) -> Result<()> {
     let socket_path = portal_socket_path();
     if !socket_path.exists() {
@@ -547,45 +664,12 @@ async fn run_portal_command(command: PortalCommands) -> Result<()> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Portal control did not return a token"))?
         .to_string();
-    let (message_type, payload, output_file) = match command {
-        PortalCommands::Open {
-            url,
-            portal_id,
-            connect_to,
-        } => {
-            if connect_to != "self" {
-                anyhow::bail!("portal open currently supports only --connect-to self")
-            }
-            (
-                "portal.open",
-                json!({ "url": url, "portalId": portal_id, "connectTo": connect_to }),
-                None,
-            )
-        }
-        PortalCommands::List => ("portal.list", json!({}), None),
-        PortalCommands::Inspect { id } => ("portal.inspect", json!({ "portalId": id }), None),
-        PortalCommands::Navigate { id, url } => (
-            "portal.navigate",
-            json!({ "portalId": id, "url": url }),
-            None,
-        ),
-        PortalCommands::Click { id, selector } => (
-            "portal.click",
-            json!({ "portalId": id, "selector": selector }),
-            None,
-        ),
-        PortalCommands::Type { id, selector, text } => (
-            "portal.type",
-            json!({ "portalId": id, "selector": selector, "text": text }),
-            None,
-        ),
-        PortalCommands::Screenshot { id, output } => {
-            ("portal.screenshot", json!({ "portalId": id }), output)
-        }
-        PortalCommands::Console { id } => ("portal.console", json!({ "portalId": id }), None),
-    };
+    let (message_type, payload, output_file) = portal_command_parts(command);
+    if message_type == "portal.open" && payload["connectTo"].as_str() != Some("self") {
+        anyhow::bail!("portal open currently supports only --connect-to self")
+    }
     let mut payload = payload;
-    if message_type != "portal.list" && message_type != "portal.ensure" {
+    if message_type != "portal.ensure" {
         payload["sessionId"] = Value::String(
             std::env::var("ORCHESTRA_SESSION_ID")
                 .map_err(|_| anyhow::anyhow!("Portal control requires ORCHESTRA_SESSION_ID"))?,
@@ -603,6 +687,11 @@ async fn run_portal_command(command: PortalCommands) -> Result<()> {
         payload,
     )
     .await?;
+    if message_type == "portal.wait"
+        && (result["ok"].as_bool() == Some(false) || result["timedOut"].as_bool() == Some(true))
+    {
+        anyhow::bail!("Portal wait timed out before the requested condition was met")
+    }
     if let Some(output) = output_file {
         let data_url = result["data"]
             .as_str()
@@ -1047,6 +1136,68 @@ mod tests {
             derived_portal_socket_path(PathBuf::from("/tmp/orchesta-b")),
             PathBuf::from("/tmp/orchesta-b.portal.sock")
         );
+    }
+
+    #[test]
+    fn browser_control_commands_parse_and_map_to_protocol_payloads() {
+        let cli = Cli::try_parse_from([
+            "orchestra",
+            "browser",
+            "press",
+            "portal-1",
+            "Enter",
+            "--selector",
+            "#search",
+        ])
+        .expect("browser press should parse");
+        let Commands::Portal { command } = cli.command else {
+            panic!("expected browser command")
+        };
+        let (message, payload, output) = portal_command_parts(command);
+        assert_eq!(message, "portal.press");
+        assert_eq!(payload["portalId"], "portal-1");
+        assert_eq!(payload["key"], "Enter");
+        assert_eq!(payload["selector"], "#search");
+        assert!(output.is_none());
+
+        let cli = Cli::try_parse_from([
+            "orchestra",
+            "browser",
+            "scroll",
+            "portal-1",
+            "--x",
+            "24",
+            "--delta-y",
+            "-480",
+        ])
+        .expect("browser scroll should parse");
+        let Commands::Portal { command } = cli.command else {
+            panic!("expected browser command")
+        };
+        let (message, payload, _) = portal_command_parts(command);
+        assert_eq!(message, "portal.scroll");
+        assert_eq!(payload["deltaX"], 24.0);
+        assert_eq!(payload["deltaY"], -480.0);
+        assert!(payload["selector"].is_null());
+
+        let cli = Cli::try_parse_from([
+            "orchestra",
+            "browser",
+            "wait",
+            "portal-1",
+            "--text",
+            "Results",
+            "--timeout-ms",
+            "999999",
+        ])
+        .expect("browser wait should parse");
+        let Commands::Portal { command } = cli.command else {
+            panic!("expected browser command")
+        };
+        let (message, payload, _) = portal_command_parts(command);
+        assert_eq!(message, "portal.wait");
+        assert_eq!(payload["text"], "Results");
+        assert_eq!(payload["timeoutMs"], 300_000);
     }
 
     #[test]
