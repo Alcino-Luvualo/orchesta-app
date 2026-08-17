@@ -1232,6 +1232,7 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
     throw new Error('Geometria do portal ainda não está pronta para o primeiro frame')
   }
   const webContents = record.view.webContents
+  let revealedForCapture = false
 
   const acceptSnapshot = (bytes: Buffer): string | null => {
     if (bytes.length === 0) return null
@@ -1241,11 +1242,23 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
     if (record.lifecycle === 'loading' || record.lifecycle === 'creating') record.lifecycle = record.frozen ? 'frozen' : 'ready'
     record.lastSnapshot = snapshot
     applyPortalVisibility(record)
+    revealedForCapture = false
     return snapshot
   }
 
   try {
-      webContents.invalidate()
+    // Some Linux Chromium/GPU paths do not paint a WebContentsView while it
+    // is hidden at creation time. A valid, desired-visible portal therefore
+    // needs one compositor tick as a native child before capturePage/CDP can
+    // produce its first frame. This is scoped to first-frame capture only;
+    // normal modal/focus suppression and snapshot transitions remain hidden.
+    if (!record.firstFrameReady && record.desiredVisible && record.presentationActive && nativePortalSuppressionReasons.size === 0) {
+      try {
+        record.view.setVisible(true)
+        revealedForCapture = true
+      } catch { /* teardown race */ }
+    }
+    webContents.invalidate()
   } catch {
       // Repaint is best-effort; CDP can still capture a loaded document.
   }
@@ -1295,6 +1308,7 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
       } catch { /* WebContents teardown race */ }
     }
 
+  if (revealedForCapture) applyPortalVisibility(record)
   if (record.lastSnapshot) return record.lastSnapshot
   throw new Error('O compositor do portal ainda não tem um primeiro frame')
 }
