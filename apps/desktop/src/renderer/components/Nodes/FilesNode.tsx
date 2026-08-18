@@ -39,7 +39,7 @@ import { javascript } from '@codemirror/lang-javascript'
 import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import { rust } from '@codemirror/lang-rust'
-import { bracketMatching, foldGutter, foldKeymap, indentOnInput } from '@codemirror/language'
+import { bracketMatching, foldGutter, foldKeymap, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
 import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from '@codemirror/view'
 import { oneDark } from '@codemirror/theme-one-dark'
@@ -167,6 +167,29 @@ function allDirectoryPaths(root: FileTreeItem | null) {
   return paths
 }
 
+/** CodeMirror light theme that matches the Orchesta File Tree UI. */
+const orchestaLight = EditorView.theme({
+  '&': { backgroundColor: '#ffffff', color: '#24292e' },
+  '.cm-content': { caretColor: '#24292e' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#24292e' },
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': { backgroundColor: '#c8e1ff' },
+  '.cm-panels': { backgroundColor: '#f6f8fa', color: '#24292e' },
+  '.cm-panels.cm-panels-top': { borderBottom: '1px solid #d1d5da' },
+  '.cm-panels.cm-panels-bottom': { borderTop: '1px solid #d1d5da' },
+  '.cm-searchMatch': { backgroundColor: '#ffdf5d66', outline: '1px solid #ffdf5d88' },
+  '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: '#ffdf5d' },
+  '.cm-activeLine': { backgroundColor: '#f6f8fa' },
+  '.cm-selectionMatch': { backgroundColor: '#c8e1ff44' },
+  '&.cm-focused .cm-matchingBracket': { backgroundColor: '#c8e1ff', outline: '1px solid #a6c8e6' },
+  '.cm-gutters': { backgroundColor: '#fafbfc', color: '#959da5', borderRight: '1px solid #e1e4e8' },
+  '.cm-activeLineGutter': { backgroundColor: '#f0f2f5' },
+  '.cm-foldPlaceholder': { backgroundColor: '#f1f8ff', border: '1px solid #c8e1ff', color: '#0366d6' },
+  '.cm-tooltip': { border: '1px solid #d1d5da', backgroundColor: '#ffffff' },
+  '.cm-tooltip .cm-tooltip-arrow:before': { borderTopColor: '#d1d5da', borderBottomColor: '#d1d5da' },
+  '.cm-tooltip .cm-tooltip-arrow:after': { borderTopColor: '#ffffff', borderBottomColor: '#ffffff' },
+  '.cm-tooltip-autocomplete': { '& > ul > li[aria-selected]': { backgroundColor: '#0366d6', color: 'white' } },
+}, { dark: false })
+
 export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({ id, data }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [selectedFile, setSelectedFile] = useState('')
@@ -217,7 +240,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: TreeRow } | null>(null)
   const [graphScrollTop, setGraphScrollTop] = useState(0)
   const [graphViewportHeight, setGraphViewportHeight] = useState(360)
-  const { updateNode, deleteNode, setSelectedNodeId, commitHistory, activeWorkspace, activeFloor } = useWorkspaceStore()
+  const { updateNode, deleteNode, setSelectedNodeId, commitHistory, activeWorkspace, activeFloor, theme } = useWorkspaceStore()
   const editorHostRef = useRef<HTMLDivElement>(null)
   const editorViewRef = useRef<EditorView | null>(null)
   const fileLoadGenerationRef = useRef(0)
@@ -567,7 +590,9 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       extensions: [
         history(), lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(), foldGutter(), bracketMatching(), closeBrackets(), indentOnInput(), autocompletion(),
         keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap, ...closeBracketsKeymap, ...completionKeymap, ...searchKeymap, indentWithTab, { key: 'Mod-s', run: () => { saveFileRef.current(); return true } }]),
-        highlightSelectionMatches(), languageExtension(selectedFile), oneDark, EditorView.lineWrapping,
+        highlightSelectionMatches(), languageExtension(selectedFile),
+        theme === 'dark' ? oneDark : [orchestaLight, syntaxHighlighting(defaultHighlightStyle, { fallback: true })],
+        EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return
           if (syncingDiskRef.current) { syncingDiskRef.current = false; return }
@@ -578,7 +603,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     const view = new EditorView({ state, parent: host })
     editorViewRef.current = view
     return () => { view.destroy(); if (editorViewRef.current === view) editorViewRef.current = null }
-  }, [selectedFilePath])
+  }, [selectedFilePath, theme])
 
   useEffect(() => {
     const view = editorViewRef.current
