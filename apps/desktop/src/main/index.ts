@@ -357,7 +357,7 @@ function portalShouldBeVisible(record: PortalRecord): boolean {
     record.desiredVisible &&
     record.presentationActive &&
     record.firstFrameReady &&
-    record.lifecycle === 'ready' &&
+    (record.lifecycle === 'ready' || record.lifecycle === 'loading') &&
     !record.frozen &&
     nativePortalSuppressionReasons.size === 0
   )
@@ -531,7 +531,7 @@ function normalizePortalUrl(value: string): string {
   if (!url) return 'about:blank'
   if (/^https?:\/\//i.test(url) || /^about:/i.test(url)) return url
   if (url.includes('.') && !url.includes(' ')) return `https://${url}`
-  return `https://search.brave.com/search?q=${encodeURIComponent(url)}`
+  return `https://www.google.com/search?q=${encodeURIComponent(url)}`
 }
 
 function normalizePortalId(value: string): string {
