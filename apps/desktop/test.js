@@ -237,7 +237,7 @@ const browserSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components
 const terminalSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/TerminalNode.tsx'), 'utf8')
 if (!terminalSource.includes('scrollback: 1_000_000')) throw new Error('Terminal scrollback budget regressed from the unlimited-style buffer')
 if (!browserSource.includes('propsRef.current') || !browserSource.includes('url: payload.url')) throw new Error('Browser navigation does not preserve current node properties')
-if (!browserSource.includes("scheduleBoundsSync('snapshot')") || !browserSource.includes('pendingUpdate') || !browserSource.includes('snapshotRef.current')) throw new Error('Browser portal motion lost its cached snapshot/latest-only presentation bridge')
+if (!browserSource.includes("scheduleBoundsSync('live')") || !browserSource.includes('pendingUpdate') || !browserSource.includes('snapshotRef.current')) throw new Error('Browser portal motion lost its cached snapshot/latest-only presentation bridge')
 if (!canvasSource.includes("selectedNode.kind === 'browser' ? { portalId: duplicateId }")) throw new Error('Browser duplication can still share a native portal')
 if (!canvasSource.includes("target.closest('.react-flow__node, .nowheel, .canvas-toolbar, .canvas-context-toolbar, .zoom')")) throw new Error('Board wheel handler can hijack node/editor surfaces')
 if (!canvasSource.includes('activeFloor?.id || persistedFloorId') || !canvasSource.includes('focusSnapshotRef.current = null')) throw new Error('Focus mode is not cleaned up at a floor boundary')
