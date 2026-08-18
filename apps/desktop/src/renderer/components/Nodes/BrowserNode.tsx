@@ -72,6 +72,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
   const boundsRafRef = useRef<number | null>(null)
   const lastBoundsKeyRef = useRef('')
   const snapshotRef = useRef<string | null>(null)
+  const frozenScaleRef = useRef<number | null>(null)
   const refreshPresentationRef = useRef<() => void>(() => undefined)
   const { updateNode, deleteNode, setSelectedNodeId, commitHistory } = useWorkspaceStore()
 
@@ -245,7 +246,10 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         mode: effectiveMode,
         generation: currentGeneration(),
         revision: ++portalRevisionRef.current,
-        canvasScale: asFinite(geometry.scale, 1),
+        // During canvas motion (pan/zoom/drag) freeze the scale so Chromium
+        // does not call setZoomFactor() on every frame, which would force a
+        // visible page re-layout. The real scale is applied when motion ends.
+        canvasScale: asFinite(motionRef.current && frozenScaleRef.current !== null ? frozenScaleRef.current : geometry.scale, 1),
         logicalViewport,
         zIndex: typeof currentData.zIndex === 'number' && Number.isFinite(currentData.zIndex) ? currentData.zIndex : undefined,
         focused: !currentData.focusModeActive || Boolean(currentData.focused),
@@ -276,7 +280,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         boundsRafRef.current = null
         if (disposed || disposedRef.current || !portalReady) return
         const requestedMode = typeof modeOrEvent === 'string' ? modeOrEvent : undefined
-        const nextMode: PortalPresentationMode = requestedMode || (motionRef.current ? 'snapshot' : 'live')
+        const nextMode: PortalPresentationMode = requestedMode || 'live'
         queueGeometry(nextMode, nextMode === 'live' || nextMode === 'transitioning')
       })
     }
@@ -288,15 +292,16 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
 
     const setMotion = (active: boolean) => {
       if (active) {
-        if (!motionRef.current) {
-          motionRef.current = true
-          motionGenerationRef.current += 1
+        motionRef.current = true
+        // Freeze the current Chromium zoom factor so setZoomFactor() is NOT
+        // called on every frame while the canvas is panning/zooming. The page
+        // re-layouts caused by continuous zoom changes were very visible.
+        if (frozenScaleRef.current === null) {
+          const geometry = readGeometry()
+          frozenScaleRef.current = asFinite(geometry.scale, 1)
         }
-        setPresentationValue(snapshotRef.current ? 'snapshot' : 'transitioning')
-        // The main process may capture a fresh frame for this transition. Do
-        // not keep the native child visible while its transformed bounds are
-        // changing; the cached DOM image is stable and never flashes white.
-        scheduleBoundsSync('snapshot')
+        lastBoundsKeyRef.current = ''
+        scheduleBoundsSync('live')
         return
       }
       if (!motionRef.current) {
@@ -304,7 +309,8 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         return
       }
       motionRef.current = false
-      motionGenerationRef.current += 1
+      // Unfreeze the scale so the final, correct zoom is applied once.
+      frozenScaleRef.current = null
       lastBoundsKeyRef.current = ''
       scheduleBoundsSync()
     }
@@ -360,7 +366,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
           watchdogs.delete(reason)
           motionReasonsRef.current.delete(reason)
           setMotion(motionReasonsRef.current.size > 0)
-        }, 900))
+        }, 120))
       } else {
         clearWatchdog()
         motionReasonsRef.current.delete(reason)
@@ -384,14 +390,15 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         setLoading(Boolean(payload.loading))
         if (payload.loading) {
           setError(null)
-          if (snapshotRef.current) setPresentationValue('snapshot')
+          // Keep the native view live during page loading. Chromium handles
+          // its own loading state natively; hiding the view behind a stale
+          // snapshot caused a visible flash on every navigation.
         } else {
           cachePortalSnapshot()
           const state = String(payload.state || '')
           if (state === 'error' || state === 'crashed') {
             setPresentationValue(snapshotRef.current ? 'snapshot' : 'hidden')
-          } else if (motionRef.current) scheduleBoundsSync('snapshot')
-          else scheduleBoundsSync('live')
+          } else scheduleBoundsSync('live')
         }
       } else if (event.type === 'portal:ready' || event.type === 'portal:did-stop-loading') {
         setLoading(false)
@@ -399,7 +406,6 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         if (state !== 'error' && state !== 'crashed') setError(null)
         cachePortalSnapshot()
         if (state === 'error' || state === 'crashed') setPresentationValue(snapshotRef.current ? 'snapshot' : 'hidden')
-        else if (motionRef.current) scheduleBoundsSync('snapshot')
         else scheduleBoundsSync('live')
       } else if (event.type === 'portal:error') {
         setError(String(payload.errorDescription || payload.error || 'Falha ao carregar o portal'))
@@ -529,20 +535,26 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
           <span className="chrome-divider" />
           <button type="button" className="icon-btn chrome-nav" title="Voltar" disabled={!canGoBack} onClick={() => action('back')}><ArrowLeft className="icon" /></button>
           <button type="button" className="icon-btn chrome-nav" title="Avançar" disabled={!canGoForward} onClick={() => action('forward')}><ArrowRight className="icon" /></button>
-          <button type="button" className="icon-btn chrome-nav" title={loading ? 'Parar' : 'Recarregar'} onClick={() => action(loading ? 'stop' : 'reload')}><RefreshCw className="icon" /></button>
-          <div className="chrome-address">
+          <button type="button" className="icon-btn chrome-nav" title={loading ? 'Parar' : 'Recarregar'} onClick={() => action(loading ? 'stop' : 'reload')}>{loading ? <X className="icon" /> : <RefreshCw className="icon" />}</button>
+          <div className={`chrome-address ${loading ? 'chrome-address-loading' : ''}`}>
             <Search className="icon" />
             <input type="text" value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Pesquisar ou digitar URL..." />
           </div>
           <button type="button" className="icon-btn chrome-nav" title="Abrir no navegador do sistema" onClick={() => window.orchestra?.portal?.openExternal(portalId).catch(() => undefined)}><SquareArrowOutUpRight className="icon" /></button>
           <button type="button" className="icon-btn chrome-nav" onClick={(event) => { event.stopPropagation(); deleteNode(id); window.orchestra?.portal?.destroy(portalId).catch(() => undefined) }} title="Fechar portal"><X className="icon" /></button>
         </form>
+        {loading && <div className="chrome-loading-bar"><div className="chrome-loading-progress" /></div>}
 
         <div ref={contentRef} className={`chrome-content nodrag nowheel portal-state-${presentation}`} onMouseDown={(event) => event.stopPropagation()}>
           {snapshot && presentation === 'snapshot' ? <img className="portal-snapshot" src={snapshot} alt="Pré-visualização do portal durante o movimento" /> : <div className="portal-placeholder">
             {error ? <><b>Portal com erro</b><span>{error}</span></> : <><span>{currentUrl}</span><small>{loading ? 'A carregar…' : presentation === 'creating' ? 'A preparar o portal…' : 'Portal Chromium isolado'}</small></>}
           </div>}
           {error && snapshot && presentation === 'snapshot' && <div className="portal-error-overlay"><b>Portal com erro</b><span>{error}</span></div>}
+        </div>
+
+        <div className="node-foot chrome-foot">
+          <span className="chrome-foot-url" title={currentUrl}>{loading ? 'A carregar…' : error ? 'Erro no portal' : currentUrl}</span>
+          <span className="chrome-foot-status">{loading ? 'A sincronizar' : presentation === 'snapshot' ? 'Pausa' : 'Chromium'}</span>
         </div>
       </div>
     </div>
