@@ -32,6 +32,7 @@ import {
 } from './src/renderer/components/Nodes/terminalGeometry.ts'
 import { applyCanvasNodeChanges } from './src/renderer/components/Canvas/canvasNodeChanges.ts'
 import { TerminalVoiceController } from './src/renderer/components/Nodes/terminalVoice.ts'
+import { customAgentArgv, readCustomAgents, validateCustomAgent, writeCustomAgents } from './src/renderer/components/Modals/agentCatalog.ts'
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -231,6 +232,27 @@ async function testVoiceInputLifecycle() {
   assert(controller.current.state === 'cancelled', 'terminal change did not cancel in-flight transcription')
 }
 
+function testCustomAgentCatalog() {
+  let stored = ''
+  const storage = {
+    getItem: () => stored || null,
+    setItem: (_key, value) => { stored = value }
+  }
+  const valid = validateCustomAgent({ name: 'Review Agent', command: '/opt/tools/reviewer', options: ['--model', 'fast model'] })
+  assert(valid.value, 'valid custom agent was rejected')
+  assert(customAgentArgv(valid.value).length === 3 && customAgentArgv(valid.value)[2] === 'fast model', 'custom agent options were not preserved as argv items')
+  assert(!validateCustomAgent({ name: 'Unsafe', command: 'codex; touch /tmp/pwned', options: [] }).value, 'shell command was accepted as an executable')
+  assert(!validateCustomAgent({ name: 'Unsafe option', command: 'codex', options: ['ok\n--bad'] }).value, 'control characters were accepted in argv')
+  writeCustomAgents([valid.value], storage)
+  const loaded = readCustomAgents(storage)
+  assert(loaded.length === 1 && loaded[0].name === 'Review Agent', 'custom agent catalog did not round-trip persisted data')
+  const edited = validateCustomAgent({ ...loaded[0], name: 'Edited Agent' }).value
+  writeCustomAgents(edited ? [edited] : [], storage)
+  assert(readCustomAgents(storage)[0]?.id === loaded[0].id && readCustomAgents(storage)[0]?.name === 'Edited Agent', 'custom agent editing changed identity or failed to persist')
+  writeCustomAgents([], storage)
+  assert(readCustomAgents(storage).length === 0, 'custom agent removal was not persisted')
+}
+
 
 function writeTerminal(term, data) {
   return new Promise((resolve) => term.write(data, resolve))
@@ -314,7 +336,8 @@ testNativeTerminalMultilineKeys()
 testTerminalPasteContract()
 testShellPathInsertion()
 await testVoiceInputLifecycle()
+testCustomAgentCatalog()
 await testTerminalMultilineRender()
 testTerminalPointerTransformCompensation()
 testControlledCanvasNodeChanges()
-console.log(JSON.stringify({ ok: true, suite: 'terminal-v2-unit', cases: 11 }))
+console.log(JSON.stringify({ ok: true, suite: 'terminal-v2-unit', cases: 12 }))

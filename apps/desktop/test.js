@@ -253,7 +253,13 @@ if (!filesNodeSource.includes('useModalA11y') || !filesNodeSource.includes('ref=
 const canvasSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CanvasArea.tsx'), 'utf8')
 const browserSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/BrowserNode.tsx'), 'utf8')
 const terminalSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/TerminalNode.tsx'), 'utf8')
+const terminalVoiceSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/terminalVoice.ts'), 'utf8')
 if (!terminalSource.includes('scrollback: 1_000_000')) throw new Error('Terminal scrollback budget regressed from the unlimited-style buffer')
+if (!terminalSource.includes('shellQuotePath') || !terminalSource.includes('externalInputRef.current') || terminalSource.includes('terminal.paste(location)')) throw new Error('Terminal + path insertion lost quoting, serialization, or exactly-once ownership')
+for (const state of ['requesting-permission', 'recording', 'processing', 'inserting', 'error', 'cancelled']) {
+  if (!terminalVoiceSource.includes(`'${state}'`)) throw new Error(`Terminal voice lifecycle lost ${state}`)
+}
+if (!terminalSource.includes('audioLeavesMachine') || !terminalVoiceSource.includes('networkDisclosure') || !terminalVoiceSource.includes('TerminalTranscriptionProvider')) throw new Error('Terminal voice input hides its provider/network disclosure')
 if (!browserSource.includes('propsRef.current') || !browserSource.includes('url: payload.url')) throw new Error('Browser navigation does not preserve current node properties')
 if (!browserSource.includes("scheduleBoundsSync('live')") || !browserSource.includes('pendingUpdate') || !browserSource.includes('snapshotRef.current')) throw new Error('Browser portal motion lost its cached snapshot/latest-only presentation bridge')
 if (!canvasSource.includes("selectedNode.kind === 'browser' ? { portalId: duplicateId }")) throw new Error('Browser duplication can still share a native portal')
@@ -279,6 +285,8 @@ if (!canvasSource.includes('onNodeDrag={() => window.dispatchEvent')) throw new 
 if (/onMoveStart=\{\(\) => window\.dispatchEvent\(new CustomEvent\('orchestra:canvas-motion'/.test(canvasSource)) throw new Error('A simple board pointer-down still snapshots every browser portal')
 const workspaceStoreSource = fs.readFileSync(path.join(sourceRoot, 'renderer/store/workspaceStore.ts'), 'utf8')
 if (!workspaceStoreSource.includes("orchestra:node-deleting") || !canvasSource.includes("orchestra:node-deleting") || !canvasSource.includes('restoreFocus(false)')) throw new Error('Deleting a focused node must exit focus before removal')
+const cableSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CableSystem/CableSystem.tsx'), 'utf8')
+if (!cableSource.includes('onEdgeClick(edge.id)') || !canvasSource.includes('deleteEdge(selectedEdgeId); setSelectedEdgeId(null)') || !workspaceStoreSource.includes('history: [...state.history, { nodes: state.nodes, edges: state.edges }]') || !canvasSource.includes("'canvas.edge.delete'")) throw new Error('Disconnect must preserve edge selection, undo history, persistence, and visual removal')
 if (!mainSource.includes('record.view.webContents.setZoomFactor(nextZoom)')) throw new Error('Browser logical viewport no longer follows the canvas scale')
 const modalSources = [
   'components/Modals/RecruitAgentModal.tsx',
@@ -289,6 +297,8 @@ const modalSources = [
 if (modalSources.some((contents) => !contents.includes('useModalA11y') || !contents.includes('aria-modal="true"'))) {
   throw new Error('Global modal focus/surface guard regressed')
 }
+const recruitSource = modalSources[0]
+if (!recruitSource.includes('terminal-agents-tab') || !recruitSource.includes('readCustomAgents') || !recruitSource.includes('writeCustomAgents') || !recruitSource.includes('commandArgv: customAgentArgv')) throw new Error('Agents tab lost custom catalog persistence or safe argv spawn')
 if (!source.includes('portal.suppress(\'modal\'')) throw new Error('Modal surface does not suppress native portals')
 if (!filesNodeSource.includes('contextMenuRef') || !filesNodeSource.includes('role="tablist"') || !filesNodeSource.includes('parentIndex')) {
   throw new Error('File tree focus/context-menu ergonomics regressed')
