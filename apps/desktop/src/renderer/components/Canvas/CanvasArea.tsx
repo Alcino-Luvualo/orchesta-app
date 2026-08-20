@@ -346,7 +346,15 @@ export const CanvasArea: React.FC = () => {
     const cleanup = window.orchestra.onEvent((event) => {
       const payload = event.payload || {}
       if (event.type === 'agent.request.progress' && typeof payload.targetSessionId === 'string' && typeof payload.status === 'string') {
-        const statusMap: Record<string, string> = { queued: 'queued', delivering: 'running', generating: 'thinking', completed: 'completed', cancelled: 'cancelled', timed_out: 'error' }
+        const statusMap: Record<string, string> = {
+          queued: 'queued',
+          pty_written: 'running',
+          awaiting_completion: 'thinking',
+          unverified: 'running',
+          completed: 'completed',
+          cancelled: 'cancelled',
+          timed_out: 'error'
+        }
         const nextStatus = statusMap[payload.status] || payload.status
         const target = storeNodes.find((node) => node.id === payload.targetSessionId)
         if (target && target.kind === 'terminal' && target.properties.status !== nextStatus) {

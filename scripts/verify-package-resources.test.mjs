@@ -6,17 +6,34 @@
 // assertion failure instead of relying on a manual package inspection.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { spawnSync } from 'node:child_process'
 
 const repositoryRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const verifyScript = path.join(repositoryRoot, 'scripts/verify-package-resources.mjs')
+const binaryFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-package-bins-'))
+for (const name of ['orchestra-core', 'orchestra']) {
+  const file = path.join(binaryFixture, name)
+  fs.writeFileSync(file, '#!/bin/sh\nexit 0\n')
+  fs.chmodSync(file, 0o755)
+}
 const verify = spawnSync(process.execPath, [verifyScript], {
   cwd: repositoryRoot,
-  encoding: 'utf8'
+  encoding: 'utf8',
+  env: { ...process.env, ORCHESTRA_VERIFY_BINARY_DIR: binaryFixture }
 })
+fs.rmSync(binaryFixture, { recursive: true, force: true })
 assert.equal(verify.status, 0, `${verify.stdout}\n${verify.stderr}`)
+
+const canonicalSkill = fs.readFileSync(path.join(repositoryRoot, 'skills/orchestra-canvas/SKILL.md'))
+const generatedSkill = fs.readFileSync(path.join(repositoryRoot, '.agents/plugins/plugins/orchestra/skills/orchestra-canvas/SKILL.md'))
+assert.ok(canonicalSkill.equals(generatedSkill), 'packaged plugin skill drifted from the canonical skill')
+const skillText = canonicalSkill.toString('utf8')
+assert.match(skillText, /Product and tool boundary/)
+assert.match(skillText, /ptyWritten: true/)
+assert.doesNotMatch(skillText, /inputWritten: true/)
 
 const builder = fs.readFileSync(path.join(repositoryRoot, 'apps/desktop/electron-builder.yml'), 'utf8')
 for (const [from, to] of [

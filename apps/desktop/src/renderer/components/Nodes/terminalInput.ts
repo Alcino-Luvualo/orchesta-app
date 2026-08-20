@@ -6,6 +6,8 @@ export type TerminalEnterOwner = 'shell' | 'interactive'
 // Ghostty starts in the compatibility encoding and changes protocol only
 // after the child explicitly negotiates Kitty keyboard reporting.
 export const DEFAULT_TERMINAL_KEYBOARD_PROTOCOL: TerminalKeyboardProtocol = 'modify_other_keys'
+export const BRACKETED_PASTE_START = '\u001b[200~'
+export const BRACKETED_PASTE_END = '\u001b[201~'
 
 const SHELL_COMMANDS = new Set([
   'ash', 'bash', 'cmd', 'dash', 'elvish', 'fish', 'ksh', 'nu', 'powershell',
@@ -44,9 +46,31 @@ export function isNativeEnterData(data: string): boolean {
   return data === '\r' || data === '\n' || data === '\r\n'
 }
 
+/**
+ * Produce the one and only payload for a clipboard paste. Clipboard CRLF/CR
+ * is normalized to the PTY's LF contract; every other character, including
+ * tabs, Unicode, blank lines and escape-like text, is preserved verbatim.
+ * A paste never appends Enter. When the child advertises DECSET 2004, exactly
+ * one bracketed-paste frame is added here rather than by xterm and the caller.
+ */
+export function terminalPastePayload(text: string, bracketedPaste: boolean): string {
+  if (!text) return ''
+  const normalized = text.replace(/\r\n?/g, '\n')
+  return bracketedPaste
+    ? `${BRACKETED_PASTE_START}${normalized}${BRACKETED_PASTE_END}`
+    : normalized
+}
+
+/** Quote one filesystem path as a single POSIX-shell word without submitting it. */
+export function shellQuotePath(path: string): string {
+  if (!path) return "''"
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(path)) return path
+  return `'${path.replace(/'/g, `'"'"'`)}'`
+}
+
 /** Keep a newline in the active line editor without submitting it. */
 export function multilineEnterSequence(bracketedPaste: boolean): string {
-  return bracketedPaste ? '\u001b[200~\n\u001b[201~' : '\u0016\n'
+  return bracketedPaste ? `${BRACKETED_PASTE_START}\n${BRACKETED_PASTE_END}` : '\u0016\n'
 }
 
 /**
@@ -60,7 +84,7 @@ export function multilineEnterSequence(bracketedPaste: boolean): string {
 export function shellMultilineEnterSequence(bracketedPaste: boolean): string {
   return bracketedPaste
     ? multilineEnterSequence(true)
-    : '\u001b[200~\n\u001b[201~'
+    : `${BRACKETED_PASTE_START}\n${BRACKETED_PASTE_END}`
 }
 
 /**

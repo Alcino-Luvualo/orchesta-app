@@ -19,8 +19,9 @@ import { TerminalBlockList } from './TerminalBlockList'
 import { TerminalBlockStore } from './terminalBlocks'
 import { detectTerminalFileReferences, osc52Response, parseOsc52, readTerminalSecuritySettings, sanitizeTerminalUrl, TerminalSecuritySettings, writeTerminalSecuritySettings } from './terminalSecurity'
 import { getTerminalTransformScale, isIdentityTerminalScale, mapTerminalPointerToLayout } from './terminalGeometry'
-import { DEFAULT_TERMINAL_KEYBOARD_PROTOCOL, isDirectInteractiveTerminalCommand, isMultilineEnter, isNativeEnterData, multilineEnterPayload, TerminalKeyboardProtocol } from './terminalInput'
+import { DEFAULT_TERMINAL_KEYBOARD_PROTOCOL, isDirectInteractiveTerminalCommand, isMultilineEnter, isNativeEnterData, multilineEnterPayload, shellQuotePath, terminalPastePayload, TerminalKeyboardProtocol } from './terminalInput'
 import { agentContextInput, AgentContext, materializeAgentContext } from './agentContext'
+import { createBrowserSpeechRecognitionProvider, requestBrowserMicrophonePermission, TerminalVoiceController, VoiceInputSnapshot } from './terminalVoice'
 
 type TerminalInteractionMode =
   | 'shell_prompt'
@@ -35,6 +36,16 @@ type PendingClipboardRequest = {
   direction: 'read' | 'write'
   selection: string
   text?: string
+}
+
+function voiceStateLabel(snapshot: VoiceInputSnapshot): string {
+  if (snapshot.state === 'requesting-permission') return 'A pedir permissão de microfone…'
+  if (snapshot.state === 'recording') return 'A ouvir…'
+  if (snapshot.state === 'processing') return 'A processar voz…'
+  if (snapshot.state === 'inserting') return 'A inserir transcrição…'
+  if (snapshot.state === 'cancelled') return 'Entrada de voz cancelada.'
+  if (snapshot.state === 'error') return snapshot.error || 'Falha na entrada de voz.'
+  return 'Entrada de voz'
 }
 
 function decodeOutput(value: unknown): Uint8Array {
@@ -191,6 +202,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   const outputFrameRef = useRef<number | null>(null)
   const inputQueueRef = useRef<string[]>([])
   const inputFrameRef = useRef<number | null>(null)
+  const externalInputRef = useRef<(text: string) => void>(() => undefined)
   // Match Ghostty's negotiation rules: an application starts in the legacy
   // encoding (the Ctrl/Shift+Enter form is CSI 27), and only opts into Kitty
   // CSI-u after it explicitly pushes/sets the Kitty keyboard protocol.
@@ -208,6 +220,10 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   const lastCoreGenerationRef = useRef(0)
   const interactionModeRef = useRef<TerminalInteractionMode>('shell_fallback')
   const attachmentInputRef = useRef<HTMLInputElement>(null)
+  const voiceControllerRef = useRef(new TerminalVoiceController())
+  const voiceTerminalIdRef = useRef(id)
+  const voiceProviderRef = useRef<ReturnType<typeof createBrowserSpeechRecognitionProvider> | undefined>(undefined)
+  const richEditorDocumentRef = useRef('')
   const historyStoreRef = useRef<CommandHistoryStore | null>(null)
   const completionControllerRef = useRef<CompletionController | null>(null)
   const blockStoreRef = useRef<TerminalBlockStore | null>(null)
@@ -233,17 +249,23 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   const [clipboardPrompt, setClipboardPrompt] = useState<PendingClipboardRequest | null>(null)
   const [attention, setAttention] = useState(false)
   const [notificationText, setNotificationText] = useState('')
+  const [voiceConsentOpen, setVoiceConsentOpen] = useState(false)
+  const [voiceSnapshot, setVoiceSnapshot] = useState<VoiceInputSnapshot>({ state: 'idle', terminalId: null, error: null })
   const { updateNode, deleteNode, setSelectedNodeId, commitHistory, theme, activeWorkspace } = useWorkspaceStore()
 
   const props = data.properties || {}
   const agent = String(props.agent || 'Terminal')
   const cwd = String(props.cwd || '')
   const command = typeof props.command === 'string' ? props.command : ''
+  const commandArgv = Array.isArray(props.commandArgv)
+    ? props.commandArgv.filter((value): value is string => typeof value === 'string' && value.length > 0).slice(0, 65)
+    : []
   const status = String(props.status || 'starting')
   const richInputEnabled = isRichInputV2Enabled(props.richInputV2)
   const runtimeChip = String(props.runtime || props.nodeVersion || 'v26.7.0')
   const gitSummary = typeof props.gitSummary === 'string' && props.gitSummary.trim() ? props.gitSummary : 'Git · clean'
   const explorerLabel = String(props.explorerLabel || 'File explorer')
+  if (voiceProviderRef.current === undefined) voiceProviderRef.current = createBrowserSpeechRecognitionProvider()
   if (!securitySettingsRef.current) securitySettingsRef.current = readTerminalSecuritySettings()
   if (!historyStoreRef.current) historyStoreRef.current = new CommandHistoryStore(id, id)
   if (!blockStoreRef.current) blockStoreRef.current = new TerminalBlockStore()
@@ -262,7 +284,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
           setEditorSeed(contextInput)
           setEditorRevision((revision) => revision + 1)
         } else if (sessionReadyRef.current) {
-          void window.orchestra?.invoke('terminal.input', { sessionId: id, data: `${contextInput}${canSubmit ? '\r' : ''}` }).catch(() => undefined)
+          externalInputRef.current(`${contextInput}${canSubmit ? '\r' : ''}`)
         }
         setNotificationText(`${canSubmit ? 'Contexto enviado' : 'Contexto adicionado'}: ${context.title}`)
         setAttention(true)
@@ -272,6 +294,12 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
     window.addEventListener('orchestra:add-agent-context', receiveContext)
     return () => { disposed = true; window.removeEventListener('orchestra:add-agent-context', receiveContext) }
   }, [id, richInputEnabled])
+
+  useEffect(() => {
+    voiceTerminalIdRef.current = id
+    voiceControllerRef.current.terminalChanged(id)
+    return () => voiceControllerRef.current.cancel(false)
+  }, [id])
   const completionQuery = useCallback(async (kind: string, context: { token: string; document: string; from: number; to: number; cwd: string }, signal: AbortSignal) => {
     if (signal.aborted) return []
     try {
@@ -361,6 +389,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
         cols: Math.max(20, xtermInstance.current?.cols || 80),
         rows: Math.max(4, xtermInstance.current?.rows || 24),
         command,
+        ...(commandArgv.length ? { argv: commandArgv } : {}),
         env: { ORCHESTRA: '1' }
       }) as { status?: string }
       updateNode(id, { properties: { ...props, status: result?.status === 'started' ? 'running' : 'error' } })
@@ -421,7 +450,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
     fitAddonInstance.current = fitAddon
     searchAddonInstance.current = searchAddon
     const removeXtermTransformCompensation = installXtermTransformCompensation(term)
-    const directInteractiveCommand = isDirectInteractiveTerminalCommand(command)
+    const directInteractiveCommand = isDirectInteractiveTerminalCommand(commandArgv[0] || command)
 
     const sendSize = () => {
       if (!sessionReadyRef.current) return
@@ -465,19 +494,29 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
       if (outputFrameRef.current === null) outputFrameRef.current = requestAnimationFrame(flushOutput)
     }
 
+    let inputWriteInFlight = false
     const flushInput = () => {
       inputFrameRef.current = null
-      if (!sessionReadyRef.current || inputQueueRef.current.length === 0) return
+      if (!sessionReadyRef.current || inputWriteInFlight || inputQueueRef.current.length === 0) return
       const text = inputQueueRef.current.join('')
       inputQueueRef.current = []
+      inputWriteInFlight = true
+      let continueDraining = true
       window.orchestra?.invoke('terminal.input', { sessionId: id, data: text }).then((result) => {
         const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
-        if (status === 'not_ready' || status === 'not_running') inputQueueRef.current.unshift(text)
+        if (status === 'not_ready' || status === 'not_running') {
+          inputQueueRef.current.unshift(text)
+          continueDraining = false
+        }
       }).catch(() => {
         // Restore the exact ordered chunk so a transient IPC failure does not
         // lose interactive-program input. It will be retried on the next
         // input event or after the session becomes ready again.
         inputQueueRef.current.unshift(text)
+        continueDraining = false
+      }).finally(() => {
+        inputWriteInFlight = false
+        if (continueDraining && sessionReadyRef.current && inputQueueRef.current.length > 0 && inputFrameRef.current === null) scheduleInput()
       })
     }
     const scheduleInput = () => {
@@ -495,6 +534,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
       inputQueueRef.current.push(text)
       if (sessionReadyRef.current) scheduleInput()
     }
+    externalInputRef.current = queuePtyInput
     const queueInput = (text: string) => {
       if (!text) return
       // xterm may report the browser Enter as onData even after a custom key
@@ -615,10 +655,13 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
     window.addEventListener('blur', windowBlur)
     const pasteGuard = (event: ClipboardEvent) => {
       const text = event.clipboardData?.getData('text/plain') || ''
-      if (!/[\r\n]/.test(text) || term.modes.bracketedPasteMode) return
+      if (!text) return
+      // Own the browser paste path completely. Letting xterm handle the same
+      // event as this listener would duplicate content or add a second pair of
+      // bracketed-paste delimiters.
       event.preventDefault()
       event.stopImmediatePropagation()
-      queueInput(`\u001b[200~${text.replace(/\r\n?/g, '\n')}\u001b[201~`)
+      queueInput(terminalPastePayload(text, term.modes.bracketedPasteMode))
     }
     term.textarea?.addEventListener('paste', pasteGuard, true)
     const forceLocalSelection = (event: MouseEvent) => {
@@ -844,6 +887,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
             cols: Math.max(20, term.cols),
             rows: Math.max(4, term.rows),
             command,
+            ...(commandArgv.length ? { argv: commandArgv } : {}),
             env: { ORCHESTRA: '1' }
           }) as { status?: string; token?: string; state?: { mode?: string } }
           if (disposed) {
@@ -907,6 +951,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
       if (fitFrameRef.current !== null) cancelAnimationFrame(fitFrameRef.current)
       if (blockRenderFrameRef.current !== null) cancelAnimationFrame(blockRenderFrameRef.current)
       if (sessionReadyRef.current) void window.orchestra?.invoke('terminal.detach', { sessionId: id }).catch(() => undefined)
+      externalInputRef.current = () => undefined
       inputQueueRef.current = []
       suppressNativeModifiedEnterRef.current = false
       if (suppressNativeModifiedEnterTimerRef.current !== null) window.clearTimeout(suppressNativeModifiedEnterTimerRef.current)
@@ -941,16 +986,16 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   const handleAttachments = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || [])
     if (!files.length) return
-    setAttachments((current) => [
-      ...current,
-      ...files.map((file) => {
-        const localFile = file as File & { path?: string }
-        let path = localFile.path
-        try { path = window.orchestra?.filePath?.(file) || path }
-        catch { /* Browser fallback below keeps the visible file name. */ }
-        return { name: file.name, path: path || file.name, size: file.size }
-      })
-    ])
+    const selected = files.map((file) => {
+      const localFile = file as File & { path?: string }
+      let path = localFile.path
+      try { path = window.orchestra?.filePath?.(file) || path }
+      catch { /* Browser fallback below keeps the visible file name. */ }
+      return { name: file.name, path: path || file.name, size: file.size }
+    })
+    setAttachments((current) => [...current, ...selected])
+    externalInputRef.current(selected.map((attachment) => shellQuotePath(attachment.path)).join(' '))
+    xtermInstance.current?.focus()
     event.target.value = ''
   }
 
@@ -958,10 +1003,39 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
     const location = attachment.path || attachment.name
     const terminal = xtermInstance.current
     if (!terminal || !location) return
+    externalInputRef.current(shellQuotePath(location))
     terminal.focus()
-    // xterm routes paste through the same PTY input path as normal typing,
-    // preserving the native agent/shell cursor and bracketed-paste mode.
-    terminal.paste(location)
+  }
+
+  const insertVoiceTranscript = (text: string) => {
+    if (richInputEnabled && interactionModeRef.current === 'shell_prompt' && !editorHandoffPending) {
+      const next = `${richEditorDocumentRef.current}${text}`
+      richEditorDocumentRef.current = next
+      setEditorSeed(next)
+      setEditorRevision((revision) => revision + 1)
+      return
+    }
+    externalInputRef.current(text)
+    xtermInstance.current?.focus()
+  }
+
+  const beginVoiceInput = () => {
+    const provider = voiceProviderRef.current
+    setVoiceConsentOpen(false)
+    if (!provider) {
+      setVoiceSnapshot({ state: 'error', terminalId: id, error: 'Este Chromium não disponibiliza um provider de transcrição.' })
+      return
+    }
+    void voiceControllerRef.current.start({
+      terminalId: id,
+      permission: requestBrowserMicrophonePermission,
+      provider,
+      callbacks: {
+        currentTerminalId: () => voiceTerminalIdRef.current,
+        insert: insertVoiceTranscript,
+        update: setVoiceSnapshot
+      }
+    })
   }
 
   const executeRichCommand = async (document: string) => {
@@ -979,6 +1053,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
       const result = await window.orchestra?.invoke('terminal.execute', { sessionId: id, data: document }) as { status?: string } | undefined
       if (result?.status === 'not_ready' || result?.status === 'not_running') throw new Error('Terminal indisponível')
       setEditorSeed('')
+      richEditorDocumentRef.current = ''
       // The editor is now out of the keyboard path. Focus xterm immediately so
       // Ctrl+C, readline prompts, and interactive programs receive raw input.
       xtermInstance.current?.focus()
@@ -1021,11 +1096,13 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
     xtermInstance.current?.focus()
   }, [])
   const reinputHistory = useCallback((entry: CommandHistoryEntry) => {
+    richEditorDocumentRef.current = entry.command
     setEditorSeed(entry.command)
     setEditorRevision((revision) => revision + 1)
     setHistorySearchOpen(false)
   }, [])
   const reinputCommand = useCallback((commandText: string) => {
+    richEditorDocumentRef.current = commandText
     setEditorSeed(commandText)
     setEditorRevision((revision) => revision + 1)
     setHistorySearchOpen(false)
@@ -1079,7 +1156,10 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
             <button className="terminal-chip-file-remove" type="button" onClick={(event) => { event.stopPropagation(); setAgentContexts((current) => current.filter((item) => item.id !== context.id)) }} title="Remover contexto" aria-label={`Remover ${context.title}`}><X className="icon" /></button>
           </span>)}
           <span className="terminal-chip" title="Runtime do terminal"><FileCode2 className="icon" />{runtimeChip}</span>
-          <span className="terminal-chip terminal-chip-icon" title="Entrada de voz"><Mic className="icon" /></span>
+          <button type="button" className={`terminal-chip terminal-chip-icon terminal-voice-button ${voiceSnapshot.state}`} data-state={voiceSnapshot.state} aria-label={voiceStateLabel(voiceSnapshot)} aria-pressed={voiceSnapshot.state === 'recording' || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting'} title={voiceStateLabel(voiceSnapshot)} onClick={() => {
+            if (voiceSnapshot.state === 'requesting-permission' || voiceSnapshot.state === 'recording' || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting') voiceControllerRef.current.cancel()
+            else { voiceControllerRef.current.reset(); setVoiceConsentOpen(true) }
+          }}><Mic className="icon" /></button>
           <span className="terminal-chip terminal-chip-git" title="Estado do Git"><GitBranch className="icon" />{gitSummary}</span>
           <span className="terminal-chip terminal-chip-explorer" title="Explorador de ficheiros"><FolderOpen className="icon" />{explorerLabel}</span>
         </div>
@@ -1098,6 +1178,16 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
           <TerminalBlockList blocks={blocks} onReinput={reinputCommand} onRerun={rerunCommand} />
           <div ref={terminalRef} className="terminal-body" />
           {notificationText && <div className="terminal-notification" role="status">{notificationText}</div>}
+          {voiceConsentOpen && <div className="terminal-security-prompt terminal-voice-consent nodrag" role="dialog" aria-label="Consentimento para entrada de voz">
+            <strong>Usar o microfone neste terminal?</strong>
+            <span>{voiceProviderRef.current?.label || 'Provider indisponível'} · {voiceProviderRef.current?.audioLeavesMachine ? 'o áudio pode sair da máquina' : 'processamento local'}</span>
+            <span>{voiceProviderRef.current?.networkDisclosure || 'Este build não possui um provider de transcrição.'}</span>
+            <div><button type="button" onClick={() => { setVoiceConsentOpen(false); setVoiceSnapshot({ state: 'cancelled', terminalId: id, error: null }) }}>Cancelar</button><button type="button" disabled={!voiceProviderRef.current} onClick={beginVoiceInput}>Permitir e gravar</button></div>
+          </div>}
+          {!voiceConsentOpen && voiceSnapshot.state !== 'idle' && <div className={`terminal-voice-state ${voiceSnapshot.state}`} role={voiceSnapshot.state === 'error' ? 'alert' : 'status'}><span>{voiceStateLabel(voiceSnapshot)}</span><button type="button" onClick={() => {
+            if (voiceSnapshot.state === 'requesting-permission' || voiceSnapshot.state === 'recording' || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting') voiceControllerRef.current.cancel()
+            else voiceControllerRef.current.reset()
+          }}>{voiceSnapshot.state === 'requesting-permission' || voiceSnapshot.state === 'recording' || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting' ? 'Cancelar' : 'Fechar'}</button></div>}
           {clipboardPrompt && <div className="terminal-security-prompt nodrag" role="dialog" aria-label="Permissão de clipboard">
             <strong>{clipboardPrompt.direction === 'write' ? 'Um programa quer escrever no clipboard.' : 'Um programa quer ler o clipboard.'}</strong>
             <span>OSC 52 · {clipboardPrompt.selection || 'c'}</span>
@@ -1107,6 +1197,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
             <RichCommandEditor
               key={`${id}:${editorRevision}`}
               initialDocument={editorSeed}
+              onChange={(document) => { richEditorDocumentRef.current = document }}
               onExecute={executeRichCommand}
               onClearTerminal={clearTerminal}
               onSendInput={sendEditorInput}

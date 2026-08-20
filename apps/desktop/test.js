@@ -117,6 +117,17 @@ for (const [label, pattern] of authChecks) {
   if (!pattern.test(mainSource)) throw new Error(`Terminal/core regression guard missing: ${label}`)
 }
 
+const coreStartSource = mainSource.slice(
+  mainSource.indexOf('function ensureCoreDaemonRunning'),
+  mainSource.indexOf('\nfunction settleDisconnectedCore')
+)
+if (coreStartSource.includes('unlinkSync(') || coreStartSource.includes('removeSync(')) {
+  throw new Error('Desktop must delegate stale core socket recovery to the inode-checked daemon bind')
+}
+if (!coreStartSource.includes('ORCHESTRA_SOCKET: sockPath')) {
+  throw new Error('Desktop child core lost its exact instance socket')
+}
+
 const portalCaptureStart = mainSource.indexOf('async function capturePortalSnapshotNow')
 const portalCaptureEnd = mainSource.indexOf('\nfunction screenshotPortal', portalCaptureStart)
 const portalCaptureSource = mainSource.slice(portalCaptureStart, portalCaptureEnd)
@@ -126,8 +137,14 @@ if (portalCaptureStart < 0 || portalCaptureEnd < 0 || !portalCaptureSource.inclu
 if (portalCaptureSource.includes('capturePage({') || portalCaptureSource.includes('clip:') || portalCaptureSource.includes('scale: record.canvasScale')) {
   throw new Error('Portal snapshot capture applies viewport bounds or canvas scale twice')
 }
-if (!portalCaptureSource.includes('revealedForCapture') || !portalCaptureSource.includes('record.desiredVisible') || !portalCaptureSource.includes('nativePortalSuppressionReasons.size === 0')) {
-  throw new Error('First portal frame capture must wake a valid hidden compositor surface')
+if (!portalCaptureSource.includes('portalOffscreenWarmupBounds(record.physicalBounds)') || !portalCaptureSource.includes('captureWarmupActive') || !portalCaptureSource.includes('record.desiredVisible') || !portalCaptureSource.includes('nativePortalSuppressionReasons.size === 0')) {
+  throw new Error('First portal frame capture must wake the compositor outside the visible node bounds')
+}
+if (!portalCaptureSource.includes('record.view.setBounds(record.physicalBounds)') || !portalCaptureSource.includes('finally {')) {
+  throw new Error('First portal frame capture must restore the latest physical bounds on every exit')
+}
+if (!mainSource.includes('function portalDiagnostics') || !mainSource.includes('snapshotCurrent:') || !mainSource.includes('crashed:') || !mainSource.includes('attached:') || !portalCaptureSource.includes('captureNavigationGeneration')) {
+  throw new Error('Portal diagnostics lost lifecycle/attachment/snapshot consistency fields')
 }
 if (!mainSource.includes("ipcMain.handle('portal:screenshot'") || !mainSource.includes("if (!record) return ''") || !mainSource.includes("return record.lastSnapshot || ''")) {
   throw new Error('Portal screenshot startup retries must remain non-fatal')
@@ -298,11 +315,18 @@ if (!filesNodeSource.includes('setSelectedFilePath(joinWorkspacePath(projectPath
 if (filesNodeSource.includes("git.branch.delete', { name: currentBranch") || !filesNodeSource.includes('filterDeletableBranches')) throw new Error('Current branch delete guard regressed')
 if (filesNodeSource.includes('</span>{refs.map((ref)') || filesNodeSource.includes('stashes[0] &&')) throw new Error('Git refs/stashes lost compact selection')
 if (!filesNodeSource.includes('stashTarget') || !filesNodeSource.includes('git.create_floor')) throw new Error('Worktree/stash controls lost real selection handlers')
+if (!filesNodeSource.includes("'git.commit.show'") || !filesNodeSource.includes('commitLoadGenerationRef') || !filesNodeSource.includes('commitDetailsLoading') || !filesNodeSource.includes('commitDetailsError')) throw new Error('Git commit inspector lost loading/error/cancelable detail retrieval')
 if (!filesNodeSource.includes('useModalA11y') || !filesNodeSource.includes('ref={confirmRef}')) throw new Error('File tree destructive confirmation lost focus trapping')
 const canvasSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CanvasArea.tsx'), 'utf8')
 const browserSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/BrowserNode.tsx'), 'utf8')
 const terminalSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/TerminalNode.tsx'), 'utf8')
+const terminalVoiceSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/terminalVoice.ts'), 'utf8')
 if (!terminalSource.includes('scrollback: 1_000_000')) throw new Error('Terminal scrollback budget regressed from the unlimited-style buffer')
+if (!terminalSource.includes('shellQuotePath') || !terminalSource.includes('externalInputRef.current') || terminalSource.includes('terminal.paste(location)')) throw new Error('Terminal + path insertion lost quoting, serialization, or exactly-once ownership')
+for (const state of ['requesting-permission', 'recording', 'processing', 'inserting', 'error', 'cancelled']) {
+  if (!terminalVoiceSource.includes(`'${state}'`)) throw new Error(`Terminal voice lifecycle lost ${state}`)
+}
+if (!terminalSource.includes('audioLeavesMachine') || !terminalVoiceSource.includes('networkDisclosure') || !terminalVoiceSource.includes('TerminalTranscriptionProvider')) throw new Error('Terminal voice input hides its provider/network disclosure')
 if (!browserSource.includes('propsRef.current') || !browserSource.includes('url: payload.url')) throw new Error('Browser navigation does not preserve current node properties')
 if (!browserSource.includes("scheduleBoundsSync('live')") || !browserSource.includes('pendingUpdate') || !browserSource.includes('snapshotRef.current')) throw new Error('Browser portal motion lost its cached snapshot/latest-only presentation bridge')
 if (!canvasSource.includes("selectedNode.kind === 'browser' ? { portalId: duplicateId }")) throw new Error('Browser duplication can still share a native portal')
@@ -328,6 +352,8 @@ if (!canvasSource.includes('onNodeDrag={() => window.dispatchEvent')) throw new 
 if (/onMoveStart=\{\(\) => window\.dispatchEvent\(new CustomEvent\('orchestra:canvas-motion'/.test(canvasSource)) throw new Error('A simple board pointer-down still snapshots every browser portal')
 const workspaceStoreSource = fs.readFileSync(path.join(sourceRoot, 'renderer/store/workspaceStore.ts'), 'utf8')
 if (!workspaceStoreSource.includes("orchestra:node-deleting") || !canvasSource.includes("orchestra:node-deleting") || !canvasSource.includes('restoreFocus(false)')) throw new Error('Deleting a focused node must exit focus before removal')
+const cableSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CableSystem/CableSystem.tsx'), 'utf8')
+if (!cableSource.includes('onEdgeClick(edge.id)') || !canvasSource.includes('deleteEdge(selectedEdgeId); setSelectedEdgeId(null)') || !workspaceStoreSource.includes('history: [...state.history, { nodes: state.nodes, edges: state.edges }]') || !canvasSource.includes("'canvas.edge.delete'")) throw new Error('Disconnect must preserve edge selection, undo history, persistence, and visual removal')
 if (!mainSource.includes('record.view.webContents.setZoomFactor(nextZoom)')) throw new Error('Browser logical viewport no longer follows the canvas scale')
 const modalSources = [
   'components/Modals/RecruitAgentModal.tsx',
@@ -338,6 +364,8 @@ const modalSources = [
 if (modalSources.some((contents) => !contents.includes('useModalA11y') || !contents.includes('aria-modal="true"'))) {
   throw new Error('Global modal focus/surface guard regressed')
 }
+const recruitSource = modalSources[0]
+if (!recruitSource.includes('terminal-agents-tab') || !recruitSource.includes('readCustomAgents') || !recruitSource.includes('writeCustomAgents') || !recruitSource.includes('commandArgv: customAgentArgv')) throw new Error('Agents tab lost custom catalog persistence or safe argv spawn')
 if (!source.includes('portal.suppress(\'modal\'')) throw new Error('Modal surface does not suppress native portals')
 if (!filesNodeSource.includes('contextMenuRef') || !filesNodeSource.includes('role="tablist"') || !filesNodeSource.includes('parentIndex')) {
   throw new Error('File tree focus/context-menu ergonomics regressed')

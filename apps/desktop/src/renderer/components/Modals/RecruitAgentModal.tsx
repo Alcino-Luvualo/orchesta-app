@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Check, Code2, FolderOpen, MousePointer2, Sparkles, SquareTerminal, Terminal as TerminalIcon, X } from 'lucide-react'
+import { Bot, Check, Code2, FolderOpen, MousePointer2, Pencil, Sparkles, SquareTerminal, Terminal as TerminalIcon, Trash2, X } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
+import { CustomAgent, customAgentArgv, readCustomAgents, validateCustomAgent, writeCustomAgents } from './agentCatalog'
 import { useModalA11y } from './modalUtils'
 
 interface DetectedTool {
@@ -16,7 +17,7 @@ interface QuickTool extends DetectedTool {
   label: string
 }
 
-type ModalTab = 'details' | 'appearance'
+type ModalTab = 'details' | 'appearance' | 'agents'
 
 const knownTools: DetectedTool[] = [
   { id: 'claude', name: 'Claude Code', cmd: 'claude', description: 'Anthropic coding agent', installed: false },
@@ -66,6 +67,12 @@ export const RecruitAgentModal: React.FC = () => {
   const [command, setCommand] = useState('codex')
   const [terminalDirectory, setTerminalDirectory] = useState('')
   const [customCommand, setCustomCommand] = useState('')
+  const [customAgents, setCustomAgents] = useState<CustomAgent[]>([])
+  const [agentDraftId, setAgentDraftId] = useState('')
+  const [agentDraftName, setAgentDraftName] = useState('')
+  const [agentDraftCommand, setAgentDraftCommand] = useState('')
+  const [agentDraftOptions, setAgentDraftOptions] = useState('')
+  const [agentCatalogError, setAgentCatalogError] = useState('')
   const [monitorActivity, setMonitorActivity] = useState(true)
   const [tab, setTab] = useState<ModalTab>('details')
   const [accent, setAccent] = useState('lime')
@@ -79,7 +86,14 @@ export const RecruitAgentModal: React.FC = () => {
 
   const quickTools = useMemo(() => quickToolList(tools), [tools])
   const selectedTool = quickTools.find((tool) => tool.id === selectedToolId)
-  const canCreate = Boolean(command.trim()) && Boolean(terminalDirectory.trim()) && (selectedToolId === 'custom' || Boolean(selectedTool?.installed))
+  const selectedCustomAgent = customAgents.find((agent) => `custom:${agent.id}` === selectedToolId)
+  const commandValidation = validateCustomAgent({
+    id: selectedCustomAgent?.id || 'custom_validation',
+    name: terminalName || 'Terminal',
+    command,
+    options: selectedCustomAgent?.options || []
+  })
+  const canCreate = Boolean(commandValidation.value) && Boolean(terminalDirectory.trim()) && (selectedToolId === 'custom' || Boolean(selectedCustomAgent) || Boolean(selectedTool?.installed))
 
   useEffect(() => {
     if (!isRecruitModalOpen) return
@@ -93,6 +107,12 @@ export const RecruitAgentModal: React.FC = () => {
     setTerminalDirectory(activeWorkspace?.path || '')
     setTools(knownTools)
     setCustomCommand('')
+    setCustomAgents(readCustomAgents())
+    setAgentDraftId('')
+    setAgentDraftName('')
+    setAgentDraftCommand('')
+    setAgentDraftOptions('')
+    setAgentCatalogError('')
     selectionVersionRef.current = 0
     const initialSelectionVersion = selectionVersionRef.current
 
@@ -133,6 +153,52 @@ export const RecruitAgentModal: React.FC = () => {
     setCommand(customCommand)
   }
 
+  const selectCatalogAgent = (agent: CustomAgent) => {
+    selectionVersionRef.current += 1
+    setSelectedToolId(`custom:${agent.id}`)
+    setTerminalName(agent.name)
+    setCommand(agent.command)
+    setTab('details')
+  }
+
+  const editCatalogAgent = (agent: CustomAgent) => {
+    setAgentDraftId(agent.id)
+    setAgentDraftName(agent.name)
+    setAgentDraftCommand(agent.command)
+    setAgentDraftOptions(agent.options.join('\n'))
+    setAgentCatalogError('')
+  }
+
+  const clearAgentDraft = () => {
+    setAgentDraftId('')
+    setAgentDraftName('')
+    setAgentDraftCommand('')
+    setAgentDraftOptions('')
+    setAgentCatalogError('')
+  }
+
+  const saveCatalogAgent = () => {
+    const result = validateCustomAgent({
+      id: agentDraftId || undefined,
+      name: agentDraftName,
+      command: agentDraftCommand,
+      options: agentDraftOptions.split('\n')
+    })
+    if (!result.value) { setAgentCatalogError(result.error || 'Configuração inválida.'); return }
+    const next = [...customAgents.filter((agent) => agent.id !== result.value?.id), result.value]
+    writeCustomAgents(next)
+    setCustomAgents(next)
+    clearAgentDraft()
+  }
+
+  const removeCatalogAgent = (agent: CustomAgent) => {
+    const next = customAgents.filter((candidate) => candidate.id !== agent.id)
+    writeCustomAgents(next)
+    setCustomAgents(next)
+    if (selectedToolId === `custom:${agent.id}`) selectCustom()
+    if (agentDraftId === agent.id) clearAgentDraft()
+  }
+
   const chooseTerminalDirectory = async () => {
     const selected = await window.orchestra?.chooseWorkspace?.()
     if (selected) setTerminalDirectory(selected)
@@ -145,6 +211,8 @@ export const RecruitAgentModal: React.FC = () => {
     const nodeX = pendingTerminalRect ? pendingTerminalRect.x : 280 + Math.random() * 80
     const nodeY = pendingTerminalRect ? pendingTerminalRect.y : 180 + Math.random() * 80
 
+    const safeAgent = commandValidation.value
+    if (!safeAgent) return
     addNode({
       id: `term_${Date.now()}`,
       kind: 'terminal',
@@ -155,7 +223,8 @@ export const RecruitAgentModal: React.FC = () => {
       properties: {
         title: terminalName.trim() || 'New Terminal',
         agent: terminalName.trim() || 'Terminal',
-        command: command.trim(),
+        command: safeAgent.command,
+        ...((selectedTool?.id === 'zsh' || selectedTool?.id === 'bash') ? {} : { commandArgv: customAgentArgv(safeAgent) }),
         cwd: terminalDirectory.trim(),
         status: 'starting',
         monitorActivity,
@@ -221,9 +290,10 @@ export const RecruitAgentModal: React.FC = () => {
           <nav className="terminal-create-tabs" aria-label="Terminal settings" role="tablist">
             <button id="terminal-details-tab" type="button" role="tab" aria-selected={tab === 'details'} aria-controls="terminal-details-panel" className={tab === 'details' ? 'active' : ''} onClick={() => setTab('details')}>Details</button>
             <button id="terminal-appearance-tab" type="button" role="tab" aria-selected={tab === 'appearance'} aria-controls="terminal-appearance-panel" className={tab === 'appearance' ? 'active' : ''} onClick={() => setTab('appearance')}>Appearance</button>
+            <button id="terminal-agents-tab" type="button" role="tab" aria-selected={tab === 'agents'} aria-controls="terminal-agents-panel" className={tab === 'agents' ? 'active' : ''} onClick={() => setTab('agents')}>Agents</button>
           </nav>
 
-          <section id={tab === 'details' ? 'terminal-details-panel' : 'terminal-appearance-panel'} className="terminal-create-body" role="tabpanel" aria-labelledby={tab === 'details' ? 'terminal-details-tab' : 'terminal-appearance-tab'}>
+          <section id={`terminal-${tab}-panel`} className="terminal-create-body" role="tabpanel" aria-labelledby={`terminal-${tab}-tab`}>
             {tab === 'details' ? (
               <>
                 <label className="terminal-create-field">
@@ -249,7 +319,7 @@ export const RecruitAgentModal: React.FC = () => {
                   <span className="terminal-create-info" title="Show status and attention changes on the terminal node" aria-label="Monitora mudanças de estado">i</span>
                 </label>
               </>
-            ) : (
+            ) : tab === 'appearance' ? (
               <div className="terminal-appearance-panel">
                 <span className="terminal-create-field-title">Accent color</span>
                 <div className="terminal-accent-row" role="radiogroup" aria-label="Accent color">
@@ -259,7 +329,11 @@ export const RecruitAgentModal: React.FC = () => {
                 </div>
                 <p>Appearance settings are saved with this terminal node.</p>
               </div>
-            )}
+            ) : <div className="terminal-agents-panel">
+              <div className="terminal-agent-section"><span className="terminal-create-field-title">Known agents</span><p>Detetados automaticamente; continuam disponíveis sem cadastro manual.</p><div className="terminal-known-agents">{quickTools.filter((tool) => tool.id !== 'zsh' && tool.id !== 'bash').map((tool) => <div key={tool.id}><ToolIcon id={tool.id} /><span><b>{tool.label}</b><small>{tool.cmd} · {tool.installed ? 'disponível' : 'não detetado'}</small></span></div>)}</div></div>
+              <div className="terminal-agent-section"><span className="terminal-create-field-title">Custom agents</span><p>O executável e cada opção serão enviados como argv; nenhum comando é executado durante a configuração.</p><div className="terminal-custom-agents">{customAgents.map((agent) => <div key={agent.id}><span><b>{agent.name}</b><small>{customAgentArgv(agent).join(' ')}</small></span><button type="button" onClick={() => selectCatalogAgent(agent)}>Usar</button><button type="button" className="icon-btn" onClick={() => editCatalogAgent(agent)} aria-label={`Editar ${agent.name}`}><Pencil className="icon" /></button><button type="button" className="icon-btn danger" onClick={() => removeCatalogAgent(agent)} aria-label={`Remover ${agent.name}`}><Trash2 className="icon" /></button></div>)}{customAgents.length === 0 && <small>Nenhum agente personalizado.</small>}</div></div>
+              <div className="terminal-agent-editor"><label className="terminal-create-field"><span>Name</span><input value={agentDraftName} maxLength={80} onChange={(event) => setAgentDraftName(event.target.value)} /></label><label className="terminal-create-field"><span>Executable</span><input value={agentDraftCommand} placeholder="my-agent" onChange={(event) => setAgentDraftCommand(event.target.value)} /></label><label className="terminal-create-field"><span>Options · one argv item per line</span><textarea value={agentDraftOptions} rows={3} placeholder={'--model\nfast model'} onChange={(event) => setAgentDraftOptions(event.target.value)} /></label>{agentCatalogError && <p className="terminal-agent-error" role="alert">{agentCatalogError}</p>}<div><button type="button" onClick={clearAgentDraft}>Limpar</button><button type="button" className="primary" onClick={saveCatalogAgent}>{agentDraftId ? 'Guardar alterações' : 'Adicionar agente'}</button></div></div>
+            </div>}
           </section>
 
           <footer className="terminal-create-foot">

@@ -80,7 +80,10 @@ control, follow this exact sequence:
 5. Write text with `orchestra terminal type <id> "..."`; submit with `orchestra terminal key <id> enter`.
 6. Inspect again or use `orchestra terminal wait-for <id> "pattern" --timeout-secs 30`.
 
-`inputWritten: true` only means that bytes reached the PTY. It does not prove that an agent received, understood or processed the message.
+`ptyWritten: true` only means that bytes reached the PTY. It does not prove
+that an agent received, understood or processed the message. Only a successful
+completion acknowledgement may set `delivered`, `agentAcknowledged` and
+`completed` to true.
 
 Special keys must use `orchestra terminal key`: `enter`, `shift-enter`,
 `ctrl-enter`, `ctrl-shift-enter`, `tab`, `esc`, `up`, `down`, `left`, `right`
@@ -135,7 +138,12 @@ orchestra send <terminal-id> "Review the authentication implementation and repor
 orchestra ask <terminal-id> "Review the authentication implementation and report findings." --wait --timeout-secs 90
 ```
 
-`send` records that input was written. `ask --wait` additionally waits for a completion result when the peer supports it; a timeout or partial response must be reported as unverified. Requests are recorded locally with `orchestra request-history`.
+`send` reports `ptyWritten: true` but remains `delivered: false` and
+`unverified: true`, because a PTY write is not semantic acknowledgement.
+`ask --wait` becomes delivered only after the peer prints the request-specific
+completion marker; a timeout, cancellation or partial response must be
+reported as unverified. Requests are recorded locally with
+`orchestra request-history`.
 
 `orchestra request-history` also accepts the `orchestra requests` alias. Keep
 the source terminal connected for `ask --wait`; a delivered write is not proof

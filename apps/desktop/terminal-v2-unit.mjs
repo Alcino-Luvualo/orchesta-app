@@ -20,8 +20,10 @@ import {
   isNativeEnterData,
   modifiedEnterSequence,
   multilineEnterSequence,
+  shellQuotePath,
   shellMultilineEnterSequence,
-  multilineEnterPayload
+  multilineEnterPayload,
+  terminalPastePayload
 } from './src/renderer/components/Nodes/terminalInput.ts'
 import {
   getTerminalTransformScale,
@@ -29,6 +31,8 @@ import {
   mapTerminalPointerToLayout
 } from './src/renderer/components/Nodes/terminalGeometry.ts'
 import { applyCanvasNodeChanges } from './src/renderer/components/Canvas/canvasNodeChanges.ts'
+import { TerminalVoiceController } from './src/renderer/components/Nodes/terminalVoice.ts'
+import { customAgentArgv, readCustomAgents, validateCustomAgent, writeCustomAgents } from './src/renderer/components/Modals/agentCatalog.ts'
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -128,6 +132,128 @@ function testNativeTerminalMultilineKeys() {
   assert(!isDirectInteractiveTerminalCommand('env FOO=1 bash -i'), 'wrapped shell launch was incorrectly classified as interactive')
 }
 
+function testTerminalPasteContract() {
+  const rich = 'ação 🌍\r\n\r\n\tlinha\rESC-like: [200~inside[201~'
+  const normalized = 'ação 🌍\n\n\tlinha\nESC-like: [200~inside[201~'
+  assert(terminalPastePayload(rich, false) === normalized, 'plain paste lost Unicode, tabs, blank lines or escape-like content')
+  assert(
+    terminalPastePayload(rich, true) === `[200~${normalized}[201~`,
+    'bracketed paste did not add exactly one outer frame'
+  )
+  assert(!terminalPastePayload('no-submit', false).endsWith('\r'), 'plain paste appended Enter')
+  assert(!terminalPastePayload('no-submit', true).endsWith('\r'), 'bracketed paste appended Enter')
+
+  for (const bytes of [1024, 64 * 1024, 256 * 1024]) {
+    const input = 'x'.repeat(bytes)
+    assert(terminalPastePayload(input, false) === input, `plain ${bytes}-byte paste changed content`)
+    const framed = terminalPastePayload(input, true)
+    assert(framed.slice(6, -6) === input, `bracketed ${bytes}-byte paste duplicated or truncated content`)
+    assert(framed.length === input.length + 12, `bracketed ${bytes}-byte paste applied more than one frame`)
+  }
+}
+
+function testShellPathInsertion() {
+  assert(shellQuotePath('/tmp/plain-file.txt') === '/tmp/plain-file.txt', 'safe path was unnecessarily changed')
+  assert(shellQuotePath('/tmp/name with spaces.txt') === "'/tmp/name with spaces.txt'", 'spaced path was not one shell word')
+  assert(shellQuotePath("/tmp/owner's file") === "'/tmp/owner'\"'\"'s file'", 'single quote path escaping is not POSIX-shell compatible')
+  for (const value of ['/tmp/plain-file.txt', '/tmp/name with spaces.txt', "/tmp/owner's file"]) {
+    const quoted = shellQuotePath(value)
+    assert(!quoted.endsWith('\r') && !quoted.endsWith('\n'), 'path insertion appended Enter')
+  }
+}
+
+async function testVoiceInputLifecycle() {
+  const controller = new TerminalVoiceController()
+  const updates = []
+  const inserted = []
+  let terminalId = 'terminal-a'
+  const callbacks = {
+    currentTerminalId: () => terminalId,
+    insert: (text) => inserted.push(text),
+    update: (snapshot) => updates.push(snapshot.state)
+  }
+  const provider = (transcribe) => ({
+    id: 'test', label: 'Test provider', audioLeavesMachine: false, networkDisclosure: 'local', transcribe
+  })
+
+  await controller.start({
+    terminalId,
+    permission: async () => 'denied',
+    provider: provider(async () => undefined),
+    callbacks
+  })
+  assert(controller.current.state === 'error' && inserted.length === 0, 'denied microphone permission was not surfaced safely')
+
+  await controller.start({
+    terminalId,
+    permission: async () => 'granted',
+    provider: provider(async ({ onPhase }) => onPhase('processing')),
+    callbacks
+  })
+  assert(controller.current.state === 'error' && controller.current.error?.includes('Nenhuma fala'), 'silent voice input did not produce an explicit state')
+
+  await controller.start({
+    terminalId,
+    permission: async () => 'granted',
+    provider: provider(async () => { throw new Error('provider failed') }),
+    callbacks
+  })
+  assert(controller.current.state === 'error' && controller.current.error === 'provider failed', 'provider error was hidden')
+
+  await controller.start({
+    terminalId,
+    permission: async () => 'granted',
+    provider: provider(async ({ onTranscript, onPhase }) => {
+      onTranscript('hello')
+      onPhase('processing')
+      onTranscript('world')
+    }),
+    callbacks
+  })
+  assert(inserted.join('') === 'hello world', 'progressive transcript chunks were duplicated or joined incorrectly')
+  assert(!inserted.join('').endsWith('\r') && !inserted.join('').endsWith('\n'), 'voice input auto-submitted the terminal')
+  for (const expected of ['requesting-permission', 'recording', 'processing', 'inserting', 'idle']) {
+    assert(updates.includes(expected), `voice lifecycle never entered ${expected}`)
+  }
+
+  const waitForAbort = ({ signal }) => new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+  const cancelPending = controller.start({ terminalId, permission: async () => 'granted', provider: provider(waitForAbort), callbacks })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  controller.cancel()
+  await cancelPending
+  assert(controller.current.state === 'cancelled', 'explicit voice cancellation did not win the provider race')
+
+  terminalId = 'terminal-a'
+  const changePending = controller.start({ terminalId, permission: async () => 'granted', provider: provider(waitForAbort), callbacks })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  terminalId = 'terminal-b'
+  controller.terminalChanged(terminalId)
+  await changePending
+  assert(controller.current.state === 'cancelled', 'terminal change did not cancel in-flight transcription')
+}
+
+function testCustomAgentCatalog() {
+  let stored = ''
+  const storage = {
+    getItem: () => stored || null,
+    setItem: (_key, value) => { stored = value }
+  }
+  const valid = validateCustomAgent({ name: 'Review Agent', command: '/opt/tools/reviewer', options: ['--model', 'fast model'] })
+  assert(valid.value, 'valid custom agent was rejected')
+  assert(customAgentArgv(valid.value).length === 3 && customAgentArgv(valid.value)[2] === 'fast model', 'custom agent options were not preserved as argv items')
+  assert(!validateCustomAgent({ name: 'Unsafe', command: 'codex; touch /tmp/pwned', options: [] }).value, 'shell command was accepted as an executable')
+  assert(!validateCustomAgent({ name: 'Unsafe option', command: 'codex', options: ['ok\n--bad'] }).value, 'control characters were accepted in argv')
+  writeCustomAgents([valid.value], storage)
+  const loaded = readCustomAgents(storage)
+  assert(loaded.length === 1 && loaded[0].name === 'Review Agent', 'custom agent catalog did not round-trip persisted data')
+  const edited = validateCustomAgent({ ...loaded[0], name: 'Edited Agent' }).value
+  writeCustomAgents(edited ? [edited] : [], storage)
+  assert(readCustomAgents(storage)[0]?.id === loaded[0].id && readCustomAgents(storage)[0]?.name === 'Edited Agent', 'custom agent editing changed identity or failed to persist')
+  writeCustomAgents([], storage)
+  assert(readCustomAgents(storage).length === 0, 'custom agent removal was not persisted')
+}
+
+
 function writeTerminal(term, data) {
   return new Promise((resolve) => term.write(data, resolve))
 }
@@ -207,7 +333,11 @@ testBlocks()
 testVirtualBlocks()
 testParser()
 testNativeTerminalMultilineKeys()
+testTerminalPasteContract()
+testShellPathInsertion()
+await testVoiceInputLifecycle()
+testCustomAgentCatalog()
 await testTerminalMultilineRender()
 testTerminalPointerTransformCompensation()
 testControlledCanvasNodeChanges()
-console.log(JSON.stringify({ ok: true, suite: 'terminal-v2-unit', cases: 8 }))
+console.log(JSON.stringify({ ok: true, suite: 'terminal-v2-unit', cases: 12 }))

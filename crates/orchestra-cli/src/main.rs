@@ -2,6 +2,7 @@ use anyhow::Result;
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -947,7 +948,7 @@ async fn main() -> Result<()> {
 
     if !socket_path.exists() {
         anyhow::bail!(
-            "Orchestra daemon is not running (socket not found at {:?}). Start Orchestra Desktop or set ORCHESTRA_SOCKET to the matching instance socket.",
+            "DAEMON_MISSING: Orchestra socket was not found at {:?}. Start Orchestra Desktop or set ORCHESTRA_SOCKET to the matching instance socket.",
             socket_path
         );
     }
@@ -955,8 +956,13 @@ async fn main() -> Result<()> {
     let mut stream = UnixStream::connect(&socket_path)
         .await
         .map_err(|error| {
+            let category = if error.kind() == ErrorKind::ConnectionRefused {
+                "SOCKET_STALE"
+            } else {
+                "DAEMON_UNAVAILABLE"
+            };
             anyhow::anyhow!(
-                "Could not connect to Orchestra daemon socket {:?}: {error}. Start the matching Orchestra Desktop instance or set ORCHESTRA_SOCKET explicitly.",
+                "{category}: could not connect to Orchestra daemon socket {:?}: {error}. Start the matching Orchestra Desktop instance or set ORCHESTRA_SOCKET explicitly.",
                 socket_path
             )
         })?;
@@ -971,25 +977,52 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Daemon did not return a client token"))?
         .to_string();
 
-    if is_doctor || is_status {
+    if is_status {
         let mut safe_hello = hello.clone();
         if let Some(object) = safe_hello.as_object_mut() {
             object.remove("clientToken");
         }
-        if is_doctor {
-            let context_dir = std::env::var("ORCHESTRA_CONTEXT_DIR").ok();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "daemon": safe_hello,
-                    "terminalSessionId": std::env::var("ORCHESTRA_SESSION_ID").ok(),
-                    "contextDir": context_dir,
-                    "contextDirExists": context_dir.as_ref().is_some_and(|dir| std::path::Path::new(dir).is_dir())
-                }))?
+        println!("{}", serde_json::to_string_pretty(&safe_hello)?);
+        return Ok(());
+    }
+
+    if is_doctor {
+        let (session_id, token) = terminal_auth()?;
+        let authenticated = |payload| {
+            authenticated_payload(payload, &session_id, &token, Some(client_token.as_str()))
+        };
+        let state = request(&mut stream, "terminal.state", authenticated(json!({}))).await?;
+        let connections = request(&mut stream, "connection.list", authenticated(json!({}))).await?;
+        let agents = request(&mut stream, "agent.list", authenticated(json!({}))).await?;
+        let agent_listed = agents.as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item["sessionId"].as_str() == Some(session_id.as_str()))
+        });
+        if !agent_listed {
+            anyhow::bail!(
+                "SESSION_NOT_REGISTERED: authenticated terminal is absent from agent.list"
             );
-        } else {
-            println!("{}", serde_json::to_string_pretty(&safe_hello)?);
         }
+        let mut safe_hello = hello.clone();
+        if let Some(object) = safe_hello.as_object_mut() {
+            object.remove("clientToken");
+        }
+        let context_dir = std::env::var("ORCHESTRA_CONTEXT_DIR").ok();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "daemon": safe_hello,
+                "authentication": "valid",
+                "terminalSessionId": session_id,
+                "sessionRegistered": true,
+                "agentListed": agent_listed,
+                "terminalState": state,
+                "connections": connections,
+                "contextDir": context_dir,
+                "contextDirExists": context_dir.as_ref().is_some_and(|dir| std::path::Path::new(dir).is_dir())
+            }))?
+        );
         return Ok(());
     }
 
@@ -1081,7 +1114,13 @@ async fn main() -> Result<()> {
     }
 
     let (type_name, mut payload) = match command {
-        Commands::Agents => ("agent.list", json!({})),
+        Commands::Agents => {
+            let (session_id, token) = terminal_auth()?;
+            (
+                "agent.list",
+                json!({ "sessionId": session_id, "token": token }),
+            )
+        }
         Commands::Connections => {
             let (session_id, token) = terminal_auth()?;
             (

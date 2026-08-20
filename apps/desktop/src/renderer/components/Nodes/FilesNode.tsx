@@ -78,6 +78,7 @@ type Worktree = { path: string; branch?: string; detached?: boolean }
 type ContentResult = { name: string; path: string; line?: number; snippet?: string }
 type Diagnostic = { severity: string; message: string; file?: string; line?: number; column?: number }
 type BlameLine = { line?: number; commit?: string; author?: string; authorTime?: string; summary?: string; content?: string }
+type CommitDetails = { hash: string; files: GitFile[]; diff: string; truncated?: boolean }
 type TreeRow = ReturnType<typeof flattenFileTree>[number]
 type Notice = { kind: 'success' | 'error' | 'info'; message: string }
 type ConfirmState = { title: string; message: string; action: () => Promise<void> }
@@ -277,6 +278,9 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const [diffText, setDiffText] = useState<{ working: string; staged: string }>({ working: '', staged: '' })
   const [selectedGitPath, setSelectedGitPath] = useState('')
   const [selectedCommitHash, setSelectedCommitHash] = useState('')
+  const [commitDetails, setCommitDetails] = useState<CommitDetails | null>(null)
+  const [commitDetailsLoading, setCommitDetailsLoading] = useState(false)
+  const [commitDetailsError, setCommitDetailsError] = useState<string | null>(null)
   const [contentResults, setContentResults] = useState<ContentResult[]>([])
   const [blameLines, setBlameLines] = useState<BlameLine[]>([])
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([])
@@ -308,6 +312,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const editorHostRef = useRef<HTMLDivElement>(null)
   const editorViewRef = useRef<EditorView | null>(null)
   const fileLoadGenerationRef = useRef(0)
+  const commitLoadGenerationRef = useRef(0)
   const saveFileRef = useRef<() => void>(() => undefined)
   const lastDiskContentRef = useRef('')
   const syncingDiskRef = useRef(false)
@@ -508,6 +513,33 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     if (!changedFiles.length) { setSelectedGitPath(''); return }
     if (!selectedGitPath || !changedFiles.some((file) => file.path === selectedGitPath)) setSelectedGitPath(changedFiles[0].path)
   }, [changedFiles, selectedGitPath])
+
+  useEffect(() => {
+    const generation = ++commitLoadGenerationRef.current
+    if (viewMode !== 'graph' || !selectedCommitHash || !fileRoot || !projectPath) {
+      setCommitDetails(null)
+      setCommitDetailsError(null)
+      setCommitDetailsLoading(false)
+      return
+    }
+    setCommitDetails(null)
+    setCommitDetailsError(null)
+    setCommitDetailsLoading(true)
+    void invoke<CommitDetails>('git.commit.show', {
+      ...payloadBase,
+      path: relativeWorkspacePath(fileRoot, projectPath),
+      hash: selectedCommitHash
+    }).then((details) => {
+      if (generation !== commitLoadGenerationRef.current) return
+      setCommitDetails(details)
+    }).catch((reason) => {
+      if (generation !== commitLoadGenerationRef.current) return
+      setCommitDetailsError(errorMessage(reason, 'Não foi possível carregar as alterações deste commit.'))
+    }).finally(() => {
+      if (generation === commitLoadGenerationRef.current) setCommitDetailsLoading(false)
+    })
+    return () => { commitLoadGenerationRef.current += 1 }
+  }, [fileRoot, payloadBase, projectPath, selectedCommitHash, viewMode])
 
   const selectFile = useCallback(async (entry: FileTreeItem | { path: string; name: string; is_dir: false }) => {
     if (entry.is_dir || !fileRoot) return
@@ -1165,6 +1197,9 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
                 <div className="fork-commit-author"><span className="fork-author-avatar">{(selectedCommit.author || '?').slice(0, 1).toUpperCase()}</span><span><b>{selectedCommit.author || 'Autor desconhecido'}</b><small>{formatGraphDate(selectedCommit.time)}</small></span></div>
                 <dl><div><dt>SHA</dt><dd>{selectedCommit.hash}</dd></div><div><dt>Parents</dt><dd>{selectedCommit.parents?.map((parent) => parent.slice(0, 8)).join(', ') || '—'}</dd></div><div><dt>Branches</dt><dd>{selectedCommit.refs?.join(', ') || '—'}</dd></div></dl>
                 <label className="fork-target-field">Target<input value={historyTarget} onChange={(event) => setHistoryTarget(event.target.value)} /></label>
+                {commitDetailsLoading && <div className="commit-inspector-state" role="status"><LoaderCircle className="icon spin" />A carregar alterações…</div>}
+                {commitDetailsError && <div className="commit-inspector-state error" role="alert">{commitDetailsError}</div>}
+                {commitDetails && <div className="commit-inspector"><div className="commit-file-list">{commitDetails.files.map((file) => <div key={`${file.status}:${file.originalPath || ''}:${file.path}`}><i>{file.status}</i><span>{file.originalPath ? `${file.originalPath} → ${file.path}` : file.path}</span></div>)}{commitDetails.files.length === 0 && <div className="commit-inspector-state">Este commit não possui alterações de ficheiros.</div>}</div>{commitDetails.diff ? <pre className="git-diff-preview commit-diff"><code>{commitDetails.diff}</code></pre> : commitDetails.files.length > 0 ? <div className="commit-inspector-state">Sem diff textual para este commit.</div> : null}{commitDetails.truncated && <small>Diff limitado a 4 MiB.</small>}</div>}
               </div> : <div className="fork-inspector-empty"><GitCommitHorizontal className="icon" /><b>Seleciona um commit</b><span>Os detalhes aparecem aqui.</span></div>}
             <details className="fork-advanced-actions">
               <summary>Git actions</summary>

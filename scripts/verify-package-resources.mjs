@@ -10,13 +10,16 @@ import path from 'node:path'
 import process from 'node:process'
 
 const repositoryRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+const binaryDirectory = process.env.ORCHESTRA_VERIFY_BINARY_DIR
+  ? path.resolve(process.env.ORCHESTRA_VERIFY_BINARY_DIR)
+  : path.join(repositoryRoot, 'target/release')
 const requiredFiles = [
-  'apps/desktop/resources/computer-use-linux.py',
-  'target/release/orchestra-core',
-  'target/release/orchestra',
-  'skills/orchestra-canvas/SKILL.md',
-  '.agents/plugins/plugins/orchestra/.codex-plugin/plugin.json',
-  '.agents/plugins/marketplace.json'
+  { label: 'apps/desktop/resources/computer-use-linux.py', absolutePath: path.join(repositoryRoot, 'apps/desktop/resources/computer-use-linux.py') },
+  { label: 'target/release/orchestra-core', absolutePath: path.join(binaryDirectory, 'orchestra-core'), executable: true },
+  { label: 'target/release/orchestra', absolutePath: path.join(binaryDirectory, 'orchestra'), executable: true },
+  { label: 'skills/orchestra-canvas/SKILL.md', absolutePath: path.join(repositoryRoot, 'skills/orchestra-canvas/SKILL.md') },
+  { label: '.agents/plugins/plugins/orchestra/.codex-plugin/plugin.json', absolutePath: path.join(repositoryRoot, '.agents/plugins/plugins/orchestra/.codex-plugin/plugin.json') },
+  { label: '.agents/plugins/marketplace.json', absolutePath: path.join(repositoryRoot, '.agents/plugins/marketplace.json') }
 ]
 
 // These are the exact resource destinations used by the daemon's packaged
@@ -33,13 +36,12 @@ const packagedResourceMappings = [
 ]
 
 const failures = []
-for (const relativePath of requiredFiles) {
-  const absolutePath = path.join(repositoryRoot, relativePath)
+for (const { label, absolutePath } of requiredFiles) {
   try {
     const stat = fs.statSync(absolutePath)
-    if (!stat.isFile() || stat.size === 0) failures.push(`${relativePath} is empty or not a file`)
+    if (!stat.isFile() || stat.size === 0) failures.push(`${label} is empty or not a file`)
   } catch {
-    failures.push(`${relativePath} is missing`)
+    failures.push(`${label} is missing`)
   }
 }
 
@@ -94,10 +96,10 @@ if (!marketplacePlugin || marketplacePlugin.source?.source !== 'local' || market
   failures.push('marketplace must expose the local ./plugins/orchestra plugin')
 }
 
-for (const relativePath of ['target/release/orchestra-core', 'target/release/orchestra']) {
+for (const { label, absolutePath, executable } of requiredFiles.filter((file) => file.executable)) {
   try {
-    if ((fs.statSync(path.join(repositoryRoot, relativePath)).mode & 0o111) === 0) {
-      failures.push(`${relativePath} is not executable`)
+    if ((fs.statSync(absolutePath).mode & 0o111) === 0) {
+      failures.push(`${label} is not executable`)
     }
   } catch {
     // Already reported as missing above.

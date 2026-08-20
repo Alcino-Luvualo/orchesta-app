@@ -29,6 +29,31 @@ async function evaluate(webContents, expression) {
   return webContents.executeJavaScript(expression, true)
 }
 
+async function warmAndCaptureOffscreen(portalView, targetBounds) {
+  const warmupBounds = {
+    x: -targetBounds.width - 32,
+    y: -targetBounds.height - 32,
+    width: targetBounds.width,
+    height: targetBounds.height
+  }
+  portalView.setVisible(false)
+  portalView.setBounds(warmupBounds)
+  portalView.setVisible(true)
+  await sleep(50)
+  const activeBounds = portalView.getBounds()
+  assert(activeBounds.x + activeBounds.width <= 0 && activeBounds.y + activeBounds.height <= 0,
+    'first-frame compositor warmup overlapped the visible content rectangle')
+  const frame = await portalView.webContents.capturePage()
+  const snapshotUrl = portalView.webContents.getURL()
+  portalView.setVisible(false)
+  portalView.setBounds(targetBounds)
+  portalView.setVisible(true)
+  assert(JSON.stringify(portalView.getBounds()) === JSON.stringify(targetBounds),
+    'first-frame capture did not restore the current target bounds')
+  assert(!frame.isEmpty(), `empty first frame for ${snapshotUrl}`)
+  return { frame, snapshotUrl }
+}
+
 async function run() {
   if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
     console.log(JSON.stringify({ ok: true, skipped: true, reason: 'No Linux display available' }))
@@ -49,10 +74,32 @@ async function run() {
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, offscreen: true }
   })
   window.contentView.addChildView(portalView)
-  portalView.setVisible(true)
+  portalView.setVisible(false)
   try {
     await window.loadURL('about:blank')
-    await portalView.webContents.loadURL(pathToFileURL(fixturePath).href)
+    const fixtureUrl = pathToFileURL(fixturePath).href
+    const lifecycle = []
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      const url = `${fixtureUrl}?cycle=${cycle}`
+      portalView.setVisible(false)
+      await portalView.webContents.loadURL(url)
+      const targetBounds = { x: 8 + cycle, y: 12 + cycle, width: 360 + cycle * 20, height: 420 }
+      const captured = await warmAndCaptureOffscreen(portalView, targetBounds)
+      assert(captured.snapshotUrl === portalView.webContents.getURL(),
+        `snapshot URL does not match the current navigation in cycle ${cycle}`)
+      portalView.setVisible(false)
+      portalView.setVisible(true)
+      lifecycle.push({ cycle, url: captured.snapshotUrl, bounds: portalView.getBounds() })
+    }
+    // Reattach the same live view to exercise the renderer reconnect path.
+    portalView.setVisible(false)
+    window.contentView.removeChildView(portalView)
+    window.contentView.addChildView(portalView)
+    const reconnectBounds = { x: 4, y: 6, width: 382, height: 430 }
+    const reconnected = await warmAndCaptureOffscreen(portalView, reconnectBounds)
+    assert(reconnected.snapshotUrl === portalView.webContents.getURL(), 'reconnected portal captured a stale URL')
+    lifecycle.push({ cycle: 'reconnect', url: reconnected.snapshotUrl, bounds: portalView.getBounds() })
+
     const results = []
     for (const zoom of zoomFactors) {
       for (const logicalWidth of logicalWidths) {
@@ -87,7 +134,7 @@ async function run() {
     assert(moved.x === before.x + 37 && moved.y === before.y + 19, 'drag did not update portal position')
     assert(moved.generation > before.generation && moved.revision > before.revision, 'drag did not advance motion/revision state')
     assert(after.x === moved.x && after.y === moved.y && after.viewport.innerWidth > 0, 'snapshot lost moved portal state')
-    console.log(JSON.stringify({ ok: true, fixture: path.basename(fixturePath), viewports: results, motion: { before, after } }))
+    console.log(JSON.stringify({ ok: true, fixture: path.basename(fixturePath), lifecycle, viewports: results, motion: { before, after } }))
   } finally {
     try { window.contentView.removeChildView(portalView) } catch { /* best effort */ }
     try { portalView.webContents.close() } catch { /* best effort */ }

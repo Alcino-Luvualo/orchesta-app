@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::{Command, Output};
 use tracing::info;
 
@@ -82,9 +82,22 @@ fn validate_remote(value: &str) -> Result<()> {
 }
 
 fn validate_path(repo_path: &str, file_path: &str) -> Result<String> {
-    let relative = Path::new(file_path)
-        .strip_prefix(repo_path)
-        .unwrap_or(Path::new(file_path));
+    let supplied = Path::new(file_path);
+    let relative = if supplied.is_absolute() {
+        supplied
+            .strip_prefix(Path::new(repo_path))
+            .map_err(|_| anyhow!("Git path is outside the repository"))?
+    } else {
+        supplied
+    };
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(anyhow!("Invalid Git path"));
+    }
     let value = relative
         .to_str()
         .ok_or_else(|| anyhow!("Git path is not valid UTF-8"))?;
@@ -95,6 +108,36 @@ fn validate_path(repo_path: &str, file_path: &str) -> Result<String> {
         return Err(anyhow!("Invalid Git path"));
     }
     Ok(value.to_string())
+}
+
+fn resolve_commit_hash(repo_path: &str, value: &str) -> Result<String> {
+    if !(4..=64).contains(&value.len()) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(anyhow!("Invalid commit hash"));
+    }
+    let revision = format!("{value}^{{commit}}");
+    let output = run_git(repo_path, &["rev-parse", "--verify", &revision])?;
+    let resolved = output_text(&output).trim().to_ascii_lowercase();
+    if !(40..=64).contains(&resolved.len())
+        || !resolved.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(anyhow!("Git did not resolve a valid commit hash"));
+    }
+    Ok(resolved)
+}
+
+fn bounded_text(output: &Output, limit: usize) -> (String, bool) {
+    let text = String::from_utf8_lossy(&output.stdout);
+    if text.len() <= limit {
+        return (text.into_owned(), false);
+    }
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (
+        format!("{}\n\n[diff truncated by Orchestra]\n", &text[..end]),
+        true,
+    )
 }
 
 impl GitManager {
@@ -221,8 +264,12 @@ impl GitManager {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
                 .collect::<Vec<_>>();
+            let hash = parts[0].trim();
+            if hash.is_empty() || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                continue;
+            }
             commits.push(serde_json::json!({
-                "hash": parts[0],
+                "hash": hash,
                 "parents": parts[1].split_whitespace().filter(|value| !value.is_empty()).collect::<Vec<_>>(),
                 "author": parts[2],
                 "time": parts[3],
@@ -231,6 +278,83 @@ impl GitManager {
             }));
         }
         Ok(commits)
+    }
+
+    pub fn show_commit(
+        repo_path: &str,
+        commit_hash: &str,
+        paths: &[String],
+    ) -> Result<serde_json::Value> {
+        let hash = resolve_commit_hash(repo_path, commit_hash)?;
+        let safe_paths = paths
+            .iter()
+            .map(|path| validate_path(repo_path, path))
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut names = vec![
+            "diff-tree".to_string(),
+            "--root".to_string(),
+            "--first-parent".to_string(),
+            "-m".to_string(),
+            "--no-commit-id".to_string(),
+            "--name-status".to_string(),
+            "-z".to_string(),
+            "-r".to_string(),
+            "-M".to_string(),
+            hash.clone(),
+            "--".to_string(),
+        ];
+        names.extend(safe_paths.iter().cloned());
+        let names_output = run_git_owned(repo_path, &names)?;
+        let mut tokens = names_output.stdout.split(|byte| *byte == 0);
+        let mut files = Vec::new();
+        loop {
+            let Some(status_bytes) = tokens.next() else {
+                break;
+            };
+            if status_bytes.is_empty() {
+                continue;
+            }
+            let status = String::from_utf8_lossy(status_bytes).to_string();
+            let Some(first_path) = tokens.next().filter(|value| !value.is_empty()) else {
+                break;
+            };
+            let first_path = String::from_utf8_lossy(first_path).to_string();
+            if status.starts_with('R') || status.starts_with('C') {
+                let Some(next_path) = tokens.next().filter(|value| !value.is_empty()) else {
+                    break;
+                };
+                files.push(serde_json::json!({
+                    "status": status,
+                    "originalPath": first_path,
+                    "path": String::from_utf8_lossy(next_path)
+                }));
+            } else {
+                files.push(serde_json::json!({ "status": status, "path": first_path }));
+            }
+        }
+
+        let mut patch = vec![
+            "show".to_string(),
+            "--format=".to_string(),
+            "--no-ext-diff".to_string(),
+            "--no-color".to_string(),
+            "--find-renames".to_string(),
+            "--first-parent".to_string(),
+            "-m".to_string(),
+            "--root".to_string(),
+            hash.clone(),
+            "--".to_string(),
+        ];
+        patch.extend(safe_paths);
+        let patch_output = run_git_owned(repo_path, &patch)?;
+        let (diff, truncated) = bounded_text(&patch_output, 4 * 1024 * 1024);
+        Ok(serde_json::json!({
+            "hash": hash,
+            "files": files,
+            "diff": diff,
+            "truncated": truncated
+        }))
     }
 
     pub fn stage_file(repo_path: &str, file_path: &str) -> Result<()> {
@@ -698,6 +822,25 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
+    fn run(repo: &PathBuf, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn head(repo: &PathBuf) -> String {
+        run(repo, &["rev-parse", "HEAD"])
+    }
+
     fn temp_repo() -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("orchestra-git-test-{}", uuid::Uuid::new_v4()));
@@ -756,12 +899,16 @@ mod tests {
                 .as_bool()
                 .unwrap_or(false)
         );
-        assert!(
-            GitManager::get_log(&repo.to_string_lossy(), 10)
-                .expect("log")
-                .len()
-                >= 2
-        );
+        let log = GitManager::get_log(&repo.to_string_lossy(), 10).expect("log");
+        assert!(log.len() >= 2);
+        for commit in log {
+            GitManager::show_commit(
+                &repo.to_string_lossy(),
+                commit["hash"].as_str().expect("log hash"),
+                &[],
+            )
+            .expect("every log hash must be directly inspectable");
+        }
         fs::remove_dir_all(repo).expect("remove repository");
     }
 
@@ -830,5 +977,95 @@ mod tests {
 
         fs::remove_dir_all(repo).expect("remove repository");
         fs::remove_dir_all(remote).expect("remove bare remote");
+    }
+
+    #[test]
+    fn shows_root_normal_rename_binary_empty_and_merge_commits() {
+        let repo = temp_repo();
+        let repo_string = repo.to_string_lossy().to_string();
+
+        let root = GitManager::show_commit(&repo_string, &head(&repo), &[]).expect("root");
+        assert_eq!(root["files"][0]["status"], "A");
+        assert_eq!(root["files"][0]["path"], "README.md");
+        assert!(root["diff"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("initial"));
+
+        fs::write(repo.join("README.md"), "normal change\n").expect("normal change");
+        run(&repo, &["add", "README.md"]);
+        run(&repo, &["commit", "-q", "-m", "normal"]);
+        let normal = GitManager::show_commit(&repo_string, &head(&repo), &[]).expect("normal");
+        assert_eq!(normal["files"][0]["status"], "M");
+        assert!(normal["diff"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("normal change"));
+
+        run(&repo, &["mv", "README.md", "renamed.md"]);
+        run(&repo, &["commit", "-q", "-m", "rename"]);
+        let renamed = GitManager::show_commit(&repo_string, &head(&repo), &[]).expect("rename");
+        assert!(renamed["files"].as_array().unwrap().iter().any(|file| {
+            file["status"].as_str().unwrap_or_default().starts_with('R')
+                && file["originalPath"] == "README.md"
+                && file["path"] == "renamed.md"
+        }));
+
+        fs::write(repo.join("binary.dat"), [0_u8, 1, 2, 0, 255]).expect("binary");
+        run(&repo, &["add", "binary.dat"]);
+        run(&repo, &["commit", "-q", "-m", "binary"]);
+        let binary = GitManager::show_commit(&repo_string, &head(&repo), &[]).expect("binary");
+        assert!(binary["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "binary.dat"));
+        assert!(binary["diff"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Binary files"));
+
+        run(&repo, &["commit", "--allow-empty", "-q", "-m", "empty"]);
+        let empty = GitManager::show_commit(&repo_string, &head(&repo), &[]).expect("empty");
+        assert!(empty["files"].as_array().unwrap().is_empty());
+        assert!(empty["diff"].as_str().unwrap_or_default().is_empty());
+
+        let main_branch = run(&repo, &["symbolic-ref", "--short", "HEAD"]);
+        run(&repo, &["switch", "-q", "-c", "feature/show-commit"]);
+        fs::write(repo.join("feature.txt"), "feature\n").expect("feature file");
+        run(&repo, &["add", "feature.txt"]);
+        run(&repo, &["commit", "-q", "-m", "feature"]);
+        run(&repo, &["switch", "-q", &main_branch]);
+        fs::write(repo.join("main.txt"), "main\n").expect("main file");
+        run(&repo, &["add", "main.txt"]);
+        run(&repo, &["commit", "-q", "-m", "main"]);
+        run(
+            &repo,
+            &[
+                "merge",
+                "--no-ff",
+                "-q",
+                "feature/show-commit",
+                "-m",
+                "merge",
+            ],
+        );
+        let merge = GitManager::show_commit(&repo_string, &head(&repo), &[]).expect("merge");
+        assert!(merge["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "feature.txt"));
+        assert!(merge["diff"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("feature"));
+
+        assert!(GitManager::show_commit(&repo_string, "HEAD;touch-pwned", &[]).is_err());
+        assert!(
+            GitManager::show_commit(&repo_string, &head(&repo), &["../outside".to_string()])
+                .is_err()
+        );
+        fs::remove_dir_all(repo).expect("remove repository");
     }
 }
