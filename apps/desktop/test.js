@@ -29,6 +29,8 @@ collect(sourceRoot)
 
 const source = files.map((file) => fs.readFileSync(file, 'utf8')).join('\n')
 const mainSource = fs.readFileSync(path.join(sourceRoot, 'main/index.ts'), 'utf8')
+const noteNodeSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/NoteNode.tsx'), 'utf8')
+const desktopStyles = fs.readFileSync(path.join(sourceRoot, 'renderer/index.css'), 'utf8')
 const indexHtml = fs.readFileSync(path.join(appRoot, 'index.html'), 'utf8')
 const viteConfigPath = path.join(appRoot, 'vite.config.mts')
 const viteConfigSource = fs.existsSync(viteConfigPath) ? fs.readFileSync(viteConfigPath, 'utf8') : ''
@@ -36,6 +38,46 @@ for (const forbidden of ['http://localhost:3000', 'sampleCode', 'demoEntries', '
   if (source.includes(forbidden)) throw new Error(`Prototype placeholder remains: ${forbidden}`)
 }
 if (/\balert\s*\(/.test(source)) throw new Error('Blocking alert() remains in the desktop source')
+for (const required of ['toggleTaskList', 'dataset.checked', 'NOTE_COLORS', 'Cor da nota']) {
+  if (!noteNodeSource.includes(required)) throw new Error(`Interactive note checklist/color control is missing: ${required}`)
+}
+for (const required of ['EMPTY_TASK_PLACEHOLDER', 'selectionTouchesCheckedTask', 'handleDOMEvents', 'beforeinput:', 'event.preventDefault()']) {
+  if (!noteNodeSource.includes(required)) throw new Error(`Completed checklist edit/save guard is missing: ${required}`)
+}
+if (noteNodeSource.includes('new MutationObserver(syncCompletedTasks)')) throw new Error('Completed checklist DOM mutation loop returned')
+for (const required of ["Image.configure({ allowBase64: true })", 'event.clipboardData?.items', 'reader.readAsDataURL', 'replaceSelectionWith(image)']) {
+  if (!noteNodeSource.includes(required)) throw new Error(`Pasted note image support is missing: ${required}`)
+}
+for (const required of ['workspace-create-modal', 'setWorkspaceModalOpen', 'WORKSPACE_ICONS', 'Criar workspace']) {
+  if (!source.includes(required)) throw new Error(`Workspace creation flow is missing: ${required}`)
+}
+for (const required of ['workspace-rail', 'workspace-rail-btn', 'workspace-add-btn', '<WorkspaceGlyph icon={workspace.icon} color={workspace.color}', 'aria-current={active', 'workspace-rail-menu', 'Editar', 'Eliminar', "workspace.remove"]) {
+  if (!source.includes(required)) throw new Error(`Workspace icon rail is missing: ${required}`)
+}
+for (const required of ['content: \'[ ]\'', 'content: \'[x]\'', 'text-decoration: line-through', 'font-style: italic']) {
+  if (!desktopStyles.includes(required)) throw new Error(`Completed note task styling is missing: ${required}`)
+}
+for (const required of ['portal:grab', 'BrowserMarkupOverlay', 'Desenhar na screenshot', 'Adicionar ao agente', 'orchestra:add-agent-context', 'force-renderer-accessibility', 'computer.get-app-state']) {
+  if (!source.includes(required)) throw new Error(`Context capture/Computer Use feature is missing: ${required}`)
+}
+for (const required of ['connectedToNodeId={id}', 'initiallyOpen', 'agentContextInput', 'materializeAgentContext', "type === 'context.save_image'", 'record.frozen = false', 'guest.focus()', "canSubmit ? '\\r' : ''", 'portal:grab-cancel', 'aria-pressed={isGrabbing}']) {
+  if (!source.includes(required)) throw new Error(`Browser-to-agent capture flow is missing: ${required}`)
+}
+for (const required of ["scheduleBoundsSync('transitioning')", 'settlingRef.current = true', "scheduleBoundsSync('live')", "view.setBackgroundColor('#ffffff')", 'setBackgroundThrottling', 'webContents.invalidate()']) {
+  if (!source.includes(required)) throw new Error(`Browser motion presentation guard is missing: ${required}`)
+}
+for (const required of ['suspendNativePortalsForRendererReload', "nativePortalSuppressionReasons.add('renderer-reload')", 'record.desiredVisible = false', "setBackgroundThrottling(mode !== 'transitioning')"]) {
+  if (!mainSource.includes(required)) throw new Error(`Native portal renderer-reload input guard is missing: ${required}`)
+}
+for (const required of ['Comentário para o agente', 'Escolher agente', 'selected.length < 12', 'targets: PortalGrabTarget[]', 'User comment:', 'selectors: grabTargets.map']) {
+  if (!source.includes(required)) throw new Error(`Multi-element browser comment flow is missing: ${required}`)
+}
+const computerProvider = path.join(appRoot, 'resources/computer-use-linux.py')
+if (!fs.existsSync(computerProvider)) throw new Error('Linux Computer Use provider is missing')
+const providerSource = fs.readFileSync(computerProvider, 'utf8')
+for (const required of ['get_app_state', 'elementIndex', 'app_blocked', 'accessibilityTree']) {
+  if (!providerSource.includes(required)) throw new Error(`Linux Computer Use provider lost: ${required}`)
+}
 for (const required of ['createCommandEditorEngine', 'EditorView.lineWrapping', 'Shift-Enter', 'Ctrl+Enter', 'terminal.richInputV2', 'isMultilineEnter', 'multilineEnterSequence', 'modifiedEnterSequence', 'modify_other_keys', 'kitty', 'TerminalBlockStore', 'TerminalBlockList', 'TerminalOutputBuffer', 'terminalBlockOutputText', 'VirtualBlockIndex', 'visibleRange', 'terminal-block-sticky', 'Filter output', 'Re-input', 'Re-run', 'terminal.execute', 'terminal.security', 'parseOsc52', 'registerOscHandler', 'registerLinkProvider', 'linkHandler', 'macOptionClickForcesSelection', 'mouseTrackingMode', 'promptFallbackCursorInput', 'bracketedPasteMode', 'dataBase64', 'terminal:open-external', 'orchestra:terminal-file-link', 'screenReaderMode', 'terminal-create-modal', 'Quick Start', 'Monitor Activity', 'pendingTerminalSpawns', 'spawnStartedRef', 'useModalA11y', 'note-editor-focused', 'terminal-create-form', 'aria-modal="true"', 'installXtermTransformCompensation', '_mouseService', 'getTerminalTransformScale', 'isDirectInteractiveTerminalCommand']) {
   if (!source.includes(required)) throw new Error(`Rich editor architecture is missing: ${required}`)
 }
@@ -207,6 +249,8 @@ const graphRows = treeUtils.buildGraphRows([
   { hash: 'd', parents: [], message: 'base' }
 ])
 if (graphRows.length !== 4 || graphRows[0].laneCount < 2 || graphRows[0].lane !== 0) throw new Error('Git graph lane layout regressed')
+if (graphRows[0].parentEdges.length !== 2 || !graphRows[0].parentEdges.some((edge) => edge.toLane === 1)) throw new Error('Git graph merge edges are not routed to every parent')
+if (!graphRows[2].parentEdges.some((edge) => edge.fromLane !== edge.toLane)) throw new Error('Git graph convergence curve is missing')
 if (graphRows[3].lane !== 0 || graphRows[3].laneCount !== 1) throw new Error('Git graph convergence left a ghost lane')
 if (typeof graphRows[0].color !== 'string' || graphRows[0].color[0] !== '#') throw new Error('Git graph row color is not deterministic CSS')
 const linearGraph = treeUtils.buildGraphRows([
@@ -225,6 +269,29 @@ const deletable = treeUtils.filterDeletableBranches([
   { name: 'feature/ui', current: false },
 ], 'main')
 if (deletable.some((branch) => branch.name === 'main') || deletable.length !== 1) throw new Error('Current Git branch became deletable')
+
+const smartDrawingSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/smartDrawing.ts'), 'utf8')
+const smartDrawingModule = { exports: {} }
+const smartDrawingCode = typescript.transpileModule(smartDrawingSource, {
+  compilerOptions: { module: typescript.ModuleKind.CommonJS, target: typescript.ScriptTarget.ES2022 }
+}).outputText
+new Function('exports', 'module', smartDrawingCode)(smartDrawingModule.exports, smartDrawingModule)
+const smartDrawing = smartDrawingModule.exports
+const smartLine = smartDrawing.recognizeDrawing([{ x: 0, y: 1 }, { x: 30, y: 0 }, { x: 70, y: 2 }, { x: 110, y: 1 }])
+if (smartLine.kind !== 'line' || smartLine.points.length !== 2) throw new Error('Smart drawing no longer snaps a straight stroke')
+const roughEllipse = Array.from({ length: 25 }, (_, index) => {
+  const angle = (Math.PI * 2 * index) / 24
+  return { x: 50 + Math.cos(angle) * 42, y: 35 + Math.sin(angle) * 27 }
+})
+if (smartDrawing.recognizeDrawing(roughEllipse).kind !== 'ellipse') throw new Error('Smart drawing no longer recognizes a closed ellipse')
+const roughRectangle = [
+  { x: 0, y: 0 }, { x: 25, y: 1 }, { x: 50, y: 0 }, { x: 75, y: 1 }, { x: 100, y: 0 },
+  { x: 101, y: 20 }, { x: 100, y: 40 }, { x: 75, y: 41 }, { x: 50, y: 40 }, { x: 25, y: 41 },
+  { x: 0, y: 40 }, { x: 1, y: 20 }, { x: 0, y: 0 }
+]
+if (smartDrawing.recognizeDrawing(roughRectangle).kind !== 'rectangle') throw new Error('Smart drawing no longer recognizes a closed rectangle')
+const smoothPath = smartDrawing.smoothDrawingPath([{ x: 0, y: 0 }, { x: 20, y: 10 }, { x: 40, y: 0 }])
+if (!smoothPath.includes(' Q ') || !smoothPath.endsWith('40 0')) throw new Error('Freehand drawing path lost smoothing')
 const filesNodeSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/FilesNode.tsx'), 'utf8')
 if (!/workspace\.tree'[\s\S]{0,160}depth: 1/.test(filesNodeSource) || /depth:\s*[248]\b/.test(filesNodeSource)) throw new Error('File tree initial/lazy depth regressed')
 if (!filesNodeSource.includes('setSelectedFilePath(joinWorkspacePath(projectPath, row.item.path))')) throw new Error('F2 no longer targets the focused tree row')

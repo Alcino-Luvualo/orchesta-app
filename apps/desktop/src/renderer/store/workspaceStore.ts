@@ -16,6 +16,16 @@ export interface NodeProperties {
   text?: string
   drawing?: boolean
   points?: Array<{ x: number; y: number }>
+  shapeType?: 'rectangle' | 'rounded' | 'ellipse' | 'diamond' | 'triangle' | 'line'
+  fill?: string
+  stroke?: string
+  strokeWidth?: number
+  fontSize?: number
+  fontWeight?: number
+  fontStyle?: 'normal' | 'italic'
+  textAlign?: 'left' | 'center' | 'right'
+  autoEdit?: boolean
+  smartDrawing?: boolean
   name?: string
 }
 
@@ -57,6 +67,8 @@ export interface Workspace {
   id: string
   name: string
   path: string
+  icon?: string
+  color?: string
   activeFloorId?: string
   createdAt?: string
   updatedAt?: string
@@ -103,13 +115,18 @@ interface WorkspaceState {
   isRecruitModalOpen: boolean
   isFilesModalOpen: boolean
   isFloorModalOpen: boolean
+  isWorkspaceModalOpen: boolean
+  editingWorkspace: Workspace | null
   daemonError: string | null
 
   setScreen: (screen: Screen) => void
   toggleTheme: () => void
   setActiveWorkspace: (workspace: Workspace | null) => void
   setWorkspaces: (workspaces: Workspace[]) => void
-  createWorkspace: (name?: string, path?: string) => Workspace | null
+  createWorkspace: (name?: string, path?: string, appearance?: { icon?: string; color?: string }) => Promise<Workspace | null>
+  updateWorkspace: (workspace: Workspace) => Promise<Workspace>
+  removeWorkspace: (workspaceId: string) => Promise<void>
+  editWorkspace: (workspace: Workspace) => void
   setFloors: (floors: Floor[]) => void
   setActiveFloor: (floor: Floor | null) => void
   setNodes: (nodes: CanvasNodeData[]) => void
@@ -130,6 +147,7 @@ interface WorkspaceState {
   setRecruitModalOpen: (open: boolean) => void
   setFilesModalOpen: (open: boolean) => void
   setFloorModalOpen: (open: boolean) => void
+  setWorkspaceModalOpen: (open: boolean) => void
   setDaemonError: (error: string | null) => void
 }
 
@@ -172,6 +190,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   isRecruitModalOpen: false,
   isFilesModalOpen: false,
   isFloorModalOpen: false,
+  isWorkspaceModalOpen: false,
+  editingWorkspace: null,
   daemonError: null,
 
   setScreen: (currentScreen) => set({ currentScreen }),
@@ -180,16 +200,30 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     document.documentElement.setAttribute('data-theme', next)
     set({ theme: next })
   },
-  setActiveWorkspace: (activeWorkspace) => set({ activeWorkspace, currentScreen: activeWorkspace ? 'canvas' : 'home', selectedNodeId: null, history: [], future: [] }),
+  setActiveWorkspace: (activeWorkspace) => set((state) => {
+    const changed = state.activeWorkspace?.id !== activeWorkspace?.id
+    return {
+      activeWorkspace,
+      currentScreen: activeWorkspace ? 'canvas' : 'home',
+      selectedNodeId: null,
+      history: [],
+      future: [],
+      ...(changed ? { floors: [], activeFloor: null, nodes: [], edges: [] } : {})
+    }
+  }),
   setWorkspaces: (workspaces) => set({ workspaces }),
-  createWorkspace: (name, workspacePath) => {
+  createWorkspace: async (name, workspacePath, appearance) => {
     const path = workspacePath?.trim()
     if (!path) return null
     const workspace: Workspace = {
       id: `ws_${crypto.randomUUID()}`,
       name: name?.trim() || path.split('/').filter(Boolean).pop() || 'Workspace',
-      path
+      path,
+      icon: appearance?.icon || 'folder-kanban',
+      color: appearance?.color || '#5ba7ff'
     }
+    const saved = await window.orchestra?.invoke('workspace.save', { ...workspace }) as { path?: unknown } | undefined
+    if (typeof saved?.path === 'string' && saved.path) workspace.path = saved.path
     set((state) => ({
       workspaces: [...state.workspaces.filter((item) => item.id !== workspace.id), workspace],
       activeWorkspace: workspace,
@@ -200,9 +234,48 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       selectedNodeId: null,
       currentScreen: 'canvas'
     }))
-    window.orchestra?.invoke('workspace.save', { ...workspace }).catch(() => undefined)
     return workspace
   },
+  updateWorkspace: async (workspace) => {
+    const saved = await window.orchestra?.invoke('workspace.save', { ...workspace }) as { path?: unknown } | undefined
+    const updated = {
+      ...workspace,
+      path: typeof saved?.path === 'string' && saved.path ? saved.path : workspace.path
+    }
+    set((state) => ({
+      workspaces: state.workspaces.map((item) => item.id === updated.id ? updated : item),
+      activeWorkspace: state.activeWorkspace?.id === updated.id ? updated : state.activeWorkspace
+    }))
+    return updated
+  },
+  removeWorkspace: async (workspaceId) => {
+    const current = get()
+    if (current.activeWorkspace?.id === workspaceId) {
+      for (const node of current.nodes) {
+        if (node.kind === 'terminal') window.orchestra?.invoke('terminal.kill', { sessionId: node.id }).catch(() => undefined)
+        if (node.kind === 'browser') window.orchestra?.portal?.destroy(String(node.properties?.portalId || node.id)).catch(() => undefined)
+      }
+    }
+    await window.orchestra?.invoke('workspace.remove', { id: workspaceId })
+    set((state) => {
+      const wasActive = state.activeWorkspace?.id === workspaceId
+      return {
+        workspaces: state.workspaces.filter((item) => item.id !== workspaceId),
+        ...(wasActive ? {
+          activeWorkspace: null,
+          activeFloor: null,
+          floors: [],
+          nodes: [],
+          edges: [],
+          selectedNodeId: null,
+          history: [],
+          future: [],
+          currentScreen: 'home' as Screen
+        } : {})
+      }
+    })
+  },
+  editWorkspace: (editingWorkspace) => set({ editingWorkspace, isWorkspaceModalOpen: true }),
   setFloors: (floors) => set({ floors }),
   setActiveFloor: (activeFloor) => set({ activeFloor, history: [], future: [] }),
   setNodes: (nodes) => set({ nodes }),
@@ -279,5 +352,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setRecruitModalOpen: (isRecruitModalOpen) => set({ isRecruitModalOpen }),
   setFilesModalOpen: (isFilesModalOpen) => set({ isFilesModalOpen }),
   setFloorModalOpen: (isFloorModalOpen) => set({ isFloorModalOpen }),
+  setWorkspaceModalOpen: (isWorkspaceModalOpen) => set((state) => ({
+    isWorkspaceModalOpen,
+    editingWorkspace: isWorkspaceModalOpen ? state.editingWorkspace : null
+  })),
   setDaemonError: (daemonError) => set({ daemonError })
 }))

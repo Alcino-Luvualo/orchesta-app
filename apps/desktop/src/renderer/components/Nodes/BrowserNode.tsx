@@ -1,8 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Handle, Position, NodeResizer } from '@xyflow/react'
-import { ArrowLeft, ArrowRight, RefreshCw, Search, SquareArrowOutUpRight, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, Copy, MousePointer2, PenTool, RefreshCw, Search, SquareArrowOutUpRight, X } from 'lucide-react'
 import { CanvasComponentData, useWorkspaceStore } from '../../store/workspaceStore'
 import { getPortalGeometry, PortalBounds, PortalGeometry, PortalViewport } from '../../../shared/browserPortalGeometry'
+import { BrowserMarkupOverlay } from './BrowserMarkupOverlay'
+import { AgentTargetMenu } from './AgentTargetMenu'
+import { addContextToAgent } from './agentContext'
 
 type PortalPresentationMode = 'creating' | 'live' | 'transitioning' | 'snapshot' | 'hidden'
 
@@ -19,6 +22,8 @@ type PortalPresentationUpdate = {
   focused?: boolean
   interactive?: boolean
 }
+
+type PortalGrabResult = Awaited<ReturnType<NonNullable<NonNullable<Window['orchestra']>['portal']>['grab']>>
 
 const hiddenPortalBounds: PortalBounds = { x: 0, y: 0, width: 1, height: 1 }
 
@@ -61,10 +66,16 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
   const [canGoForward, setCanGoForward] = useState(false)
   const [snapshot, setSnapshot] = useState<string | null>(null)
   const [presentation, setPresentation] = useState<PortalPresentationMode>('creating')
+  const [markupScreenshot, setMarkupScreenshot] = useState<string | null>(null)
+  const [grabResult, setGrabResult] = useState<PortalGrabResult>(null)
+  const [isGrabbing, setIsGrabbing] = useState(false)
+  const [toolStatus, setToolStatus] = useState('')
   const contentRef = useRef<HTMLDivElement>(null)
   const motionRef = useRef(false)
+  const settlingRef = useRef(false)
   const motionReasonsRef = useRef<Set<string>>(new Set())
   const motionWatchdogsRef = useRef<Map<string, number>>(new Map())
+  const settleTimerRef = useRef<number | null>(null)
   const disposedRef = useRef(false)
   const motionGenerationRef = useRef(0)
   const portalRevisionRef = useRef(0)
@@ -74,6 +85,8 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
   const snapshotRef = useRef<string | null>(null)
   const frozenScaleRef = useRef<number | null>(null)
   const refreshPresentationRef = useRef<() => void>(() => undefined)
+  const overlayModeRef = useRef(false)
+  const grabAttemptRef = useRef(0)
   const { updateNode, deleteNode, setSelectedNodeId, commitHistory } = useWorkspaceStore()
 
   const setSnapshotValue = (value: string | null) => {
@@ -233,7 +246,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
       const visible = Boolean(forceVisible && geometry.visible)
       const currentData = dataRef.current
       const nativeAllowed = currentData.interactive !== false && (!currentData.focusModeActive || Boolean(currentData.focused))
-      const requestedMode = mode
+      const requestedMode: PortalPresentationMode = overlayModeRef.current ? 'snapshot' : mode
       const effectiveMode: PortalPresentationMode = nativeAllowed
         ? requestedMode
         : snapshotRef.current
@@ -275,13 +288,18 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
     }
 
     const scheduleBoundsSync = (modeOrEvent?: PortalPresentationMode | Event) => {
+      const explicitlyRequestedMode = typeof modeOrEvent === 'string' ? modeOrEvent : undefined
+      if ((motionRef.current || settlingRef.current) && !explicitlyRequestedMode) return
       if (disposed || disposedRef.current || boundsRafRef.current !== null) return
       boundsRafRef.current = window.requestAnimationFrame(() => {
         boundsRafRef.current = null
         if (disposed || disposedRef.current || !portalReady) return
-        const requestedMode = typeof modeOrEvent === 'string' ? modeOrEvent : undefined
-        const nextMode: PortalPresentationMode = requestedMode || 'live'
-        queueGeometry(nextMode, nextMode === 'live' || nextMode === 'transitioning')
+        let nextMode: PortalPresentationMode = explicitlyRequestedMode || 'live'
+        // Ready/loading/resize observers can fire while a gesture owns the
+        // portal. They must not reveal the native surface before final bounds
+        // and zoom have settled.
+        if ((motionRef.current || settlingRef.current) && nextMode === 'live') nextMode = 'transitioning'
+        queueGeometry(nextMode, nextMode === 'live')
       })
     }
 
@@ -292,27 +310,47 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
 
     const setMotion = (active: boolean) => {
       if (active) {
+        if (motionRef.current) return
+        if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current)
+        settleTimerRef.current = null
+        settlingRef.current = false
         motionRef.current = true
+        motionGenerationRef.current += 1
         // Freeze the current Chromium zoom factor so setZoomFactor() is NOT
-        // called on every frame while the canvas is panning/zooming. The page
-        // re-layouts caused by continuous zoom changes were very visible.
+        // called on every frame while the canvas is panning/zooming. Render a
+        // DOM snapshot during the gesture so it follows ReactFlow exactly;
+        // the native child would otherwise lag behind its node.
         if (frozenScaleRef.current === null) {
           const geometry = readGeometry()
           frozenScaleRef.current = asFinite(geometry.scale, 1)
         }
+        if (boundsRafRef.current !== null) window.cancelAnimationFrame(boundsRafRef.current)
+        boundsRafRef.current = null
+        setPresentationValue(snapshotRef.current ? 'snapshot' : 'transitioning')
         lastBoundsKeyRef.current = ''
-        scheduleBoundsSync('live')
+        scheduleBoundsSync(snapshotRef.current ? 'transitioning' : 'snapshot')
         return
       }
       if (!motionRef.current) {
-        scheduleBoundsSync()
         return
       }
       motionRef.current = false
-      // Unfreeze the scale so the final, correct zoom is applied once.
+      settlingRef.current = true
+      // Apply the final bounds and zoom while the native view remains hidden.
+      // Revealing it in the same compositor frame is what caused the frequent
+      // black surface during browser resize and board zoom.
       frozenScaleRef.current = null
+      if (boundsRafRef.current !== null) window.cancelAnimationFrame(boundsRafRef.current)
+      boundsRafRef.current = null
       lastBoundsKeyRef.current = ''
-      scheduleBoundsSync()
+      scheduleBoundsSync('transitioning')
+      settleTimerRef.current = window.setTimeout(() => {
+        settleTimerRef.current = null
+        if (disposed || disposedRef.current || motionRef.current) return
+        settlingRef.current = false
+        lastBoundsKeyRef.current = ''
+        scheduleBoundsSync('live')
+      }, 72)
     }
 
     portal.ensure(portalId, initialUrl).then((result) => {
@@ -448,6 +486,9 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
       for (const timer of motionWatchdogsRef.current.values()) window.clearTimeout(timer)
       motionWatchdogsRef.current.clear()
       motionRef.current = false
+      settlingRef.current = false
+      if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current)
+      settleTimerRef.current = null
       refreshPresentationRef.current = () => undefined
       if (boundsRafRef.current !== null) window.cancelAnimationFrame(boundsRafRef.current)
       boundsRafRef.current = null
@@ -502,6 +543,99 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
     window.orchestra?.portal?.action(portalId, name).catch((reason) => setError(reason instanceof Error ? reason.message : 'Falha ao operar o portal'))
   }
 
+  const setOverlayMode = (active: boolean) => {
+    overlayModeRef.current = active
+    lastBoundsKeyRef.current = ''
+    if (active) setPresentationValue(snapshotRef.current ? 'snapshot' : 'hidden')
+    refreshPresentationRef.current()
+  }
+
+  const startGrab = async () => {
+    const portal = window.orchestra?.portal
+    if (!portal) return
+    if (isGrabbing) {
+      grabAttemptRef.current += 1
+      setIsGrabbing(false)
+      setToolStatus('Seleção cancelada')
+      await portal.cancelGrab(portalId).catch(() => undefined)
+      return
+    }
+    const attempt = ++grabAttemptRef.current
+    setIsGrabbing(true)
+    setError(null)
+    // A previous screenshot/markup session leaves the native guest frozen
+    // behind the renderer overlay. Always restore the live page before the
+    // picker is installed, including on the very first use.
+    setSelectedNodeId(id)
+    setMarkupScreenshot(null)
+    setGrabResult(null)
+    setOverlayMode(false)
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+    if (attempt !== grabAttemptRef.current) return
+    setToolStatus('Seleciona um ou mais elementos · escreve o comentário · Esc cancela')
+    try {
+      const result = await portal.grab(portalId)
+      if (attempt !== grabAttemptRef.current) return
+      if (!result) { setToolStatus('Seleção cancelada'); return }
+      setGrabResult(result)
+      const pageSnapshot = await portal.screenshot(portalId)
+      if (pageSnapshot) setSnapshotValue(pageSnapshot)
+      setOverlayMode(true)
+      setToolStatus(`${result.targets?.length || 1} ${result.targets?.length === 1 ? 'elemento capturado' : 'elementos capturados'}`)
+    } catch (reason) {
+      if (attempt !== grabAttemptRef.current) return
+      setToolStatus('')
+      setError(reason instanceof Error ? reason.message : 'Não foi possível selecionar o elemento')
+    } finally {
+      if (attempt === grabAttemptRef.current) setIsGrabbing(false)
+    }
+  }
+
+  useEffect(() => () => {
+    grabAttemptRef.current += 1
+    void window.orchestra?.portal?.cancelGrab(portalId).catch(() => undefined)
+  }, [portalId])
+
+  const startMarkup = async () => {
+    const portal = window.orchestra?.portal
+    if (!portal) return
+    setError(null)
+    setToolStatus('A capturar screenshot…')
+    try {
+      const image = await portal.screenshot(portalId)
+      if (!image) throw new Error('A página ainda não tem uma imagem pronta')
+      setSnapshotValue(image)
+      setMarkupScreenshot(image)
+      setOverlayMode(true)
+      setToolStatus('')
+    } catch (reason) {
+      setToolStatus('')
+      setError(reason instanceof Error ? reason.message : 'Não foi possível capturar a página')
+    }
+  }
+
+  const closeOverlay = () => {
+    setMarkupScreenshot(null)
+    setGrabResult(null)
+    setToolStatus('')
+    setOverlayMode(false)
+  }
+
+  const grabTargets = grabResult ? (grabResult.targets?.length ? grabResult.targets : [grabResult.target]) : []
+  const grabContextText = grabResult ? [
+    `Page: ${grabResult.page.title || grabResult.page.url}`,
+    `URL: ${grabResult.page.url}`,
+    grabResult.comment ? `User comment:\n${grabResult.comment}` : '',
+    ...grabTargets.map((target, index) => [
+      `Element ${index + 1}: ${target.selector}`,
+      `Role: ${target.role}${target.accessibleName ? ` (${target.accessibleName})` : ''}`,
+      target.text ? `Text: ${target.text}` : '',
+      `Bounds: ${Math.round(target.rect.x)},${Math.round(target.rect.y)} ${Math.round(target.rect.width)}×${Math.round(target.rect.height)}`,
+      `Attributes: ${JSON.stringify(target.attributes)}`,
+      `Styles: ${JSON.stringify(target.styles)}`
+    ].filter(Boolean).join('\n'))
+  ].filter(Boolean).join('\n\n') : ''
+
   return (
     <div
       className="node"
@@ -540,6 +674,8 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
             <Search className="icon" />
             <input type="text" value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Pesquisar ou digitar URL..." />
           </div>
+          <button type="button" className={`icon-btn chrome-nav ${isGrabbing ? 'active' : ''}`} title={isGrabbing ? 'Cancelar seleção de elemento' : 'Selecionar elemento da página'} aria-label={isGrabbing ? 'Cancelar seleção de elemento' : 'Selecionar elemento da página'} aria-pressed={isGrabbing} onClick={() => void startGrab()}><MousePointer2 className="icon" /></button>
+          <button type="button" className="icon-btn chrome-nav" title="Desenhar na screenshot" aria-label="Desenhar na screenshot" onClick={() => void startMarkup()}><PenTool className="icon" /></button>
           <button type="button" className="icon-btn chrome-nav" title="Abrir no navegador do sistema" onClick={() => window.orchestra?.portal?.openExternal(portalId).catch(() => undefined)}><SquareArrowOutUpRight className="icon" /></button>
           <button type="button" className="icon-btn chrome-nav" onClick={(event) => { event.stopPropagation(); deleteNode(id); window.orchestra?.portal?.destroy(portalId).catch(() => undefined) }} title="Fechar portal"><X className="icon" /></button>
         </form>
@@ -550,11 +686,36 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
             {error ? <><b>Portal com erro</b><span>{error}</span></> : <><span>{currentUrl}</span><small>{loading ? 'A carregar…' : presentation === 'creating' ? 'A preparar o portal…' : 'Portal Chromium isolado'}</small></>}
           </div>}
           {error && snapshot && presentation === 'snapshot' && <div className="portal-error-overlay"><b>Portal com erro</b><span>{error}</span></div>}
+          {markupScreenshot && <BrowserMarkupOverlay
+            screenshot={markupScreenshot}
+            pageTitle={currentUrl}
+            onClose={closeOverlay}
+            onCopy={(dataUrl) => window.orchestra?.portal?.copyImage(dataUrl) || Promise.reject(new Error('Clipboard indisponível'))}
+          />}
         </div>
 
         <div className="node-foot chrome-foot">
-          <span className="chrome-foot-url" title={currentUrl}>{loading ? 'A carregar…' : error ? 'Erro no portal' : currentUrl}</span>
-          <span className="chrome-foot-status">{loading ? 'A sincronizar' : presentation === 'snapshot' ? 'Pausa' : 'Chromium'}</span>
+          {grabResult ? <div className="browser-grab-summary nodrag nopan">
+            <span className="browser-grab-check"><Check className="icon" /></span>
+            {grabResult.screenshot && <img className="browser-grab-thumb" src={grabResult.screenshot.dataUrl} alt="Elemento selecionado" />}
+            <span className="browser-grab-copy"><strong>{grabResult.target.accessibleName || grabResult.target.tagName}{grabTargets.length > 1 ? ` +${grabTargets.length - 1}` : ''}</strong><small title={grabTargets.map((target) => target.selector).join(', ')}>{grabResult.comment || grabResult.target.selector}</small></span>
+            <button type="button" className="compact-action" onClick={() => { void navigator.clipboard?.writeText(grabContextText); setToolStatus('Contexto copiado') }}><Copy className="icon" />Copiar</button>
+            <AgentTargetMenu label="Enviar" connectedToNodeId={id} initiallyOpen onSelect={(agent) => {
+              addContextToAgent(agent.id, {
+                id: `browser:${portalId}:${grabTargets.length}:${grabResult.target.selector}`,
+                kind: 'browser',
+                title: `${grabResult.target.accessibleName || grabResult.target.tagName}${grabTargets.length > 1 ? ` +${grabTargets.length - 1}` : ''}`,
+                reference: `[browser:${portalId} ${grabTargets.map((target) => target.selector).join(', ')}]`,
+                content: grabContextText,
+                metadata: { portalId, url: grabResult.page.url, selectors: grabTargets.map((target) => target.selector), comment: grabResult.comment, screenshot: grabResult.screenshot }
+              }, true)
+              setToolStatus(`Contexto adicionado a ${agent.name}`)
+            }} />
+            <button type="button" className="icon-btn" title="Fechar captura" aria-label="Fechar captura" onClick={closeOverlay}><X className="icon" /></button>
+          </div> : <>
+            <span className="chrome-foot-url" title={currentUrl}>{toolStatus || (loading ? 'A carregar…' : error ? 'Erro no portal' : currentUrl)}</span>
+            <span className="chrome-foot-status">{loading ? 'A sincronizar' : presentation === 'snapshot' ? 'Pausa' : 'Chromium'}</span>
+          </>}
         </div>
       </div>
     </div>

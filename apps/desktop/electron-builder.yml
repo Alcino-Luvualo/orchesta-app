@@ -8,6 +8,10 @@ files:
   - dist/**/*
   - dist-electron/**/*
 extraResources:
+  - from: resources/computer-use-linux.py
+    to: computer-use-linux.py
+  - from: resources/icon.png
+    to: icon.png
   - from: ../../target/release/orchestra-core
     to: bin/orchestra-core
   - from: ../../target/release/orchestra
@@ -33,4 +37,11 @@ linux:
   category: Development
   synopsis: Orchestra Agent Workspace for Developers
   description: Infinite canvas desktop workspace powered by Electron, React and Rust core.
-  icon: resources/icon.png
+  icon: resources/icons
+  desktop:
+    Name: Orchestra
+    StartupWMClass: Orchestra
+    Comment: Orchestra Agent Workspace for Developers
+    Categories: Development;IDE;
+    Terminal: false
+

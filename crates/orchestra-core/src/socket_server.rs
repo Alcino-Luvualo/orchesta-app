@@ -1172,18 +1172,53 @@ impl SocketServer {
                 let id = payload["id"].as_str().unwrap_or("");
                 let name = payload["name"].as_str().unwrap_or("");
                 let path = payload["path"].as_str().unwrap_or("");
+                let icon = payload["icon"].as_str().unwrap_or("folder-kanban").trim();
+                let color = payload["color"].as_str().unwrap_or("#2f91f5").trim();
                 if id.trim().is_empty() || name.trim().is_empty() {
                     return Err(anyhow::anyhow!("Workspace id and name are required"));
                 }
+                if icon.is_empty()
+                    || icon.len() > 48
+                    || !icon
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '-')
+                {
+                    return Err(anyhow::anyhow!("Workspace icon is invalid"));
+                }
+                if color.len() != 7
+                    || !color.starts_with('#')
+                    || !color[1..]
+                        .chars()
+                        .all(|character| character.is_ascii_hexdigit())
+                {
+                    return Err(anyhow::anyhow!("Workspace color must be #RRGGBB"));
+                }
                 let canonical = WorkspaceManager::canonical_root(path)?;
-                db.save_workspace(id, name, &canonical.to_string_lossy())?;
+                db.save_workspace(id, name, &canonical.to_string_lossy(), icon, color)?;
                 db.record_audit(
                     "ipc-client",
                     "workspace.save",
                     id,
                     &json!({ "path": canonical }),
                 )?;
-                Ok(json!({ "success": true, "path": canonical }))
+                Ok(json!({ "success": true, "path": canonical, "icon": icon, "color": color }))
+            }
+            "workspace.remove" => {
+                let id = payload["id"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("Missing workspace id"))?;
+                if !db.delete_workspace(id)? {
+                    return Err(anyhow::anyhow!("Workspace not found"));
+                }
+                db.record_audit(
+                    "ipc-client",
+                    "workspace.remove",
+                    id,
+                    &json!({ "filesDeleted": false }),
+                )?;
+                Ok(json!({ "success": true, "id": id, "filesDeleted": false }))
             }
             "workspace.floor.list" => {
                 let workspace_id = payload["workspaceId"]
@@ -1253,6 +1288,45 @@ impl SocketServer {
                 }
                 let content = WorkspaceManager::read_file(&path.to_string_lossy())?;
                 Ok(json!({ "content": content }))
+            }
+            "workspace.read_image" | "workspace.read_binary" => {
+                let path = Self::workspace_path(&payload, &db, false)?;
+                if !path.is_file() {
+                    return Err(anyhow::anyhow!("Path is not a file"));
+                }
+                let bytes = std::fs::read(&path)?;
+                let base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let ext = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let mime = match ext.as_str() {
+                    "png" => "image/png",
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "gif" => "image/gif",
+                    "webp" => "image/webp",
+                    "svg" => "image/svg+xml",
+                    "ico" => "image/x-icon",
+                    "bmp" => "image/bmp",
+                    "avif" => "image/avif",
+                    "mp3" => "audio/mpeg",
+                    "wav" => "audio/wav",
+                    "ogg" => "audio/ogg",
+                    "mp4" => "video/mp4",
+                    "webm" => "video/webm",
+                    "pdf" => "application/pdf",
+                    _ => "application/octet-stream",
+                };
+                let data_url = format!("data:{};base64,{}", mime, base64);
+                let size = bytes.len();
+                Ok(json!({
+                    "dataUrl": data_url,
+                    "size": size,
+                    "mime": mime,
+                    "ext": ext,
+                    "path": path
+                }))
             }
             "workspace.write_file" => {
                 let path = Self::workspace_path(&payload, &db, true)?;

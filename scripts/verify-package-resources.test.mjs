@@ -20,6 +20,7 @@ assert.equal(verify.status, 0, `${verify.stdout}\n${verify.stderr}`)
 
 const builder = fs.readFileSync(path.join(repositoryRoot, 'apps/desktop/electron-builder.yml'), 'utf8')
 for (const [from, to] of [
+  ['resources/computer-use-linux.py', 'computer-use-linux.py'],
   ['../../target/release/orchestra-core', 'bin/orchestra-core'],
   ['../../target/release/orchestra', 'bin/orchestra'],
   ['../../skills/orchestra-canvas', 'skills/orchestra-canvas'],

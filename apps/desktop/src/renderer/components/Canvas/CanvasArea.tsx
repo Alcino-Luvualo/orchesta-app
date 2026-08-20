@@ -16,13 +16,15 @@ import { FilesNode } from '../Nodes/FilesNode'
 import { BrowserNode } from '../Nodes/BrowserNode'
 import { TextNode } from '../Nodes/TextNode'
 import { ShapeNode } from '../Nodes/ShapeNode'
-import { Terminal, FileText, FolderTree, Globe, MousePointer, Cable, Copy, Trash2, Pencil, RotateCw, Bold, Italic, List, CheckSquare, PenLine, Square, Type } from 'lucide-react'
+import { Terminal, FileText, FolderTree, Globe, MousePointer, Cable, Copy, Trash2, Pencil, RotateCw, Bold, Italic, List, CheckSquare, PenLine, Square, Type, Circle, Diamond, Triangle, AlignLeft, AlignCenter, AlignRight, Sparkles } from 'lucide-react'
 import { CableSystem } from './CableSystem/CableSystem'
+import { recognizeDrawing, smoothDrawingPath } from './smartDrawing'
 import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, canvasPinchGestureFactor, canvasPinchZoomFactor, getCanvasBoardWheelGesture, getCanvasPinchAnchor, getCanvasPinchPanViewport, getCanvasPinchViewport, isCanvasPinchWheelEvent } from '../../utils/canvasPinchZoom'
 import { applyCanvasNodeChanges } from './canvasNodeChanges'
 import type { CanvasNodeMeasurement } from './canvasNodeChanges'
 
 type CanvasTool = 'select' | 'terminal' | 'note' | 'files' | 'browser' | 'text' | 'shape' | 'draw'
+type CanvasShape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond' | 'triangle'
 
 const GENERIC_CONNECTION_PERMISSIONS = ['read', 'write', 'send_prompt', 'receive_response', 'control', 'share_context']
 const BROWSER_CONNECTION_PERMISSIONS = ['inspect', 'navigate', 'control', 'screenshot']
@@ -31,6 +33,10 @@ function isTerminalBrowserConnection(edge: Pick<CanvasEdgeData, 'source' | 'targ
   const sourceKind = nodes.find((node) => node.id === edge.source)?.kind
   const targetKind = nodes.find((node) => node.id === edge.target)?.kind
   return (sourceKind === 'terminal' && targetKind === 'browser') || (sourceKind === 'browser' && targetKind === 'terminal')
+}
+
+function colorInputValue(value: unknown, fallback: string) {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback
 }
 
 /**
@@ -71,8 +77,12 @@ export const CanvasArea: React.FC = () => {
   // The cursor is the single navigation mode: dragging empty canvas pans,
   // while dragging a node belongs to that node.
   const [tool, setTool] = useState<CanvasTool>('select')
+  const [shapeKind, setShapeKind] = useState<CanvasShape>('rounded')
+  const [drawingColor, setDrawingColor] = useState('#c8f169')
+  const [drawingWidth, setDrawingWidth] = useState(3)
   const [drawStart, setDrawStart] = useState<{ x: number; y: number; flowX: number; flowY: number } | null>(null)
   const [drawRect, setDrawRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
+  const [drawPreviewPoints, setDrawPreviewPoints] = useState<Array<{ x: number; y: number }>>([])
   const flowRef = useRef<ReactFlowInstance | null>(null)
   const drawPointsRef = useRef<Array<{ x: number; y: number }>>([])
   // React Flow's measured dimensions are internal DOM state. Keep them in a
@@ -672,6 +682,7 @@ export const CanvasArea: React.FC = () => {
         title: kind.toUpperCase(),
         cwd: activeFloor?.path || activeWorkspace?.path || '',
         agent: kind === 'terminal' ? 'Claude Code' : undefined,
+        ...(kind === 'note' ? { content: '', color: '#fff2a8' } : {}),
         ...(kind === 'browser' ? { url: 'about:blank' } : {})
       }
     }
@@ -884,7 +895,7 @@ export const CanvasArea: React.FC = () => {
   useEffect(() => {
     const exitOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
-      restoreFocus(); setTool('select'); setConnectMode(false); setConnectionSourceId(null); setConnectionPointer(null)
+      restoreFocus(); setTool('select'); setConnectMode(false); setConnectionSourceId(null); setConnectionPointer(null); setDrawStart(null); setDrawRect(null); setDrawPreviewPoints([])
     }
     window.addEventListener('keydown', exitOnEscape)
     return () => window.removeEventListener('keydown', exitOnEscape)
@@ -899,7 +910,7 @@ export const CanvasArea: React.FC = () => {
       return
     }
 
-    if (targetEl.closest('.canvas-toolbar') || targetEl.closest('.canvas-context-toolbar') || targetEl.closest('.zoom')) return
+    if (targetEl.closest('.canvas-toolbar') || targetEl.closest('.canvas-context-toolbar') || targetEl.closest('.canvas-creation-options') || targetEl.closest('.zoom')) return
     // React Flow owns panning, pinch and node dragging in select mode. This
     // handler only creates a node when a creation tool is active.
     if (tool === 'select' || focusSnapshot || targetEl.closest('.react-flow__node')) return
@@ -911,8 +922,9 @@ export const CanvasArea: React.FC = () => {
 
     const flow = flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY })
     drawPointsRef.current = tool === 'draw' ? [{ x: flow.x, y: flow.y }] : []
+    setDrawPreviewPoints(tool === 'draw' ? [{ x: event.clientX, y: event.clientY }] : [])
     setDrawStart({ x: event.clientX, y: event.clientY, flowX: flow.x, flowY: flow.y })
-    setDrawRect({ left: event.clientX, top: event.clientY, width: 0, height: 0 })
+    setDrawRect(tool === 'draw' ? null : { left: event.clientX, top: event.clientY, width: 0, height: 0 })
   }
 
   const onWorkspaceMouseMove = (event: React.MouseEvent) => {
@@ -922,7 +934,12 @@ export const CanvasArea: React.FC = () => {
     event.preventDefault()
     event.stopPropagation()
     if (tool === 'draw' && flowRef.current) {
-      drawPointsRef.current.push(flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }))
+      const last = drawPreviewPoints[drawPreviewPoints.length - 1]
+      if (!last || Math.hypot(event.clientX - last.x, event.clientY - last.y) >= 2) {
+        drawPointsRef.current.push(flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }))
+        setDrawPreviewPoints((current) => [...current, { x: event.clientX, y: event.clientY }])
+      }
+      return
     }
     setDrawRect({
       left: Math.min(drawStart.x, event.clientX),
@@ -939,6 +956,45 @@ export const CanvasArea: React.FC = () => {
     const target = flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY })
     const draggedWidth = Math.abs(target.x - drawStart.flowX)
     const draggedHeight = Math.abs(target.y - drawStart.flowY)
+
+    if (tool === 'draw') {
+      const rawPoints = [...drawPointsRef.current, target]
+      const recognized = recognizeDrawing(rawPoints)
+      const pad = drawingWidth + 5
+      const bounds = recognized.bounds
+      const id = `shape_${Date.now()}`
+      const isSmartShape = recognized.kind !== 'freehand'
+      const minWidth = recognized.kind === 'line' ? 16 : isSmartShape ? 70 : 16
+      const minHeight = recognized.kind === 'line' ? 16 : isSmartShape ? 52 : 16
+      const width = Math.max(minWidth, bounds.width + pad * 2)
+      const height = Math.max(minHeight, bounds.height + pad * 2)
+      const centerX = (bounds.minX + bounds.maxX) / 2
+      const centerY = (bounds.minY + bounds.maxY) / 2
+      const position = { x: centerX - width / 2, y: centerY - height / 2 }
+      const sourcePoints = recognized.kind === 'freehand' || recognized.kind === 'line' ? recognized.points : []
+      const points = sourcePoints.map((point) => ({ x: point.x - position.x, y: point.y - position.y }))
+      addNode({
+        id,
+        kind: 'shape',
+        ...position,
+        width,
+        height,
+        properties: {
+          drawing: recognized.kind === 'freehand',
+          shapeType: recognized.kind === 'freehand' ? undefined : recognized.kind,
+          points,
+          stroke: drawingColor,
+          strokeWidth: drawingWidth,
+          fill: recognized.kind === 'rectangle' || recognized.kind === 'ellipse' ? `${drawingColor}1f` : 'transparent',
+          smartDrawing: isSmartShape,
+        },
+      })
+      setSelectedNodeId(id)
+      setDrawStart(null)
+      setDrawRect(null)
+      setDrawPreviewPoints([])
+      return
+    }
     
     // Default size for each node type
     const defaultSizes: Record<string, { width: number; height: number }> = {
@@ -951,13 +1007,20 @@ export const CanvasArea: React.FC = () => {
     }
     const def = defaultSizes[tool] || { width: 300, height: 200 }
 
-    let width = draggedWidth > 25 ? Math.max(120, draggedWidth) : def.width
-    let height = draggedHeight > 25 ? Math.max(80, draggedHeight) : def.height
+    let width = draggedWidth > 12 ? Math.max(tool === 'text' ? 80 : 120, draggedWidth) : def.width
+    let height = draggedHeight > 12 ? Math.max(tool === 'text' ? 34 : 80, draggedHeight) : def.height
+    if (tool === 'shape' && event.shiftKey) width = height = Math.max(width, height)
     
-    const nodeKind = tool === 'draw' ? 'shape' : tool as Exclude<CanvasTool, 'select' | 'draw'>
-    const position = draggedWidth > 25 && draggedHeight > 25
+    const nodeKind = tool as Exclude<CanvasTool, 'select' | 'draw'>
+    let position = draggedWidth > 12 && draggedHeight > 12
       ? { x: Math.min(drawStart.flowX, target.x), y: Math.min(drawStart.flowY, target.y) }
       : { x: drawStart.flowX - width / 2, y: drawStart.flowY - height / 2 }
+
+    if (tool === 'text' && (draggedWidth <= 12 || draggedHeight <= 12)) {
+      width = 240
+      height = 48
+      position = { x: drawStart.flowX, y: drawStart.flowY }
+    }
 
     if (tool === 'terminal') {
       setPendingTerminalRect({ x: position.x, y: position.y, width, height })
@@ -967,10 +1030,14 @@ export const CanvasArea: React.FC = () => {
       // avoids creating a node that immediately points at the wrong workspace.
       setPendingFilesRect({ x: position.x, y: position.y, width, height })
       setFilesModalOpen(true)
-    } else if (tool === 'draw') {
+    } else if (tool === 'text') {
+      const id = `text_${Date.now()}`
+      addNode({ id, kind: 'text', ...position, width, height, properties: { text: '', autoEdit: true, fontSize: 18, fontWeight: 500, fontStyle: 'normal', textAlign: 'left', color: 'var(--text)' } })
+      setSelectedNodeId(id)
+      window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('orchestra:edit-node', { detail: { nodeId: id } })))
+    } else if (tool === 'shape') {
       const id = `shape_${Date.now()}`
-      const points = [...drawPointsRef.current, target].map((point) => ({ x: point.x - position.x, y: point.y - position.y }))
-      addNode({ id, kind: 'shape', ...position, width, height, properties: { drawing: true, points } })
+      addNode({ id, kind: 'shape', ...position, width, height, properties: { shapeType: shapeKind, text: '', stroke: drawingColor, strokeWidth: 2, fill: `${drawingColor}1f`, fontSize: 14, fontWeight: 600, textAlign: 'center' } })
       setSelectedNodeId(id)
     } else {
       handleAddNode(nodeKind, position, { width, height })
@@ -978,6 +1045,7 @@ export const CanvasArea: React.FC = () => {
 
     setDrawStart(null)
     setDrawRect(null)
+    setDrawPreviewPoints([])
     setTool('select')
   }
 
@@ -1043,6 +1111,11 @@ export const CanvasArea: React.FC = () => {
   const noteAction = (command: 'bold' | 'italic' | 'list' | 'check') => {
     window.dispatchEvent(new CustomEvent('orchestra:note-action', { detail: { command, nodeId: selectedNodeId } }))
   }
+  const updateSelectedProperties = (properties: Record<string, unknown>, recordHistory = true) => {
+    if (!selectedNode) return
+    if (recordHistory) commitHistory()
+    updateNode(selectedNode.id, { properties })
+  }
   const toolLabel: Record<CanvasTool, string> = { select: 'Selecionar', terminal: 'Terminal', note: 'Nota', files: 'File Tree', browser: 'Portal', text: 'Texto', shape: 'Forma', draw: 'Desenhar' }
 
   const handleZoomIn = () => {
@@ -1104,7 +1177,13 @@ export const CanvasArea: React.FC = () => {
         }}
         onNodeDrag={() => window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: true, reason: 'node' } }))}
         onNodeDragStop={() => window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: false, reason: 'node' } }))}
-        onNodeDoubleClick={(_, node) => toggleFocus(node.id)}
+        onNodeDoubleClick={(_, node) => {
+          if (node.type === 'text' || node.type === 'shape') {
+            window.dispatchEvent(new CustomEvent('orchestra:edit-node', { detail: { nodeId: node.id } }))
+            return
+          }
+          toggleFocus(node.id)
+        }}
         onNodeMouseEnter={(_, node) => { if (connectMode) setConnectionHoverId(node.id) }}
         onNodeMouseLeave={() => setConnectionHoverId(null)}
         onEdgeClick={(_, edge) => { setSelectedNodeId(null); setSelectedEdgeId(edge.id) }}
@@ -1161,10 +1240,11 @@ export const CanvasArea: React.FC = () => {
         <button onClick={handleFitView} title="Ajustar ao ecrã (Fit)">Fit</button>
       </div>
 
-      {drawRect && <div className="canvas-draw-rect" style={{ left: drawRect.left, top: drawRect.top, width: drawRect.width, height: drawRect.height }} />}
+      {drawRect && <div className={`canvas-draw-rect tool-${tool} shape-${shapeKind}`} style={{ left: drawRect.left, top: drawRect.top, width: drawRect.width, height: drawRect.height }} />}
+      {drawPreviewPoints.length > 0 && <svg className="canvas-draw-preview" aria-hidden="true"><path d={smoothDrawingPath(drawPreviewPoints)} style={{ stroke: drawingColor, strokeWidth: drawingWidth }} /></svg>}
       {pendingRope && <svg className="pending-rope" aria-hidden="true"><path d={pendingRope.d} /></svg>}
       {focusSnapshot && <div className="focus-mode-pill">Modo foco <button onClick={() => restoreFocus()}>Esc · Voltar</button></div>}
-      {tool !== 'select' && <div className="canvas-mode-banner"><b>{toolLabel[tool]}</b><span>Arrasta no canvas para criar</span><kbd>Esc</kbd></div>}
+      {tool !== 'select' && <div className="canvas-mode-banner"><b>{toolLabel[tool]}</b><span>{tool === 'draw' ? 'Desenha livremente · linhas e formas encaixam automaticamente' : tool === 'text' ? 'Clica para escrever ou arrasta para criar uma caixa' : tool === 'shape' ? 'Arrasta para criar · Shift mantém a proporção' : 'Arrasta no canvas para criar'}</span><kbd>Esc</kbd></div>}
 
       {storeNodes.length === 0 && (
         <div className="canvas-empty-state">
@@ -1178,7 +1258,7 @@ export const CanvasArea: React.FC = () => {
         </div>
       )}
 
-      {(selectedNode || selectedEdgeId) && (
+      {tool === 'select' && (selectedNode || selectedEdgeId) && (
         <div className="canvas-context-toolbar" aria-label={selectedEdgeId ? 'Ações da conexão' : `Ações para ${selectedNode?.kind}`}>
           {selectedEdgeId && <>
             <span className="connection-selection">Conexão selecionada</span>
@@ -1199,8 +1279,28 @@ export const CanvasArea: React.FC = () => {
             <button className="danger" onClick={() => { deleteEdge(selectedEdgeId); setSelectedEdgeId(null) }} title="Desconectar"><Trash2 className="icon" /></button>
           </>}
           {selectedNode && <>
+          {selectedNode.kind === 'text' && <>
+            <label className="context-color-control" title="Cor do texto"><input type="color" value={colorInputValue(selectedNode.properties.color, '#e8ebee')} onPointerDown={() => commitHistory()} onChange={(event) => updateSelectedProperties({ color: event.target.value }, false)} /><span style={{ background: colorInputValue(selectedNode.properties.color, '#e8ebee') }} /></label>
+            <select className="context-select" value={Number(selectedNode.properties.fontSize) || 18} onChange={(event) => updateSelectedProperties({ fontSize: Number(event.target.value) })} aria-label="Tamanho do texto"><option value="14">14</option><option value="18">18</option><option value="24">24</option><option value="32">32</option><option value="44">44</option></select>
+            <button className={Number(selectedNode.properties.fontWeight) >= 700 ? 'active' : ''} onClick={() => updateSelectedProperties({ fontWeight: Number(selectedNode.properties.fontWeight) >= 700 ? 500 : 700 })} title="Negrito"><Bold className="icon" /></button>
+            <button className={selectedNode.properties.fontStyle === 'italic' ? 'active' : ''} onClick={() => updateSelectedProperties({ fontStyle: selectedNode.properties.fontStyle === 'italic' ? 'normal' : 'italic' })} title="Itálico"><Italic className="icon" /></button>
+            <button className={selectedNode.properties.textAlign === 'left' || !selectedNode.properties.textAlign ? 'active' : ''} onClick={() => updateSelectedProperties({ textAlign: 'left' })} title="Alinhar à esquerda"><AlignLeft className="icon" /></button>
+            <button className={selectedNode.properties.textAlign === 'center' ? 'active' : ''} onClick={() => updateSelectedProperties({ textAlign: 'center' })} title="Centrar"><AlignCenter className="icon" /></button>
+            <button className={selectedNode.properties.textAlign === 'right' ? 'active' : ''} onClick={() => updateSelectedProperties({ textAlign: 'right' })} title="Alinhar à direita"><AlignRight className="icon" /></button>
+            <span className="context-separator" />
+          </>}
+          {selectedNode.kind === 'shape' && <>
+            {selectedNode.properties.drawing !== true && <select className="context-select shape-select" value={String(selectedNode.properties.shapeType || 'rounded')} onChange={(event) => updateSelectedProperties({ shapeType: event.target.value })} aria-label="Tipo de forma"><option value="rectangle">Retângulo</option><option value="rounded">Arredondado</option><option value="ellipse">Elipse</option><option value="diamond">Losango</option><option value="triangle">Triângulo</option><option value="line">Linha</option></select>}
+            {selectedNode.properties.drawing !== true && selectedNode.properties.shapeType !== 'line' && <label className="context-color-control" title="Cor de preenchimento"><input type="color" value={colorInputValue(selectedNode.properties.fill, '#28321d')} onPointerDown={() => commitHistory()} onChange={(event) => updateSelectedProperties({ fill: event.target.value }, false)} /><span style={{ background: colorInputValue(selectedNode.properties.fill, '#28321d') }} /></label>}
+            <label className="context-color-control stroke" title="Cor do contorno"><input type="color" value={colorInputValue(selectedNode.properties.stroke, '#c8f169')} onPointerDown={() => commitHistory()} onChange={(event) => updateSelectedProperties({ stroke: event.target.value }, false)} /><span style={{ background: colorInputValue(selectedNode.properties.stroke, '#c8f169') }} /></label>
+            <select className="context-select" value={Number(selectedNode.properties.strokeWidth) || 2} onChange={(event) => updateSelectedProperties({ strokeWidth: Number(event.target.value) })} aria-label="Espessura do traço"><option value="1">1 px</option><option value="2">2 px</option><option value="3">3 px</option><option value="5">5 px</option><option value="8">8 px</option></select>
+            {selectedNode.properties.drawing !== true && selectedNode.properties.shapeType !== 'line' && <><select className="context-select" value={Number(selectedNode.properties.fontSize) || 14} onChange={(event) => updateSelectedProperties({ fontSize: Number(event.target.value) })} aria-label="Tamanho do texto da forma"><option value="12">12</option><option value="14">14</option><option value="18">18</option><option value="24">24</option><option value="32">32</option></select><button className={Number(selectedNode.properties.fontWeight) >= 700 ? 'active' : ''} onClick={() => updateSelectedProperties({ fontWeight: Number(selectedNode.properties.fontWeight) >= 700 ? 600 : 700 })} title="Negrito"><Bold className="icon" /></button><button className={selectedNode.properties.fontStyle === 'italic' ? 'active' : ''} onClick={() => updateSelectedProperties({ fontStyle: selectedNode.properties.fontStyle === 'italic' ? 'normal' : 'italic' })} title="Itálico"><Italic className="icon" /></button></>}
+            {selectedNode.properties.smartDrawing && <span className="context-smart"><Sparkles className="icon" />Smart</span>}
+            <span className="context-separator" />
+          </>}
           {selectedNode.kind === 'note' && (
             <>
+              <label className="context-color-control" title="Cor da nota"><input type="color" value={colorInputValue(selectedNode.properties.color, '#fff2a8')} onPointerDown={() => commitHistory()} onChange={(event) => updateSelectedProperties({ color: event.target.value }, false)} /><span style={{ background: colorInputValue(selectedNode.properties.color, '#fff2a8') }} /></label>
               <button onClick={() => noteAction('bold')} title="Negrito"><Bold className="icon" /></button>
               <button onClick={() => noteAction('italic')} title="Itálico"><Italic className="icon" /></button>
               <button onClick={() => noteAction('list')} title="Lista"><List className="icon" /></button>
@@ -1226,6 +1326,22 @@ export const CanvasArea: React.FC = () => {
           </>}
         </div>
       )}
+
+      {(tool === 'shape' || tool === 'draw') && <div className="canvas-creation-options" aria-label={tool === 'draw' ? 'Opções do desenho' : 'Escolher forma'}>
+        {tool === 'shape' && <>
+          <button className={shapeKind === 'rectangle' ? 'active' : ''} onClick={() => setShapeKind('rectangle')} title="Retângulo"><Square className="icon" /></button>
+          <button className={shapeKind === 'rounded' ? 'active' : ''} onClick={() => setShapeKind('rounded')} title="Retângulo arredondado"><Square className="icon rounded-icon" /></button>
+          <button className={shapeKind === 'ellipse' ? 'active' : ''} onClick={() => setShapeKind('ellipse')} title="Elipse"><Circle className="icon" /></button>
+          <button className={shapeKind === 'diamond' ? 'active' : ''} onClick={() => setShapeKind('diamond')} title="Losango"><Diamond className="icon" /></button>
+          <button className={shapeKind === 'triangle' ? 'active' : ''} onClick={() => setShapeKind('triangle')} title="Triângulo"><Triangle className="icon" /></button>
+          <span className="context-separator" />
+        </>}
+        <label className="canvas-color-control" title="Cor do traço"><input type="color" value={drawingColor} onChange={(event) => setDrawingColor(event.target.value)} /><span style={{ background: drawingColor }} /></label>
+        {tool === 'draw' && <>
+          {[2, 3, 5].map((width) => <button key={width} className={drawingWidth === width ? 'active' : ''} onClick={() => setDrawingWidth(width)} title={`Espessura ${width}`}><span className="stroke-sample" style={{ height: width }} /></button>)}
+          <span className="smart-tool-status"><Sparkles className="icon" />Smart</span>
+        </>}
+      </div>}
 
       {/* Floating Canvas Lower Toolbar */}
       <div className="canvas-toolbar">

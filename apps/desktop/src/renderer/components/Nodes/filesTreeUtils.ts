@@ -28,6 +28,15 @@ export type GraphRow = {
   laneCount: number
   laneColors: string[]
   color: string
+  hasIncoming: boolean
+  throughEdges: GraphEdge[]
+  parentEdges: GraphEdge[]
+}
+
+export type GraphEdge = {
+  fromLane: number
+  toLane: number
+  color: string
 }
 
 export const GRAPH_COLORS = ['#c8f169', '#74a7f5', '#a989f5', '#f2c46d', '#63d694', '#ff8c96']
@@ -133,29 +142,53 @@ export function filterDeletableBranches<T extends { name: string; current?: bool
  */
 export function buildGraphRows(commits: GraphCommit[]): GraphRow[] {
   const lanes: string[] = []
+  const colors = new Map<string, string>()
   return commits.map((commit) => {
     let lane = lanes.indexOf(commit.hash)
+    const hasIncoming = lane >= 0
     if (lane < 0) {
       lane = lanes.length
       lanes.push(commit.hash)
     }
-    lanes.splice(lane, 1)
-    const parents = commit.parents || []
+    const lanesBefore = [...lanes]
+    const color = colors.get(commit.hash) || graphColorForLane(lane)
+    colors.set(commit.hash, color)
+
+    const lanesAfter = [...lanesBefore]
+    lanesAfter.splice(lane, 1)
+    const parents = [...new Set(commit.parents || [])]
     parents.forEach((parent, index) => {
       // A merge diamond can enqueue the same parent through both branches.
       // Keep one lane and preserve the first occurrence so the convergence
       // commit cannot leave a ghost lane behind.
-      const existing = lanes.indexOf(parent)
+      const existing = lanesAfter.indexOf(parent)
       if (existing >= 0) return
-      lanes.splice(Math.min(lane + index, lanes.length), 0, parent)
+      lanesAfter.splice(Math.min(lane + index, lanesAfter.length), 0, parent)
+      // The first parent continues the branch colour. Extra parents create a
+      // new coloured rail until they converge again at a later commit.
+      if (!colors.has(parent)) colors.set(parent, index === 0 ? color : graphColorForLane(lane + index))
     })
-    const uniqueLanes = [...new Set(lanes)]
+
+    const throughEdges = lanesBefore.flatMap((hash, fromLane) => {
+      if (hash === commit.hash) return []
+      const toLane = lanesAfter.indexOf(hash)
+      return toLane < 0 ? [] : [{ fromLane, toLane, color: colors.get(hash) || graphColorForLane(fromLane) }]
+    })
+    const parentEdges = parents.flatMap((parent, index) => {
+      const toLane = lanesAfter.indexOf(parent)
+      return toLane < 0 ? [] : [{ fromLane: lane, toLane, color: index === 0 ? color : colors.get(parent) || color }]
+    })
+
+    lanes.splice(0, lanes.length, ...lanesAfter)
     return {
       commit,
       lane,
-      laneCount: Math.max(1, uniqueLanes.length, lane + 1),
-      laneColors: uniqueLanes.map((_value, index) => graphColorForLane(index)),
-      color: graphColorForLane(lane),
+      laneCount: Math.max(1, lanesBefore.length, lanesAfter.length, lane + 1),
+      laneColors: lanesAfter.map((hash, index) => colors.get(hash) || graphColorForLane(index)),
+      color,
+      hasIncoming,
+      throughEdges,
+      parentEdges,
     }
   })
 }

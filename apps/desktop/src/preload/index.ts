@@ -35,9 +35,12 @@ contextBridge.exposeInMainWorld('orchestra', {
     destroy: (portalId: string) => ipcRenderer.invoke('portal:destroy', { portalId }),
     openExternal: (portalId: string) => ipcRenderer.invoke('portal:open-external', { portalId }),
     inspect: (portalId: string) => ipcRenderer.invoke('portal:inspect', { portalId }),
+    grab: (portalId: string) => ipcRenderer.invoke('portal:grab', { portalId }),
+    cancelGrab: (portalId: string) => ipcRenderer.invoke('portal:grab-cancel', { portalId }),
     click: (portalId: string, selector: string) => ipcRenderer.invoke('portal:click', { portalId, selector }),
     type: (portalId: string, selector: string, text: string) => ipcRenderer.invoke('portal:type', { portalId, selector, text }),
-    screenshot: (portalId: string) => ipcRenderer.invoke('portal:screenshot', { portalId })
+    screenshot: (portalId: string) => ipcRenderer.invoke('portal:screenshot', { portalId }),
+    copyImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:write-image', { dataUrl })
   },
   relayTerminal: (fromSessionId: string, toSessionId: string, message: string) =>
     ipcRenderer.invoke('terminal:relay', { fromSessionId, toSessionId, message }),

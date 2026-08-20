@@ -301,6 +301,12 @@ enum Commands {
         #[command(subcommand)]
         command: PortalCommands,
     },
+    /// Inspect and control local desktop applications through accessibility
+    #[command(name = "computer")]
+    Computer {
+        #[command(subcommand)]
+        command: ComputerCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -482,6 +488,84 @@ enum PortalCommands {
     Console { id: String },
 }
 
+#[derive(Subcommand)]
+enum ComputerCommands {
+    /// Report the capabilities available on this desktop session
+    Capabilities,
+    /// List visible applications that can be targeted
+    ListApps,
+    /// Read a fresh accessibility snapshot and short-lived element indexes
+    GetAppState {
+        app: String,
+        #[arg(long)]
+        window_index: Option<u32>,
+    },
+    /// Click an element index, or a point relative to the selected window
+    Click {
+        app: String,
+        #[arg(long)]
+        element_index: Option<u32>,
+        #[arg(long, allow_hyphen_values = true)]
+        x: Option<f64>,
+        #[arg(long, allow_hyphen_values = true)]
+        y: Option<f64>,
+        #[arg(long)]
+        window_index: Option<u32>,
+    },
+    /// Type text into the focused desktop control
+    TypeText {
+        app: String,
+        text: String,
+        #[arg(long)]
+        window_index: Option<u32>,
+    },
+    /// Press one key, such as Enter, Escape, Tab or ArrowDown
+    PressKey {
+        app: String,
+        key: String,
+        #[arg(long)]
+        window_index: Option<u32>,
+    },
+    /// Replace the value of an editable accessibility element
+    SetValue {
+        app: String,
+        element_index: u32,
+        value: String,
+        #[arg(long)]
+        window_index: Option<u32>,
+    },
+    /// Scroll at an element or point relative to the selected window
+    Scroll {
+        app: String,
+        #[arg(long)]
+        element_index: Option<u32>,
+        #[arg(long, allow_hyphen_values = true)]
+        x: Option<f64>,
+        #[arg(long, allow_hyphen_values = true)]
+        y: Option<f64>,
+        #[arg(long, default_value = "down")]
+        direction: String,
+        #[arg(long, default_value_t = 3)]
+        amount: u32,
+        #[arg(long)]
+        window_index: Option<u32>,
+    },
+    /// Drag between two points relative to the selected window
+    Drag {
+        app: String,
+        #[arg(long, allow_hyphen_values = true)]
+        from_x: f64,
+        #[arg(long, allow_hyphen_values = true)]
+        from_y: f64,
+        #[arg(long, allow_hyphen_values = true)]
+        to_x: f64,
+        #[arg(long, allow_hyphen_values = true)]
+        to_y: f64,
+        #[arg(long)]
+        window_index: Option<u32>,
+    },
+}
+
 async fn request(stream: &mut UnixStream, message_type: &str, payload: Value) -> Result<Value> {
     let request_id = format!("cli_{}", uuid::Uuid::new_v4());
     let req = json!({
@@ -636,6 +720,101 @@ fn portal_command_parts(command: PortalCommands) -> (&'static str, Value, Option
     }
 }
 
+fn computer_command_parts(command: ComputerCommands) -> (&'static str, Value) {
+    match command {
+        ComputerCommands::Capabilities => ("computer.capabilities", json!({})),
+        ComputerCommands::ListApps => ("computer.list-apps", json!({})),
+        ComputerCommands::GetAppState { app, window_index } => (
+            "computer.get-app-state",
+            json!({ "app": app, "windowIndex": window_index }),
+        ),
+        ComputerCommands::Click {
+            app,
+            element_index,
+            x,
+            y,
+            window_index,
+        } => (
+            "computer.click",
+            json!({
+                "app": app,
+                "elementIndex": element_index,
+                "x": x,
+                "y": y,
+                "windowIndex": window_index
+            }),
+        ),
+        ComputerCommands::TypeText {
+            app,
+            text,
+            window_index,
+        } => (
+            "computer.type-text",
+            json!({ "app": app, "text": text, "windowIndex": window_index }),
+        ),
+        ComputerCommands::PressKey {
+            app,
+            key,
+            window_index,
+        } => (
+            "computer.press-key",
+            json!({ "app": app, "key": key, "windowIndex": window_index }),
+        ),
+        ComputerCommands::SetValue {
+            app,
+            element_index,
+            value,
+            window_index,
+        } => (
+            "computer.set-value",
+            json!({
+                "app": app,
+                "elementIndex": element_index,
+                "value": value,
+                "windowIndex": window_index
+            }),
+        ),
+        ComputerCommands::Scroll {
+            app,
+            element_index,
+            x,
+            y,
+            direction,
+            amount,
+            window_index,
+        } => (
+            "computer.scroll",
+            json!({
+                "app": app,
+                "elementIndex": element_index,
+                "x": x,
+                "y": y,
+                "direction": direction,
+                "amount": amount.clamp(1, 20),
+                "windowIndex": window_index
+            }),
+        ),
+        ComputerCommands::Drag {
+            app,
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            window_index,
+        } => (
+            "computer.drag",
+            json!({
+                "app": app,
+                "fromX": from_x,
+                "fromY": from_y,
+                "toX": to_x,
+                "toY": to_y,
+                "windowIndex": window_index
+            }),
+        ),
+    }
+}
+
 async fn run_portal_command(command: PortalCommands) -> Result<()> {
     let socket_path = portal_socket_path();
     if !socket_path.exists() {
@@ -708,11 +887,59 @@ async fn run_portal_command(command: PortalCommands) -> Result<()> {
     Ok(())
 }
 
+async fn run_computer_command(command: ComputerCommands) -> Result<()> {
+    let socket_path = portal_socket_path();
+    if !socket_path.exists() {
+        anyhow::bail!(
+            "Orchestra desktop control bridge is unavailable: socket not found at {:?}. Start Orchestra Desktop or set ORCHESTRA_PORTAL_SOCKET to its instance socket.",
+            socket_path
+        );
+    }
+    let mut stream = UnixStream::connect(&socket_path).await.map_err(|error| {
+        anyhow::anyhow!(
+            "Could not connect to Orchestra desktop control socket {:?}: {error}",
+            socket_path
+        )
+    })?;
+    let hello = portal_request(
+        &mut stream,
+        "computer_cli_hello",
+        "portal.hello",
+        None,
+        json!({}),
+    )
+    .await?;
+    let token = hello["token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Desktop control did not return a token"))?
+        .to_string();
+    let (message_type, mut payload) = computer_command_parts(command);
+    payload["sessionId"] = Value::String(
+        std::env::var("ORCHESTRA_SESSION_ID")
+            .map_err(|_| anyhow::anyhow!("Computer Use requires ORCHESTRA_SESSION_ID"))?,
+    );
+    payload["authToken"] = Value::String(
+        std::env::var("ORCHESTRA_TOKEN")
+            .map_err(|_| anyhow::anyhow!("Computer Use requires ORCHESTRA_TOKEN"))?,
+    );
+    let result = portal_request(
+        &mut stream,
+        &format!("computer_cli_{}", uuid::Uuid::new_v4()),
+        message_type,
+        Some(&token),
+        payload,
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&redact_value(&result))?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let command = match cli.command {
         Commands::Portal { command } => return run_portal_command(command).await,
+        Commands::Computer { command } => return run_computer_command(command).await,
         command => command,
     };
 
@@ -1066,6 +1293,7 @@ async fn main() -> Result<()> {
         Commands::Status
         | Commands::Doctor
         | Commands::Portal { .. }
+        | Commands::Computer { .. }
         | Commands::Terminal { .. } => unreachable!(),
     };
 
@@ -1198,6 +1426,52 @@ mod tests {
         assert_eq!(message, "portal.wait");
         assert_eq!(payload["text"], "Results");
         assert_eq!(payload["timeoutMs"], 300_000);
+    }
+
+    #[test]
+    fn computer_use_commands_parse_and_map_to_protocol_payloads() {
+        let cli = Cli::try_parse_from([
+            "orchestra",
+            "computer",
+            "click",
+            "Codex",
+            "--element-index",
+            "17",
+            "--window-index",
+            "1",
+        ])
+        .expect("computer click should parse");
+        let Commands::Computer { command } = cli.command else {
+            panic!("expected computer command")
+        };
+        let (message, payload) = computer_command_parts(command);
+        assert_eq!(message, "computer.click");
+        assert_eq!(payload["app"], "Codex");
+        assert_eq!(payload["elementIndex"], 17);
+        assert_eq!(payload["windowIndex"], 1);
+
+        let cli = Cli::try_parse_from([
+            "orchestra",
+            "computer",
+            "scroll",
+            "Firefox",
+            "--x",
+            "400",
+            "--y",
+            "300",
+            "--direction",
+            "up",
+            "--amount",
+            "99",
+        ])
+        .expect("computer scroll should parse");
+        let Commands::Computer { command } = cli.command else {
+            panic!("expected computer command")
+        };
+        let (message, payload) = computer_command_parts(command);
+        assert_eq!(message, "computer.scroll");
+        assert_eq!(payload["direction"], "up");
+        assert_eq!(payload["amount"], 20);
     }
 
     #[test]

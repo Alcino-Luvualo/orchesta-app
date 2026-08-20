@@ -1,15 +1,10 @@
 import React from 'react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import { Plus, Folder } from 'lucide-react'
+import { Plus } from 'lucide-react'
+import { WorkspaceGlyph } from '../WorkspaceGlyph'
 
 export const HomeScreen: React.FC = () => {
-  const { workspaces, setActiveWorkspace, createWorkspace } = useWorkspaceStore()
-  const createNewWorkspace = async () => {
-    const path = await window.orchestra?.chooseWorkspace?.()
-    if (!path) return
-    const name = path.split('/').filter(Boolean).pop() || 'Workspace'
-    createWorkspace(name, path)
-  }
+  const { workspaces, setActiveWorkspace, setWorkspaceModalOpen } = useWorkspaceStore()
 
   return (
     <div className="panel-screen">
@@ -18,7 +13,7 @@ export const HomeScreen: React.FC = () => {
           <h1>Workspaces</h1>
           <p>Abre um projeto recente ou cria um espaço novo.</p>
         </div>
-        <button className="btn primary" onClick={createNewWorkspace}>
+        <button className="btn primary" onClick={() => setWorkspaceModalOpen(true)}>
           <Plus className="icon" /> Novo Workspace
         </button>
       </div>
@@ -36,9 +31,7 @@ export const HomeScreen: React.FC = () => {
                   setActiveWorkspace(ws)
                 }}
               >
-                <div className="workspace-icon">
-                  <Folder className="icon" />
-                </div>
+                <WorkspaceGlyph icon={ws.icon} color={ws.color} className="workspace-icon" />
                 <div>
                   <b>{ws.name}</b>
                   <p>{ws.path}</p>

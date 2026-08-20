@@ -11,6 +11,7 @@ import process from 'node:process'
 
 const repositoryRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const requiredFiles = [
+  'apps/desktop/resources/computer-use-linux.py',
   'target/release/orchestra-core',
   'target/release/orchestra',
   'skills/orchestra-canvas/SKILL.md',
@@ -23,6 +24,7 @@ const requiredFiles = [
 // checks so changing an electron-builder path cannot silently produce an app
 // whose terminal starts without its skill/plugin context.
 const packagedResourceMappings = [
+  ['resources/computer-use-linux.py', 'computer-use-linux.py'],
   ['../../target/release/orchestra-core', 'bin/orchestra-core'],
   ['../../target/release/orchestra', 'bin/orchestra'],
   ['../../skills/orchestra-canvas', 'skills/orchestra-canvas'],

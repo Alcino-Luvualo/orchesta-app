@@ -52,9 +52,18 @@ declare global {
         destroy: (portalId: string) => Promise<unknown>
         openExternal: (portalId: string) => Promise<unknown>
         inspect: (portalId: string) => Promise<unknown>
+        grab: (portalId: string) => Promise<{
+          page: { url: string; title: string; viewportWidth: number; viewportHeight: number }
+          target: { tagName: string; selector: string; text: string; role: string; accessibleName: string; attributes: Record<string, string>; rect: { x: number; y: number; width: number; height: number }; styles: Record<string, string> }
+          targets: Array<{ tagName: string; selector: string; text: string; role: string; accessibleName: string; attributes: Record<string, string>; rect: { x: number; y: number; width: number; height: number }; styles: Record<string, string> }>
+          comment: string
+          screenshot: { dataUrl: string; width: number; height: number } | null
+        } | null>
+        cancelGrab: (portalId: string) => Promise<{ ok: boolean }>
         click: (portalId: string, selector: string) => Promise<unknown>
         type: (portalId: string, selector: string, text: string) => Promise<unknown>
         screenshot: (portalId: string) => Promise<string>
+        copyImage: (dataUrl: string) => Promise<{ ok: boolean; width?: number; height?: number }>
       }
       syncCanvasContext?: (contextSummary: unknown) => Promise<unknown>
       onEvent: (callback: (event: OrchestraEvent) => void) => () => void

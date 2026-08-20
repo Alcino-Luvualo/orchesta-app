@@ -20,6 +20,7 @@ import { TerminalBlockStore } from './terminalBlocks'
 import { detectTerminalFileReferences, osc52Response, parseOsc52, readTerminalSecuritySettings, sanitizeTerminalUrl, TerminalSecuritySettings, writeTerminalSecuritySettings } from './terminalSecurity'
 import { getTerminalTransformScale, isIdentityTerminalScale, mapTerminalPointerToLayout } from './terminalGeometry'
 import { DEFAULT_TERMINAL_KEYBOARD_PROTOCOL, isDirectInteractiveTerminalCommand, isMultilineEnter, isNativeEnterData, multilineEnterPayload, TerminalKeyboardProtocol } from './terminalInput'
+import { agentContextInput, AgentContext, materializeAgentContext } from './agentContext'
 
 type TerminalInteractionMode =
   | 'shell_prompt'
@@ -218,6 +219,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   const windowFocusedRef = useRef(true)
   const [isLifted, setIsLifted] = useState(false)
   const [attachments, setAttachments] = useState<Array<{ name: string; path?: string; size: number }>>([])
+  const [agentContexts, setAgentContexts] = useState<AgentContext[]>([])
   const [interactionMode, setInteractionMode] = useState<TerminalInteractionMode>('shell_fallback')
   const [editorRevision, setEditorRevision] = useState(0)
   const [editorHandoffPending, setEditorHandoffPending] = useState(false)
@@ -245,6 +247,31 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   if (!securitySettingsRef.current) securitySettingsRef.current = readTerminalSecuritySettings()
   if (!historyStoreRef.current) historyStoreRef.current = new CommandHistoryStore(id, id)
   if (!blockStoreRef.current) blockStoreRef.current = new TerminalBlockStore()
+
+  useEffect(() => {
+    let disposed = false
+    const receiveContext = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; context?: AgentContext; submit?: boolean }>).detail
+      if (detail?.sessionId !== id || !detail.context) return
+      void materializeAgentContext(detail.context).then((context) => {
+        if (disposed) return
+        setAgentContexts((current) => [...current.filter((item) => item.id !== context.id), context].slice(-8))
+        const contextInput = agentContextInput(context, richInputEnabled && interactionModeRef.current === 'shell_prompt')
+        const canSubmit = detail.submit === true && (interactionModeRef.current === 'interactive_program' || interactionModeRef.current === 'alternate_screen')
+        if (richInputEnabled && interactionModeRef.current === 'shell_prompt') {
+          setEditorSeed(contextInput)
+          setEditorRevision((revision) => revision + 1)
+        } else if (sessionReadyRef.current) {
+          void window.orchestra?.invoke('terminal.input', { sessionId: id, data: `${contextInput}${canSubmit ? '\r' : ''}` }).catch(() => undefined)
+        }
+        setNotificationText(`${canSubmit ? 'Contexto enviado' : 'Contexto adicionado'}: ${context.title}`)
+        setAttention(true)
+        window.setTimeout(() => setNotificationText(''), 4000)
+      })
+    }
+    window.addEventListener('orchestra:add-agent-context', receiveContext)
+    return () => { disposed = true; window.removeEventListener('orchestra:add-agent-context', receiveContext) }
+  }, [id, richInputEnabled])
   const completionQuery = useCallback(async (kind: string, context: { token: string; document: string; from: number; to: number; cwd: string }, signal: AbortSignal) => {
     if (signal.aborted) return []
     try {
@@ -1018,6 +1045,15 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
     if (!data || !sessionReadyRef.current) return
     void window.orchestra?.invoke('terminal.input', { sessionId: id, data }).catch(() => undefined)
   }
+  const insertAgentContext = (context: AgentContext) => {
+    const contextInput = agentContextInput(context, richInputEnabled && interactionModeRef.current === 'shell_prompt')
+    if (richInputEnabled && interactionModeRef.current === 'shell_prompt') {
+      setEditorSeed(contextInput)
+      setEditorRevision((revision) => revision + 1)
+      return
+    }
+    if (sessionReadyRef.current) void window.orchestra?.invoke('terminal.input', { sessionId: id, data: contextInput }).catch(() => undefined)
+  }
 
   return (
     <div className={`node ${isLifted ? 'lifted' : ''}`} style={{ width: '100%', height: '100%', minWidth: 320, minHeight: 220 }} onClick={() => { setSelectedNodeId(id); setAttention(false) }}>
@@ -1037,6 +1073,10 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
           {attachments.map((attachment, index) => <span className="terminal-chip terminal-chip-file" key={`${attachment.name}-${index}`} role="button" tabIndex={0} onClick={() => insertAttachment(attachment)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); insertAttachment(attachment) } }} title={`Inserir ${attachment.path || attachment.name}`}>
             <Paperclip className="icon" /><span className="terminal-chip-file-name">{attachment.name}</span>
             <button className="terminal-chip-file-remove" type="button" onClick={(event) => { event.stopPropagation(); setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index)) }} title="Remover ficheiro" aria-label={`Remover ${attachment.name}`}><X className="icon" /></button>
+          </span>)}
+          {agentContexts.map((context) => <span className="terminal-chip terminal-chip-file terminal-chip-context" key={context.id} role="button" tabIndex={0} onClick={() => insertAgentContext(context)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); insertAgentContext(context) } }} title={`${context.title}\n${context.reference}`}>
+            <FileCode2 className="icon" /><span className="terminal-chip-file-name">{context.title}</span>
+            <button className="terminal-chip-file-remove" type="button" onClick={(event) => { event.stopPropagation(); setAgentContexts((current) => current.filter((item) => item.id !== context.id)) }} title="Remover contexto" aria-label={`Remover ${context.title}`}><X className="icon" /></button>
           </span>)}
           <span className="terminal-chip" title="Runtime do terminal"><FileCode2 className="icon" />{runtimeChip}</span>
           <span className="terminal-chip terminal-chip-icon" title="Entrada de voz"><Mic className="icon" /></span>

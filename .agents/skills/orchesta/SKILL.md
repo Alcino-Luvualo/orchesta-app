@@ -1,30 +1,13 @@
 ---
 name: orchesta
-description: Use Orchestra Desktop canvases, connected terminals, notes, file trees and browser portals safely.
+description: Compatibility alias for operating Orchestra Desktop through the authenticated `orchestra` CLI. Use for connected canvases, agents, notes, file trees and browser portals; never route this work to Orca or `orca-ide`.
 ---
 
 # Orchestra compatibility skill
 
-The canonical instructions are in `skills/orchestra-canvas/SKILL.md`. When this
-compatibility name is activated, follow that skill exactly.
+`orchesta` is only a misspelling-compatible skill name. The product is
+**Orchestra** and its CLI is `orchestra`; Orca and `orca-ide` are unrelated.
 
-Before any connected-node action, run:
-
-```bash
-orchestra doctor
-orchestra connections
-orchestra agents
-```
-
-For an interactive terminal, always inspect first:
-
-```bash
-orchestra terminal screen <id> --plain
-```
-
-Classify the visible state, then use `terminal type` and an intentional
-`terminal key`, and inspect again. `inputWritten` is not proof of semantic
-delivery. Use only IDs and permissions returned by `orchestra connections`.
-To create a connected note, use the authenticated `orchestra note create`
-command documented by the canonical skill; never write canvas context or
-database files directly.
+Before taking any action, read and follow the complete
+[canonical Orchestra skill](../../../skills/orchestra-canvas/SKILL.md). This
+wrapper does not replace those instructions.

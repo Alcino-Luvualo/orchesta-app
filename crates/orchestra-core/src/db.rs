@@ -13,6 +13,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, "CREATE TABLE IF NOT EXISTS note_revisions (id TEXT PRIMARY KEY, note_id TEXT NOT NULL, content TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE);"),
     (4, "CREATE TABLE IF NOT EXISTS routine_runs (id TEXT PRIMARY KEY, routine_id TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, output TEXT NOT NULL DEFAULT '', FOREIGN KEY(routine_id) REFERENCES routines(id) ON DELETE CASCADE);"),
     (5, "CREATE TABLE IF NOT EXISTS audit_log (id TEXT PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, details_json TEXT NOT NULL, created_at TEXT NOT NULL);"),
+    (6, "CREATE TABLE IF NOT EXISTS workspace_metadata (workspace_id TEXT PRIMARY KEY, icon TEXT NOT NULL DEFAULT 'folder-kanban', color TEXT NOT NULL DEFAULT '#2f91f5', FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE);"),
 ];
 
 impl Database {
@@ -227,7 +228,7 @@ impl Database {
     // Workspaces
     pub fn get_workspaces(&self) -> Result<Vec<serde_json::Value>> {
         let conn = self.get_conn()?;
-        let mut stmt = conn.prepare("SELECT id, name, path, active_floor_id, created_at, updated_at FROM workspaces ORDER BY updated_at DESC")?;
+        let mut stmt = conn.prepare("SELECT w.id, w.name, w.path, w.active_floor_id, w.created_at, w.updated_at, COALESCE(m.icon, 'folder-kanban'), COALESCE(m.color, '#2f91f5') FROM workspaces w LEFT JOIN workspace_metadata m ON m.workspace_id = w.id ORDER BY w.updated_at DESC")?;
         let rows = stmt.query_map([], |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, String>(0)?,
@@ -236,6 +237,8 @@ impl Database {
                 "active_floor_id": row.get::<_, Option<String>>(3)?,
                 "created_at": row.get::<_, String>(4)?,
                 "updated_at": row.get::<_, String>(5)?,
+                "icon": row.get::<_, String>(6)?,
+                "color": row.get::<_, String>(7)?,
             }))
         })?;
         let mut list = Vec::new();
@@ -366,7 +369,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn save_workspace(&self, id: &str, name: &str, path: &str) -> Result<()> {
+    pub fn save_workspace(
+        &self,
+        id: &str,
+        name: &str,
+        path: &str,
+        icon: &str,
+        color: &str,
+    ) -> Result<()> {
         let conn = self.get_conn()?;
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
@@ -375,7 +385,17 @@ impl Database {
              ON CONFLICT(id) DO UPDATE SET name=?2, path=?3, updated_at=?4",
             params![id, name, path, now],
         )?;
+        conn.execute(
+            "INSERT INTO workspace_metadata (workspace_id, icon, color) VALUES (?1, ?2, ?3) ON CONFLICT(workspace_id) DO UPDATE SET icon=?2, color=?3",
+            params![id, icon, color],
+        )?;
         Ok(())
+    }
+
+    pub fn delete_workspace(&self, id: &str) -> Result<bool> {
+        let conn = self.get_conn()?;
+        let deleted = conn.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
+        Ok(deleted > 0)
     }
 
     // Canvas Nodes
@@ -1121,8 +1141,11 @@ mod tests {
         let path = temp_db();
         let database = Database::new(&path).expect("database initializes");
         database
-            .save_workspace("ws", "Workspace", "/tmp")
+            .save_workspace("ws", "Workspace", "/tmp", "code", "#2f91f5")
             .expect("workspace saves");
+        let workspace = database.get_workspaces().expect("workspaces read");
+        assert_eq!(workspace[0]["icon"], "code");
+        assert_eq!(workspace[0]["color"], "#2f91f5");
         database
             .save_canvas_viewport("ws", None, &json!({ "x": 4.0, "y": 8.0, "zoom": 1.25 }))
             .expect("viewport saves");
@@ -1179,6 +1202,38 @@ mod tests {
         let shm = format!("{path}-shm");
         let _ = fs::remove_file(wal);
         let _ = fs::remove_file(shm);
+    }
+
+    #[test]
+    fn deleting_a_workspace_removes_registration_and_scoped_canvas_data() {
+        let path = temp_db();
+        let database = Database::new(&path).expect("database initializes");
+        database
+            .save_workspace("ws-delete", "Disposable", "/tmp", "code", "#2f91f5")
+            .expect("workspace saves");
+        database
+            .save_canvas_node(
+                "ws-delete",
+                &json!({ "id": "note-delete", "kind": "note", "x": 0, "y": 0, "properties": {} }),
+            )
+            .expect("node saves");
+
+        assert!(database
+            .delete_workspace("ws-delete")
+            .expect("workspace deletes"));
+        assert!(database
+            .get_workspaces()
+            .expect("workspaces read")
+            .is_empty());
+        assert!(database
+            .get_canvas_nodes_for_floor("ws-delete", None)
+            .expect("nodes read")
+            .is_empty());
+        assert!(!database
+            .delete_workspace("ws-delete")
+            .expect("second delete is safe"));
+
+        fs::remove_file(path).expect("remove database");
     }
 
     #[test]

@@ -8,7 +8,9 @@ import {
   CircleAlert,
   CloudDownload,
   CloudUpload,
+  Code2,
   Copy,
+  Eye,
   FileCode2,
   FilePlus,
   FileText,
@@ -20,7 +22,9 @@ import {
   GitFork,
   GitMerge,
   History,
+  Image as ImageIcon,
   LoaderCircle,
+  Maximize2,
   Pencil,
   Plus,
   RefreshCw,
@@ -31,6 +35,8 @@ import {
   Trash2,
   Undo2,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react'
 import { EditorState } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
@@ -58,6 +64,9 @@ import {
   mergeTreeNode,
   mergeRefreshedTree,
 } from './filesTreeUtils'
+import { MaterialEntryIcon, MaterialFolderIcon, MaterialFileIcon } from './MaterialIcons'
+import { AgentTargetMenu } from './AgentTargetMenu'
+import { addContextToAgent, formatCodeContext } from './agentContext'
 
 type ViewMode = 'list' | 'diff' | 'graph'
 type GitFile = { path: string; status: string; originalPath?: string; conflict?: boolean }
@@ -72,6 +81,55 @@ type BlameLine = { line?: number; commit?: string; author?: string; authorTime?:
 type TreeRow = ReturnType<typeof flattenFileTree>[number]
 type Notice = { kind: 'success' | 'error' | 'info'; message: string }
 type ConfirmState = { title: string; message: string; action: () => Promise<void> }
+type BranchActionTarget = { name: string; kind: 'local' | 'remote'; current?: boolean }
+type CodeSelectionContext = { startLine: number; endLine: number; text: string }
+type ImageMetadata = {
+  dataUrl: string
+  size?: number
+  mime?: string
+  width?: number
+  height?: number
+  kind: 'image' | 'media'
+}
+
+function formatFileSize(bytes?: number): string {
+  if (typeof bytes !== 'number' || bytes < 0) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
+function formatGraphDate(value?: string): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('pt-PT', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function graphRefClass(ref: string): string {
+  if (ref.startsWith('tag:')) return 'tag'
+  if (ref.includes('HEAD')) return 'head'
+  if (ref.includes('origin/')) return 'remote'
+  return 'branch'
+}
+
+function graphLaneX(lane: number): number {
+  return 9 + Math.min(Math.max(0, lane), 5) * 9
+}
+
+function graphEdgePath(fromLane: number, toLane: number, startsAtNode = false): string {
+  const fromX = graphLaneX(fromLane)
+  const toX = graphLaneX(toLane)
+  const fromY = startsAtNode ? 19 : 0
+  const bendY = startsAtNode ? 29 : 19
+  if (fromX === toX) return `M ${fromX} ${fromY} L ${toX} 38`
+  return `M ${fromX} ${fromY} C ${fromX} ${bendY}, ${toX} ${bendY}, ${toX} 38`
+}
 
 function invoke<T = unknown>(type: string, payload: Record<string, unknown> = {}): Promise<T> {
   if (!window.orchestra?.invoke) return Promise.reject(new Error('A ponte do Orchestra não está disponível.'))
@@ -194,6 +252,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [selectedFile, setSelectedFile] = useState('')
   const [selectedFilePath, setSelectedFilePath] = useState('')
+  const [selectedCodeContext, setSelectedCodeContext] = useState<CodeSelectionContext | null>(null)
   const [selectedFolderPath, setSelectedFolderPath] = useState('')
   const [treeFocusPath, setTreeFocusPath] = useState('')
   const [newEntryName, setNewEntryName] = useState('')
@@ -232,12 +291,17 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const [fileError, setFileError] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved')
+  const [imageMeta, setImageMeta] = useState<ImageMetadata | null>(null)
+  const [imageZoom, setImageZoom] = useState<number>(100)
+  const [svgCodeMode, setSvgCodeMode] = useState<boolean>(false)
   const [commitMessage, setCommitMessage] = useState('')
   const [pendingLocation, setPendingLocation] = useState<{ line: number; column?: number } | null>(null)
   const [gitBusy, setGitBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: TreeRow } | null>(null)
+  const [branchActionTarget, setBranchActionTarget] = useState<BranchActionTarget | null>(null)
+  const [graphQuery, setGraphQuery] = useState('')
   const [graphScrollTop, setGraphScrollTop] = useState(0)
   const [graphViewportHeight, setGraphViewportHeight] = useState(360)
   const { updateNode, deleteNode, setSelectedNodeId, commitHistory, activeWorkspace, activeFloor, theme } = useWorkspaceStore()
@@ -385,18 +449,27 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   }, [expandedPaths, searchQuery, tree])
   const visibleEntries = useMemo(() => filterFileTreeRows(flatEntries, searchQuery), [flatEntries, searchQuery])
   const graphRows = useMemo(() => buildGraphRows(commits), [commits])
+  const filteredGraphRows = useMemo(() => {
+    const query = graphQuery.trim().toLowerCase()
+    if (!query) return graphRows
+    return graphRows.filter(({ commit }) => [commit.hash, commit.message, commit.author, ...(commit.refs || [])]
+      .some((value) => value?.toLowerCase().includes(query)))
+  }, [graphQuery, graphRows])
   const graphWindow = useMemo(() => {
-    const rowHeight = 48
+    const rowHeight = 38
     const start = Math.max(0, Math.floor(graphScrollTop / rowHeight) - 8)
-    const end = Math.min(graphRows.length, start + Math.ceil(graphViewportHeight / rowHeight) + 16)
-    return { start, end, rowHeight, rows: graphRows.slice(start, end) }
-  }, [graphRows, graphScrollTop, graphViewportHeight])
+    const end = Math.min(filteredGraphRows.length, start + Math.ceil(graphViewportHeight / rowHeight) + 16)
+    return { start, end, rowHeight, rows: filteredGraphRows.slice(start, end) }
+  }, [filteredGraphRows, graphScrollTop, graphViewportHeight])
   const changedFiles = gitStatus?.modified_files || []
   const selectedGitFile = changedFiles.find((file) => file.path === selectedGitPath) || changedFiles[0]
   const selectedCommit = commits.find((commit) => commit.hash === selectedCommitHash)
   const currentBranch = gitStatus?.branch || branches.find((branch) => branch.current)?.name || ''
   const deletableBranches = useMemo(() => filterDeletableBranches(branches, currentBranch), [branches, currentBranch])
   const tagRefs = useMemo(() => refs.filter((ref) => ref.kind === 'tag'), [refs])
+  const remoteRefs = useMemo(() => refs
+    .filter((ref) => ref.kind === 'remote' && !ref.name.endsWith('/HEAD'))
+    .sort((a, b) => a.name.localeCompare(b.name)), [refs])
   const rootPath = tree?.path || projectPath
   const selectedPath = selectedFilePath || selectedFolderPath || treeFocusPath || rootPath
   const breadcrumbs = useMemo(() => {
@@ -421,6 +494,17 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   }, [stashTarget, stashes])
 
   useEffect(() => {
+    if (!commits.length) {
+      setSelectedCommitHash('')
+      return
+    }
+    if (!commits.some((commit) => commit.hash === selectedCommitHash)) {
+      setSelectedCommitHash(commits[0].hash)
+      setHistoryTarget(commits[0].hash)
+    }
+  }, [commits, selectedCommitHash])
+
+  useEffect(() => {
     if (!changedFiles.length) { setSelectedGitPath(''); return }
     if (!selectedGitPath || !changedFiles.some((file) => file.path === selectedGitPath)) setSelectedGitPath(changedFiles[0].path)
   }, [changedFiles, selectedGitPath])
@@ -434,7 +518,52 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     setLoadingFile(true)
     setSelectedFolderPath('')
     setTreeFocusPath(resolved)
+    setImageMeta(null)
+    setImageZoom(100)
+    setSvgCodeMode(false)
+
+    const isImg = /\.(png|jpe?g|gif|webp|ico|bmp|avif|svg)$/i.test(entry.name)
+    const isMed = /\.(mp3|wav|ogg|flac|m4a|mp4|webm|mov|mkv)$/i.test(entry.name)
+
     try {
+      if (isImg || isMed) {
+        const result = await invoke<{ dataUrl?: string; size?: number; mime?: string }>('workspace.read_image', {
+          ...payloadBase,
+          path: relativeWorkspacePath(fileRoot, resolved),
+          workspaceRoot: fileRoot,
+        })
+        if (generation !== fileLoadGenerationRef.current) return
+        if (result?.dataUrl) {
+          setImageMeta({
+            dataUrl: result.dataUrl,
+            size: result.size,
+            mime: result.mime,
+            kind: isImg ? 'image' : 'media',
+          })
+          setSelectedFile(fileName(resolved))
+          setSelectedFilePath(resolved)
+          setSelectedGitPath(relativeWorkspacePath(projectPath, resolved))
+          setDirty(false)
+
+          // If SVG, also asynchronously read text so code mode is ready if toggled
+          if (/\.svg$/i.test(entry.name)) {
+            invoke<{ content?: string }>('workspace.read_file', {
+              ...payloadBase,
+              path: relativeWorkspacePath(fileRoot, resolved),
+            })
+              .then((textRes) => {
+                if (generation === fileLoadGenerationRef.current && typeof textRes?.content === 'string') {
+                  setFileContent(textRes.content)
+                  lastDiskContentRef.current = textRes.content
+                }
+              })
+              .catch(() => undefined)
+          }
+          return
+        }
+      }
+
+      // Standard text/code file
       const result = await invoke<{ content?: string }>('workspace.read_file', { ...payloadBase, path: relativeWorkspacePath(fileRoot, resolved) })
       if (generation !== fileLoadGenerationRef.current) return
       const content = result?.content ?? ''
@@ -583,8 +712,9 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   useEffect(() => {
     editorViewRef.current?.destroy()
     editorViewRef.current = null
+    setSelectedCodeContext(null)
     const host = editorHostRef.current
-    if (!host || !selectedFilePath) return
+    if (!host || !selectedFilePath || (imageMeta && !svgCodeMode)) return
     const state = EditorState.create({
       doc: fileContent,
       extensions: [
@@ -594,6 +724,19 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
         theme === 'dark' ? oneDark : [orchestaLight, syntaxHighlighting(defaultHighlightStyle, { fallback: true })],
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
+          if (update.selectionSet) {
+            const selection = update.state.selection.main
+            if (selection.empty) {
+              setSelectedCodeContext(null)
+            } else {
+              const from = Math.min(selection.from, selection.to)
+              const to = Math.max(selection.from, selection.to)
+              const startLine = update.state.doc.lineAt(from).number
+              let endLine = update.state.doc.lineAt(to).number
+              if (to > from && to === update.state.doc.lineAt(to).from) endLine = Math.max(startLine, endLine - 1)
+              setSelectedCodeContext({ startLine, endLine, text: update.state.sliceDoc(from, to) })
+            }
+          }
           if (!update.docChanged) return
           if (syncingDiskRef.current) { syncingDiskRef.current = false; return }
           setFileContent(update.state.doc.toString()); setDirty(true); setSaveState('saved')
@@ -603,7 +746,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     const view = new EditorView({ state, parent: host })
     editorViewRef.current = view
     return () => { view.destroy(); if (editorViewRef.current === view) editorViewRef.current = null }
-  }, [selectedFilePath, theme])
+  }, [fileContent, imageMeta, selectedFile, selectedFilePath, svgCodeMode, theme])
 
   useEffect(() => {
     const view = editorViewRef.current
@@ -615,7 +758,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   }, [fileContent, pendingLocation, selectedFilePath])
 
   useEffect(() => {
-    if (!selectedFilePath || !fileRoot || dirty) return
+    if (!selectedFilePath || !fileRoot || dirty || (imageMeta && !svgCodeMode)) return
     const timer = window.setInterval(() => {
       invoke<{ content?: string }>('workspace.read_file', { ...payloadBase, path: relativeWorkspacePath(projectPath, selectedFilePath) })
         .then((result) => {
@@ -627,7 +770,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
         }).catch(() => undefined)
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [dirty, fileRoot, payloadBase, projectPath, selectedFilePath])
+  }, [dirty, fileRoot, imageMeta, payloadBase, projectPath, selectedFilePath, svgCodeMode])
 
   useEffect(() => {
     if (!selectedFilePath || !fileRoot || !projectPath) { setDiagnostics([]); return }
@@ -679,6 +822,21 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       setError(message); setFeedback({ kind: 'error', message })
     } finally { setGitBusy(null) }
   }, [fileRoot, gitBusy, loadData, payloadBase, setFeedback])
+
+  const checkoutRemoteBranch = useCallback((ref: GitRef) => {
+    const separator = ref.name.indexOf('/')
+    const localName = separator >= 0 ? ref.name.slice(separator + 1) : ref.name
+    if (!localName) {
+      setFeedback({ kind: 'error', message: 'Esta referência remota não pode ser aberta.' })
+      return
+    }
+    const local = branches.find((branch) => branch.name === localName)
+    if (local) {
+      void runGitAction('Checkout', 'git.branch.checkout', { name: local.name })
+      return
+    }
+    void runGitAction('Branch remota aberta', 'git.branch.create', { name: localName, startPoint: ref.name, checkout: true })
+  }, [branches, runGitAction, setFeedback])
 
   const requestConfirmation = useCallback((title: string, message: string, action: () => Promise<void>) => setConfirmState({ title, message, action }), [])
 
@@ -817,9 +975,45 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     items[(current + delta + items.length) % items.length]?.focus()
   }
 
+  const renderBranchActionMenu = (target: BranchActionTarget) => {
+    const close = () => setBranchActionTarget(null)
+    const confirmOperation = (operation: 'merge' | 'rebase') => {
+      close()
+      requestConfirmation(
+        `${operation} ${target.name}`,
+        `${operation === 'merge' ? 'Integrar' : 'Rebasear a branch atual sobre'} “${target.name}”?`,
+        () => runGitAction(operation, `git.${operation}`, { target: target.name, confirm: true }),
+      )
+    }
+    const remoteName = target.name.split('/')[0] || 'origin'
+    const localBranch = branches.find((branch) => branch.name === target.name)
+
+    return <div className="fork-branch-action-menu" role="menu" aria-label={`Ações para ${target.name}`} onClick={(event) => event.stopPropagation()}>
+      <div><b>{target.name}</b><button type="button" className="icon-btn" onClick={close} aria-label="Fechar ações"><X className="icon" /></button></div>
+      {target.kind === 'remote' && <button type="button" role="menuitem" disabled={Boolean(gitBusy)} onClick={() => { close(); checkoutRemoteBranch({ name: target.name, kind: 'remote', hash: '' }) }}><GitBranch className="icon" />Checkout local</button>}
+      {target.kind === 'local' && !target.current && <button type="button" role="menuitem" disabled={Boolean(gitBusy)} onClick={() => { close(); void runGitAction('Checkout', 'git.branch.checkout', { name: target.name }) }}><GitBranch className="icon" />Checkout</button>}
+      {!target.current && <button type="button" role="menuitem" disabled={Boolean(gitBusy)} onClick={() => confirmOperation('merge')}><GitMerge className="icon" />Merge into {currentBranch || 'HEAD'}</button>}
+      {!target.current && <button type="button" role="menuitem" disabled={Boolean(gitBusy)} onClick={() => confirmOperation('rebase')}><GitCommitHorizontal className="icon" />Rebase onto branch</button>}
+      {target.current && <button type="button" role="menuitem" disabled={Boolean(gitBusy)} onClick={() => { close(); void runGitAction('Pull', 'git.remote.pull', { remote: 'origin', branch: target.name }) }}><CloudDownload className="icon" />Pull</button>}
+      {target.current && <button type="button" role="menuitem" disabled={Boolean(gitBusy)} onClick={() => { close(); void runGitAction('Push', 'git.remote.push', { remote: 'origin', branch: target.name }) }}><CloudUpload className="icon" />Push</button>}
+      {target.kind === 'remote' && <button type="button" role="menuitem" disabled={Boolean(gitBusy)} onClick={() => { close(); void runGitAction('Fetch', 'git.remote.fetch', { remote: remoteName }) }}><RefreshCw className="icon" />Fetch {remoteName}</button>}
+      {target.kind === 'local' && !target.current && localBranch && <button type="button" role="menuitem" className="danger" disabled={Boolean(gitBusy)} onClick={() => { close(); deleteBranch(localBranch) }}><Trash2 className="icon" />Delete branch</button>}
+    </div>
+  }
+
   const renderFileIcon = (row: TreeRow) => {
-    if (row.item.is_dir) return row.open ? <FolderOpen className="file-icon folder" /> : <Folder className="file-icon folder" />
-    return /\.(md|markdown|txt|rst)$/i.test(row.item.name) ? <FileText className="file-icon" /> : <FileCode2 className="file-icon" />
+    return <MaterialEntryIcon name={row.item.name} isDir={row.item.is_dir} isOpen={row.open} className={`file-icon ${row.item.is_dir ? 'folder' : ''}`} />
+  }
+
+  const selectedContextText = selectedCodeContext && selectedFilePath
+    ? formatCodeContext(selectedFilePath, selectedCodeContext.startLine, selectedCodeContext.endLine, selectedCodeContext.text)
+    : ''
+
+  const copySelectedContext = () => {
+    if (!selectedContextText) return
+    navigator.clipboard?.writeText(selectedContextText).then(() => {
+      setFeedback({ kind: 'success', message: 'Seleção copiada com o caminho e as linhas.' })
+    }).catch(() => setFeedback({ kind: 'error', message: 'Não foi possível copiar a seleção.' }))
   }
 
   return (
@@ -844,7 +1038,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       </header>
       {notice && <div className={`files-notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}><span>{notice.message}</span><button type="button" className="icon-btn" onClick={() => setNotice(null)} aria-label="Fechar mensagem"><X className="icon" /></button></div>}
       {error && <div className="files-error" role="alert"><CircleAlert className="icon" /><span>{error}</span><button type="button" className="icon-btn" onClick={() => setError(null)} aria-label="Fechar erro"><X className="icon" /></button></div>}
-      <div className={`files-body ${isWide ? 'wide' : ''}`}>
+      <div className={`files-body ${isWide ? 'wide' : ''} ${viewMode === 'graph' ? 'graph-mode' : ''}`}>
         <section className="files-tree-pane">
           <div className="files-pane-toolbar">
             {viewMode === 'list' && <>
@@ -858,7 +1052,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
               <button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void stageAll()}>Stage all</button>
               <button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void unstageAll()}>Unstage all</button>
             </>}
-            {viewMode === 'graph' && <><b className="pane-title"><History className="icon" />History</b><span className="files-count">{commits.length} commits</span><div className="files-head-spacer" /><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void runGitAction('Fetch', 'git.remote.fetch', { remote: 'origin' })}><CloudDownload className="icon" />Fetch</button></>}
+            {viewMode === 'graph' && <><b className="pane-title"><History className="icon" />History</b><span className="files-count">{commits.length} commits</span><div className="files-head-spacer" /><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void runGitAction('Fetch de todos os remotes', 'git.remote.fetch', { remote: '--all' })}><CloudDownload className="icon" />Fetch all</button></>}
           </div>
           {viewMode === 'list' && <>
             <div className="files-breadcrumbs" aria-label="Caminho atual">
@@ -868,7 +1062,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
             <div ref={treeListRef} className="file-tree-list nodrag nowheel" role="tree" aria-label="Árvore de ficheiros" onKeyDown={(event) => { if (event.key === '/' && event.target === treeListRef.current) { event.preventDefault(); searchRef.current?.focus() } }}>
               {loading && <div className="empty-state"><LoaderCircle className="icon spin" />A carregar…</div>}
               {!loading && error && <div className="empty-state error">Não foi possível abrir a árvore.</div>}
-              {!loading && !error && visibleEntries.length === 0 && <div className="empty-state"><FolderOpen className="icon" />{searchQuery ? 'Sem correspondências.' : 'Este workspace não contém entradas visíveis.'}</div>}
+              {!loading && !error && visibleEntries.length === 0 && <div className="empty-state"><MaterialFolderIcon name={fileName(projectPath) || 'workspace'} isOpen={true} className="icon" />{searchQuery ? 'Sem correspondências.' : 'Este workspace não contém entradas visíveis.'}</div>}
               {visibleEntries.map((row, index) => {
                 const status = statuses.get(joinWorkspacePath(projectPath, row.item.path))
                 const flags = gitStatusFlags(status?.status)
@@ -909,41 +1103,183 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
             {diffText.staged && <pre className="git-diff-preview staged"><code>{diffText.staged}</code></pre>}
           </div>}
           {viewMode === 'graph' && <div className="git-graph-view nodrag nowheel">
-            <div className="git-ref-strip"><span className="git-ref-head"><GitBranch className="icon" />{currentBranch || 'detached HEAD'}</span>{refs.filter((ref) => ref.kind !== 'tag').slice(0, 10).map((ref) => <span className={`git-ref-chip ${ref.kind}`} key={`${ref.kind}:${ref.fullName || ref.name}`}><Tag className="icon" />{ref.name}</span>)}{tagRefs.length > 0 && <span className="git-ref-chip tag">+{tagRefs.length} tags</span>}</div>
+            <aside className="fork-repository-sidebar" aria-label="Repositório">
+              <div className="fork-repository-title">
+                <span className="files-brand-icon"><GitFork className="icon" /></span>
+                <span><small>REPOSITORY</small><b>{fileName(projectPath) || 'Workspace'}</b><em>{projectPath}</em></span>
+              </div>
+              <nav className="fork-sidebar-nav" aria-label="Vistas Git">
+                <span className="fork-sidebar-label">VIEWS</span>
+                <button type="button" className="active"><History className="icon" />Graph</button>
+                <button type="button" onClick={() => setViewMode('diff')}><SquareStack className="icon" />Changes{changedFiles.length > 0 && <i>{changedFiles.length}</i>}</button>
+              </nav>
+              <div className="fork-sidebar-section">
+                <span className="fork-sidebar-label">BRANCHES</span>
+                {branches.map((branch) => <React.Fragment key={branch.name}><button type="button" className={`fork-sidebar-row ${branch.current || branch.name === currentBranch ? 'active' : ''}`} aria-expanded={branchActionTarget?.kind === 'local' && branchActionTarget.name === branch.name} onClick={() => setBranchActionTarget((current) => current?.kind === 'local' && current.name === branch.name ? null : { name: branch.name, kind: 'local', current: branch.current || branch.name === currentBranch })}><GitBranch className="icon" /><span>{branch.name}</span>{branch.current && <small>HEAD</small>}<ChevronRight className="fork-branch-menu-caret" /></button>{branchActionTarget?.kind === 'local' && branchActionTarget.name === branch.name && renderBranchActionMenu(branchActionTarget)}</React.Fragment>)}
+                {branches.length === 0 && <p className="fork-sidebar-empty">Sem branches locais</p>}
+              </div>
+              <div className="fork-sidebar-section">
+                <span className="fork-sidebar-label">REMOTE BRANCHES <b>{remoteRefs.length}</b></span>
+                {remoteRefs.map((ref) => <React.Fragment key={ref.fullName || ref.name}><button type="button" className="fork-sidebar-row remote" aria-expanded={branchActionTarget?.kind === 'remote' && branchActionTarget.name === ref.name} onClick={() => setBranchActionTarget((current) => current?.kind === 'remote' && current.name === ref.name ? null : { name: ref.name, kind: 'remote' })}><CloudDownload className="icon" /><span>{ref.name}</span><ChevronRight className="fork-branch-menu-caret" /></button>{branchActionTarget?.kind === 'remote' && branchActionTarget.name === ref.name && renderBranchActionMenu(branchActionTarget)}</React.Fragment>)}
+                {remoteRefs.length === 0 && <p className="fork-sidebar-empty">Sem branches remotas. Usa Fetch all.</p>}
+              </div>
+              <div className="fork-sidebar-section compact fork-sidebar-meta">
+                <span><Tag className="icon" />Tags <b>{tagRefs.length}</b></span>
+                <span><Archive className="icon" />Stashes <b>{stashes.length}</b></span>
+                <span><SquareStack className="icon" />Worktrees <b>{worktrees.length}</b></span>
+              </div>
+            </aside>
+
+            <section className="fork-history-pane">
+              <div className="fork-history-toolbar">
+                <label className="fork-branch-filter"><GitBranch className="icon" /><select value={currentBranch} aria-label="Filtrar por branch" onChange={(event) => void runGitAction('Checkout', 'git.branch.checkout', { name: event.target.value })}>{branches.length === 0 && <option value={currentBranch}>{currentBranch || 'All branches'}</option>}{branches.map((branch) => <option value={branch.name} key={branch.name}>{branch.name}</option>)}</select><ChevronDown className="icon" /></label>
+                <label className="fork-history-search"><Search className="icon" /><input value={graphQuery} onChange={(event) => { setGraphQuery(event.target.value); setGraphScrollTop(0) }} placeholder="Filtrar commits…" aria-label="Filtrar commits" /></label>
+                <span className="files-count">{filteredGraphRows.length} commits</span>
+              </div>
+              <div className="fork-graph-header" aria-hidden="true"><span>Graph</span><span>Commit</span><span>Message</span><span>Author</span><span>Date</span></div>
               <div ref={graphRef} className="fork-graph graph-scroll" onScroll={(event) => setGraphScrollTop(event.currentTarget.scrollTop)} role="listbox" aria-label="Histórico Git">
-              <div className="graph-spacer" style={{ height: graphRows.length * graphWindow.rowHeight }} />
-              <div className="graph-window" style={{ transform: `translateY(${graphWindow.start * graphWindow.rowHeight}px)` }}>{graphWindow.rows.map(({ commit, lane, laneCount, color }) => <button type="button" className={`graph-commit ${selectedCommitHash === commit.hash ? 'selected' : ''}`} style={{ '--lane': lane, '--lane-count': laneCount } as React.CSSProperties} key={commit.hash} role="option" aria-selected={selectedCommitHash === commit.hash} onClick={() => { setSelectedCommitHash(commit.hash); setHistoryTarget(commit.hash) }}><span className="graph-line" style={{ '--graph-color': color } as React.CSSProperties} /><span className="graph-commit-copy"><b>{commit.message}</b><small>{commit.hash.slice(0, 8)} · {commit.author || 'unknown'} · {commit.time || ''}</small></span>{commit.refs?.length ? <em>{commit.refs.join(' · ')}</em> : null}</button>)}</div>
-              {commits.length === 0 && <div className="empty-state"><History className="icon" />Ainda não existem commits.</div>}
-            </div>
-            {selectedCommit && <div className="commit-details"><div className="git-section-title"><span><GitCommitHorizontal className="icon" />Commit {selectedCommit.hash.slice(0, 8)}</span><small>{selectedCommit.parents?.length || 0} parent(s)</small></div><b>{selectedCommit.message}</b><p>{selectedCommit.author || 'Autor desconhecido'} · {selectedCommit.time || 'sem data'}</p>{selectedCommit.refs?.length ? <div className="commit-refs">{selectedCommit.refs.map((ref) => <span key={ref}>{ref}</span>)}</div> : null}<label>Target<input value={historyTarget} onChange={(event) => setHistoryTarget(event.target.value)} /></label></div>}
-            <div className="git-graph-actions">
+                <div className="graph-spacer" style={{ height: filteredGraphRows.length * graphWindow.rowHeight }} />
+                <div className="graph-window" style={{ transform: `translateY(${graphWindow.start * graphWindow.rowHeight}px)` }}>{graphWindow.rows.map(({ commit, lane, laneCount, color, hasIncoming, throughEdges, parentEdges }) => <button type="button" className={`graph-commit ${selectedCommitHash === commit.hash ? 'selected' : ''}`} key={commit.hash} role="option" aria-selected={selectedCommitHash === commit.hash} onClick={() => { setSelectedCommitHash(commit.hash); setHistoryTarget(commit.hash) }}>
+                  <span className="fork-graph-cell" style={{ '--lane-count': Math.min(Math.max(laneCount, lane + 1), 6) } as React.CSSProperties}>
+                    <svg className="fork-graph-svg" viewBox="0 0 64 38" aria-hidden="true">
+                      {throughEdges.map((edge, index) => <path key={`through-${index}`} d={graphEdgePath(edge.fromLane, edge.toLane)} stroke={edge.color} />)}
+                      {hasIncoming && <path d={`M ${graphLaneX(lane)} 0 L ${graphLaneX(lane)} 19`} stroke={color} />}
+                      {parentEdges.map((edge, index) => <path key={`parent-${index}`} d={graphEdgePath(edge.fromLane, edge.toLane, true)} stroke={edge.color} />)}
+                      <circle cx={graphLaneX(lane)} cy="19" r="4" stroke={color} />
+                    </svg>
+                  </span>
+                  <code>{commit.hash.slice(0, 8)}</code>
+                  <span className="graph-commit-copy"><b>{commit.message}</b>{commit.refs?.length ? <span className="graph-row-refs">{commit.refs.slice(0, 3).map((ref) => <em className={graphRefClass(ref)} key={ref}>{ref.replace(/^HEAD -&gt; /, '')}</em>)}</span> : null}</span>
+                  <span className="graph-author">{commit.author || 'unknown'}</span>
+                  <time dateTime={commit.time}>{formatGraphDate(commit.time)}</time>
+                </button>)}</div>
+                {commits.length === 0 && <div className="empty-state"><History className="icon" />Ainda não existem commits.</div>}
+                {commits.length > 0 && filteredGraphRows.length === 0 && <div className="empty-state"><Search className="icon" />Nenhum commit corresponde ao filtro.</div>}
+              </div>
+            </section>
+
+            <aside className="fork-commit-inspector" aria-label="Detalhes do commit">
+              {selectedCommit ? <div className="commit-details">
+                <div className="fork-inspector-head"><span><code>{selectedCommit.hash.slice(0, 8)}</code>{selectedCommit.refs?.some((ref) => ref.includes('HEAD')) && <small>HEAD</small>}</span><button type="button" className="icon-btn" title="Copiar SHA" aria-label="Copiar SHA" onClick={() => void navigator.clipboard.writeText(selectedCommit.hash)}><Copy className="icon" /></button></div>
+                <h3>{selectedCommit.message}</h3>
+                <div className="fork-commit-author"><span className="fork-author-avatar">{(selectedCommit.author || '?').slice(0, 1).toUpperCase()}</span><span><b>{selectedCommit.author || 'Autor desconhecido'}</b><small>{formatGraphDate(selectedCommit.time)}</small></span></div>
+                <dl><div><dt>SHA</dt><dd>{selectedCommit.hash}</dd></div><div><dt>Parents</dt><dd>{selectedCommit.parents?.map((parent) => parent.slice(0, 8)).join(', ') || '—'}</dd></div><div><dt>Branches</dt><dd>{selectedCommit.refs?.join(', ') || '—'}</dd></div></dl>
+                <label className="fork-target-field">Target<input value={historyTarget} onChange={(event) => setHistoryTarget(event.target.value)} /></label>
+              </div> : <div className="fork-inspector-empty"><GitCommitHorizontal className="icon" /><b>Seleciona um commit</b><span>Os detalhes aparecem aqui.</span></div>}
+            <details className="fork-advanced-actions">
+              <summary>Git actions</summary>
+              <div className="git-graph-actions">
               <div className="git-action-row"><input value={branchDraft} onChange={(event) => setBranchDraft(event.target.value)} placeholder="nova branch" aria-label="Nome da nova branch" /><button type="button" className="compact-action" disabled={!branchDraft.trim() || Boolean(gitBusy)} onClick={() => { void runGitAction('Branch criada', 'git.branch.create', { name: branchDraft.trim(), startPoint: selectedCommitHash || undefined, checkout: false }); setBranchDraft('') }}><GitBranch className="icon" />Criar</button><select value={branchToDelete} onChange={(event) => setBranchToDelete(event.target.value)} aria-label="Branch para eliminar"><option value="">Eliminar branch…</option>{deletableBranches.map((branch) => <option value={branch.name} key={branch.name}>{branch.name}</option>)}</select><button type="button" className="compact-action danger" disabled={!branchToDelete || Boolean(gitBusy)} onClick={() => { const branch = deletableBranches.find((item) => item.name === branchToDelete); if (branch) deleteBranch(branch) }}><Trash2 className="icon" />Apagar</button></div>
               <div className="git-action-row"><input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder="nova tag" aria-label="Nome da nova tag" /><button type="button" className="compact-action" disabled={!tagDraft.trim() || Boolean(gitBusy)} onClick={() => { void runGitAction('Tag criada', 'git.tag.create', { name: tagDraft.trim(), target: selectedCommitHash || undefined }); setTagDraft('') }}><Tag className="icon" />Tag</button><select value={tagToDelete} onChange={(event) => setTagToDelete(event.target.value)} aria-label="Tag para eliminar"><option value="">Eliminar tag…</option>{tagRefs.map((ref) => <option value={ref.name} key={ref.name}>{ref.name}</option>)}</select><button type="button" className="compact-action danger" disabled={!tagToDelete || Boolean(gitBusy)} onClick={() => { const ref = tagRefs.find((item) => item.name === tagToDelete); if (ref) deleteTag(ref) }}><Trash2 className="icon" />Apagar tag</button></div>
-              <div className="git-action-row"><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void runGitAction('Pull', 'git.remote.pull', { remote: 'origin' })}><CloudDownload className="icon" />Pull</button><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void runGitAction('Push', 'git.remote.push', { remote: 'origin', branch: currentBranch || undefined })}><CloudUpload className="icon" />Push</button><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void runGitAction('Stash', 'git.stash.push', { includeUntracked: true })}><Archive className="icon" />Stash</button><select value={stashTarget} onChange={(event) => setStashTarget(event.target.value)} aria-label="Stash selecionado"><option value="">Selecionar stash…</option>{stashes.map((stash) => <option value={stash.name} key={stash.name}>{stash.name} · {stash.message}</option>)}</select><button type="button" className="compact-action" disabled={!stashTarget || Boolean(gitBusy)} onClick={() => void runGitAction('Stash pop', 'git.stash.pop', { name: stashTarget })}>Pop</button><button type="button" className="compact-action" disabled={!stashTarget || Boolean(gitBusy)} onClick={() => void runGitAction('Stash apply', 'git.stash.apply', { name: stashTarget })}>Apply</button><button type="button" className="compact-action danger" disabled={!stashTarget || Boolean(gitBusy)} onClick={() => requestConfirmation('Eliminar stash', 'Eliminar ' + stashTarget + '?', () => runGitAction('Stash eliminado', 'git.stash.drop', { name: stashTarget }))}>Drop</button></div>
+              <div className="git-action-row"><button type="button" className="compact-action" disabled={!currentBranch || Boolean(gitBusy)} onClick={() => void runGitAction('Pull', 'git.remote.pull', { remote: 'origin', branch: currentBranch })}><CloudDownload className="icon" />Pull</button><button type="button" className="compact-action" disabled={!currentBranch || Boolean(gitBusy)} onClick={() => void runGitAction('Push', 'git.remote.push', { remote: 'origin', branch: currentBranch })}><CloudUpload className="icon" />Push</button><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void runGitAction('Stash', 'git.stash.push', { includeUntracked: true })}><Archive className="icon" />Stash</button><select value={stashTarget} onChange={(event) => setStashTarget(event.target.value)} aria-label="Stash selecionado"><option value="">Selecionar stash…</option>{stashes.map((stash) => <option value={stash.name} key={stash.name}>{stash.name} · {stash.message}</option>)}</select><button type="button" className="compact-action" disabled={!stashTarget || Boolean(gitBusy)} onClick={() => void runGitAction('Stash pop', 'git.stash.pop', { name: stashTarget })}>Pop</button><button type="button" className="compact-action" disabled={!stashTarget || Boolean(gitBusy)} onClick={() => void runGitAction('Stash apply', 'git.stash.apply', { name: stashTarget })}>Apply</button><button type="button" className="compact-action danger" disabled={!stashTarget || Boolean(gitBusy)} onClick={() => requestConfirmation('Eliminar stash', 'Eliminar ' + stashTarget + '?', () => runGitAction('Stash eliminado', 'git.stash.drop', { name: stashTarget }))}>Drop</button></div>
               <div className="git-action-row"><input value={worktreeDraft} onChange={(event) => setWorktreeDraft(event.target.value)} placeholder="novo worktree" aria-label="Nome do novo worktree" /><input value={worktreeBranchDraft} onChange={(event) => setWorktreeBranchDraft(event.target.value)} placeholder="branch do worktree" aria-label="Branch do novo worktree" /><button type="button" className="compact-action" disabled={!worktreeDraft.trim() || !worktreeBranchDraft.trim() || Boolean(gitBusy)} onClick={() => { void runGitAction('Worktree criado', 'git.create_floor', { name: worktreeDraft.trim(), branch: worktreeBranchDraft.trim() }); setWorktreeDraft(''); setWorktreeBranchDraft('') }}><SquareStack className="icon" />Criar worktree</button></div>
-              <div className="git-action-row"><select value={operationKind} onChange={(event) => setOperationKind(event.target.value)} aria-label="Tipo de operação Git"><option value="merge">merge</option><option value="rebase">rebase</option><option value="cherry-pick">cherry-pick</option><option value="revert">revert</option></select><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => runHistoryOperation(operationKind)}><GitMerge className="icon" />Executar</button><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void runGitAction('Continue', 'git.operation.continue', { kind: operationKind })}>Continue</button><button type="button" className="compact-action danger" disabled={Boolean(gitBusy)} onClick={() => requestConfirmation('Abortar operação', 'Abortar ' + operationKind + '?', () => runGitAction('Abort', 'git.operation.abort', { kind: operationKind }))}>Abort</button><select value={resetMode} onChange={(event) => setResetMode(event.target.value as 'soft' | 'mixed' | 'hard')} aria-label="Modo de reset"><option value="soft">reset soft</option><option value="mixed">reset mixed</option><option value="hard">reset hard</option></select><button type="button" className="compact-action danger" disabled={Boolean(gitBusy)} onClick={() => requestConfirmation('Reset Git', 'Executar reset ' + resetMode + ' para ' + (historyTarget || 'HEAD') + '?', () => runGitAction('Reset', 'git.reset', { target: historyTarget || 'HEAD', mode: resetMode, confirm: true }))}><RotateCcw className="icon" />Reset</button></div>
-            </div>
-            <div className="git-worktrees"><b>Worktrees · leitura e criação</b>{worktrees.length === 0 && <span>Nenhum worktree adicional.</span>}{worktrees.map((worktree) => <span key={worktree.path}><SquareStack className="icon" />{worktree.branch || '(detached)'} · {worktree.path}</span>)}</div>
+              <div className="git-action-row"><select value={operationKind} onChange={(event) => setOperationKind(event.target.value)} aria-label="Tipo de operação Git"><option value="merge">merge</option><option value="rebase">rebase</option><option value="cherry-pick">cherry-pick</option><option value="revert">revert</option></select><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => runHistoryOperation(operationKind)}><GitMerge className="icon" />Executar</button>{operationKind !== 'revert' && <><button type="button" className="compact-action" disabled={Boolean(gitBusy)} onClick={() => void runGitAction('Continue', 'git.operation.continue', { kind: operationKind })}>Continue</button><button type="button" className="compact-action danger" disabled={Boolean(gitBusy)} onClick={() => requestConfirmation('Abortar operação', 'Abortar ' + operationKind + '?', () => runGitAction('Abort', 'git.operation.abort', { kind: operationKind }))}>Abort</button></>}<select value={resetMode} onChange={(event) => setResetMode(event.target.value as 'soft' | 'mixed' | 'hard')} aria-label="Modo de reset"><option value="soft">reset soft</option><option value="mixed">reset mixed</option><option value="hard">reset hard</option></select><button type="button" className="compact-action danger" disabled={Boolean(gitBusy)} onClick={() => requestConfirmation('Reset Git', 'Executar reset ' + resetMode + ' para ' + (historyTarget || 'HEAD') + '?', () => runGitAction('Reset', 'git.reset', { target: historyTarget || 'HEAD', mode: resetMode, confirm: true }))}><RotateCcw className="icon" />Reset</button></div>
+              </div>
+            </details>
+            <div className="git-worktrees"><b>Worktrees</b>{worktrees.length === 0 && <span>Nenhum worktree adicional.</span>}{worktrees.map((worktree) => <span key={worktree.path}><SquareStack className="icon" />{worktree.branch || '(detached)'} · {worktree.path}</span>)}</div>
+            </aside>
           </div>}
         </section>
         {isWide && <section className="files-editor-pane">
           <div className="editor-tab">
             <div className="editor-tab-file">
-              <span className="editor-file-icon"><FileCode2 className="icon" /></span>
+              <span className="editor-file-icon"><MaterialFileIcon name={selectedFile || 'file'} className="icon" /></span>
               <div className="editor-file-copy"><strong>{selectedFile || 'Editor de ficheiros'}</strong><small>{selectedFilePath || 'Seleciona um ficheiro na árvore'}</small></div>
             </div>
             <div className="editor-tab-actions">
-              <span className={`editor-save-state ${saveState}`}>{saveState === 'saving' ? 'A guardar' : saveState === 'error' ? 'Erro' : dirty ? 'Não guardado' : 'Guardado'}</span>
-              <button type="button" className="compact-action" disabled={!selectedFilePath || Boolean(gitBusy)} onClick={() => void runBlame()} title="Ver autoria de cada linha"><History className="icon" />Blame</button>
+              {/\.svg$/i.test(selectedFile) && <button type="button" className="compact-action" onClick={() => setSvgCodeMode((m) => !m)} title={svgCodeMode ? 'Ver pré-visualização' : 'Ver código SVG'}>{svgCodeMode ? <><Eye className="icon" />Pré-visualização</> : <><Code2 className="icon" />Código</>}</button>}
+              {(!imageMeta || svgCodeMode) && <span className={`editor-save-state ${saveState}`}>{saveState === 'saving' ? 'A guardar' : saveState === 'error' ? 'Erro' : dirty ? 'Não guardado' : 'Guardado'}</span>}
+              {(!imageMeta || svgCodeMode) && <button type="button" className="compact-action" disabled={!selectedFilePath || Boolean(gitBusy)} onClick={() => void runBlame()} title="Ver autoria de cada linha"><History className="icon" />Blame</button>}
             </div>
           </div>
-          <div className="editor-toolbar"><span className="editor-breadcrumb">{selectedFilePath ? selectedFilePath : 'Nenhum ficheiro aberto'}</span><div className="editor-toolbar-meta"><span>{selectedFile ? (selectedFile.split('.').pop() || 'TXT').toUpperCase() : 'TEXT'}</span><span>UTF-8</span><kbd>⌘S</kbd></div></div>
+          <div className="editor-toolbar">
+            <span className="editor-breadcrumb">{selectedFilePath ? selectedFilePath : 'Nenhum ficheiro aberto'}</span>
+            <div className="editor-toolbar-meta">
+              <span>{selectedFile ? (selectedFile.split('.').pop() || 'TXT').toUpperCase() : 'TEXT'}</span>
+              {imageMeta && !svgCodeMode ? <span>{formatFileSize(imageMeta.size)}</span> : <span>UTF-8</span>}
+              {!imageMeta && <kbd>⌘S</kbd>}
+            </div>
+          </div>
+          {selectedCodeContext && selectedFilePath && <div className="editor-selection-action nodrag nopan" role="toolbar" aria-label="Ações para as linhas selecionadas">
+            <div className="editor-selection-summary">
+              <FileCode2 className="icon" />
+              <span><strong>{selectedCodeContext.startLine === selectedCodeContext.endLine ? `Linha ${selectedCodeContext.startLine}` : `Linhas ${selectedCodeContext.startLine}–${selectedCodeContext.endLine}`}</strong><small>{fileName(selectedFilePath)}</small></span>
+            </div>
+            <div className="editor-selection-buttons">
+              <button type="button" className="compact-action" onClick={copySelectedContext}><Copy className="icon" />Copiar contexto</button>
+              <AgentTargetMenu onSelect={(agent) => {
+                addContextToAgent(agent.id, {
+                  id: `code:${selectedFilePath}:${selectedCodeContext.startLine}:${selectedCodeContext.endLine}`,
+                  kind: 'code',
+                  title: `${fileName(selectedFilePath)}:${selectedCodeContext.startLine}${selectedCodeContext.endLine === selectedCodeContext.startLine ? '' : `-${selectedCodeContext.endLine}`}`,
+                  reference: `@${selectedFilePath}#L${selectedCodeContext.startLine}${selectedCodeContext.endLine === selectedCodeContext.startLine ? '' : `-L${selectedCodeContext.endLine}`}`,
+                  content: selectedContextText,
+                  metadata: { path: selectedFilePath, startLine: selectedCodeContext.startLine, endLine: selectedCodeContext.endLine }
+                })
+                setFeedback({ kind: 'success', message: `Contexto adicionado a ${agent.name}.` })
+              }} />
+              <button type="button" className="icon-btn" title="Fechar" aria-label="Fechar ações da seleção" onClick={() => { editorViewRef.current?.dispatch({ selection: { anchor: editorViewRef.current.state.selection.main.head } }); setSelectedCodeContext(null) }}><X className="icon" /></button>
+            </div>
+          </div>}
           {loadingFile && <div className="editor-loading"><LoaderCircle className="icon spin" />A abrir ficheiro…</div>}
           {fileError && <div className="editor-error" role="alert">{fileError}</div>}
-          <div ref={editorHostRef} className={`editor-source nodrag nowheel ${selectedFilePath ? '' : 'is-empty'}`} aria-label={selectedFile ? `Editar ${selectedFile}` : 'Nenhum ficheiro selecionado'}>{!selectedFilePath && !loadingFile && <div className="editor-empty"><FileCode2 className="icon" /><strong>Seleciona um ficheiro</strong><span>O conteúdo e as ferramentas de edição aparecem aqui.</span></div>}</div>
+          {imageMeta && !svgCodeMode ? (
+            <div className="editor-image-pane nodrag nowheel">
+              <div className="editor-image-controls">
+                <div className="image-zoom-group">
+                  <button type="button" className="compact-action" onClick={() => setImageZoom((z) => Math.max(25, z - 25))} title="Reduzir zoom" aria-label="Reduzir zoom"><ZoomOut className="icon" /></button>
+                  <span className="image-zoom-badge">{imageZoom}%</span>
+                  <button type="button" className="compact-action" onClick={() => setImageZoom((z) => Math.min(500, z + 25))} title="Aumentar zoom" aria-label="Aumentar zoom"><ZoomIn className="icon" /></button>
+                  <button type="button" className="compact-action" onClick={() => setImageZoom(100)} title="Tamanho 100%">100%</button>
+                </div>
+                <div className="files-head-spacer" />
+                {imageMeta.width && imageMeta.height ? <span className="image-meta-pill">{imageMeta.width} × {imageMeta.height} px</span> : null}
+                <span className="image-meta-pill">{formatFileSize(imageMeta.size)}</span>
+              </div>
+              <div className="editor-image-canvas image-checkerboard">
+                {imageMeta.kind === 'image' ? (
+                  <img
+                    src={imageMeta.dataUrl}
+                    alt={selectedFile}
+                    className="previewed-image"
+                    style={{
+                      transform: `scale(${imageZoom / 100})`,
+                      imageRendering: imageZoom > 200 ? 'pixelated' : 'auto'
+                    }}
+                    onLoad={(e) => {
+                      const target = e.currentTarget
+                      setImageMeta((prev) => prev ? { ...prev, width: target.naturalWidth, height: target.naturalHeight } : null)
+                    }}
+                  />
+                ) : /\.(mp4|webm|mov|mkv)$/i.test(selectedFile) ? (
+                  <video controls src={imageMeta.dataUrl} className="previewed-media-video" />
+                ) : (
+                  <div className="previewed-media-audio">
+                    <audio controls src={imageMeta.dataUrl} />
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div ref={editorHostRef} className={`editor-source nodrag nowheel ${selectedFilePath ? '' : 'is-empty'}`} aria-label={selectedFile ? `Editar ${selectedFile}` : 'Nenhum ficheiro selecionado'}>
+              {!selectedFilePath && !loadingFile && <div className="editor-empty"><MaterialFolderIcon name="workspace" isOpen={false} className="icon" /><strong>Seleciona um ficheiro</strong><span>O conteúdo e as ferramentas de edição aparecem aqui.</span></div>}
+            </div>
+          )}
           {blameLines.length > 0 && <div className="blame-panel"><div className="git-section-title"><span>Blame</span><button type="button" className="icon-btn" onClick={() => setBlameLines([])} aria-label="Fechar blame"><X className="icon" /></button></div>{blameLines.slice(0, 80).map((line) => <div key={line.line} className="blame-row"><small>{line.commit?.slice(0, 8) || '—'}</small><span>{line.author || '—'}</span><code>{line.content || ''}</code></div>)}</div>}
           {diagnostics.length > 0 && <div className="editor-diagnostics" role="status">{diagnostics.map((diagnostic, index) => <div key={`${diagnostic.file}:${diagnostic.line}:${index}`} className={diagnostic.severity === 'warning' ? 'warning' : 'error'}><b>{diagnostic.severity}</b><span>{diagnostic.message}</span><small>{diagnostic.line || 1}:{diagnostic.column || 1}</small></div>)}</div>}
-          <footer>{saveState === 'saving' ? 'A guardar…' : saveState === 'error' ? 'Erro ao guardar' : dirty ? 'Alterações não guardadas' : 'Guardado'}<span>{selectedFile ? selectedFile.split('.').pop() : '—'}</span></footer>
+          <footer>
+            {imageMeta && !svgCodeMode ? (
+              <>
+                <span>{imageMeta.mime || 'Imagem'}</span>
+                <span>{imageMeta.width && imageMeta.height ? `${imageMeta.width} × ${imageMeta.height} px · ` : ''}{formatFileSize(imageMeta.size)}</span>
+              </>
+            ) : (
+              <>
+                {saveState === 'saving' ? 'A guardar…' : saveState === 'error' ? 'Erro ao guardar' : dirty ? 'Alterações não guardadas' : 'Guardado'}
+                <span>{selectedFile ? selectedFile.split('.').pop() : '—'}</span>
+              </>
+            )}
+          </footer>
         </section>}
       </div>
       {newEntryName && <div className="files-inline-tools"><span>{newEntryMode === 'rename' ? `Renomear ${fileName(selectedFilePath || selectedFolderPath)}` : `${newEntryMode === 'folder' ? 'Nova pasta' : 'Novo ficheiro'} em ${fileName(selectedFolderPath || projectPath)}`}</span></div>}

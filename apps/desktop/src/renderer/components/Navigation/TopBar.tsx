@@ -24,7 +24,7 @@ export const TopBar: React.FC = () => {
   return (
     <header className="topbar">
       <div className="brand">
-        <img src="/icon.png" className="logo" alt="Orchestra" style={{ width: '24px', height: '24px', borderRadius: '5px', objectFit: 'contain' }} />
+        <img src="./icon.png" className="logo" alt="Orchestra" style={{ width: '24px', height: '24px', borderRadius: '5px', objectFit: 'contain' }} onError={(e) => { (e.currentTarget as HTMLImageElement).src = 'icon.png' }} />
       </div>
 
       <div className="workspace-head"><span className="workspace-title">{activeWorkspace?.name || 'Workspace 1'}</span></div>

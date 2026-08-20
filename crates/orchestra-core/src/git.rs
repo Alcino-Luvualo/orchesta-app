@@ -503,7 +503,10 @@ impl GitManager {
             return Err(anyhow!("Invalid remote operation"));
         }
         let remote = remote.unwrap_or("origin");
-        validate_remote(remote)?;
+        let fetch_all = operation == "fetch" && remote == "--all";
+        if !fetch_all {
+            validate_remote(remote)?;
+        }
         let branch = branch.filter(|value| !value.trim().is_empty());
         if let Some(branch) = branch {
             validate_ref_name(branch, "branch name")?;
@@ -512,7 +515,7 @@ impl GitManager {
             return Err(anyhow!("Confirmation is required for force push"));
         }
         let mut args = vec![operation];
-        if operation == "fetch" && remote == "--all" {
+        if fetch_all {
             args.push("--all");
         } else {
             args.push(remote);
@@ -777,5 +780,55 @@ mod tests {
             .iter()
             .any(|item| item["path"] == worktree));
         fs::remove_dir_all(repo).expect("remove repository");
+    }
+
+    #[test]
+    fn fetches_all_and_lists_remote_branches() {
+        let repo = temp_repo();
+        let remote = std::env::temp_dir().join(format!(
+            "orchestra-git-remote-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let init = Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&remote)
+            .output()
+            .expect("create bare remote");
+        assert!(init.status.success());
+
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["remote", "add", "origin", &remote.to_string_lossy()]);
+        run(&["push", "-q", "origin", "HEAD:main"]);
+        run(&["branch", "feature/remote"]);
+        run(&["push", "-q", "origin", "feature/remote"]);
+
+        GitManager::remote_operation(
+            &repo.to_string_lossy(),
+            "fetch",
+            Some("--all"),
+            None,
+            false,
+            false,
+        )
+        .expect("fetch all remotes");
+        let refs = GitManager::refs(&repo.to_string_lossy()).expect("list refs");
+        assert!(refs["refs"].as_array().is_some_and(|items| items
+            .iter()
+            .any(|item| item["kind"] == "remote" && item["name"] == "origin/feature/remote")));
+
+        fs::remove_dir_all(repo).expect("remove repository");
+        fs::remove_dir_all(remote).expect("remove bare remote");
     }
 }

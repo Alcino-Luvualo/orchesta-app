@@ -1,4 +1,4 @@
-import { app, BrowserWindow, WebContentsView, dialog, ipcMain, session, shell } from 'electron'
+import { app, BrowserWindow, WebContentsView, clipboard, dialog, ipcMain, nativeImage, session, shell } from 'electron'
 import path from 'path'
 import net from 'net'
 import { spawn, ChildProcess } from 'child_process'
@@ -6,6 +6,12 @@ import fs from 'fs'
 import { createHash, randomUUID } from 'crypto'
 import { canvasPinchGestureFactor, canvasPinchZoomFactor } from '../renderer/utils/canvasPinchZoom'
 import { clampPortalScale, getPortalGeometry, PortalBounds } from '../shared/browserPortalGeometry'
+
+// Electron renderers do not consistently publish their semantic tree to
+// AT-SPI on Linux unless accessibility is requested before app readiness.
+// Computer Use relies on that tree instead of guessing from screen pixels.
+if (process.platform === 'linux') app.commandLine.appendSwitch('force-renderer-accessibility')
+app.name = 'Orchestra'
 
 let mainWindow: BrowserWindow | null = null
 let coreProcess: ChildProcess | null = null
@@ -293,6 +299,25 @@ type PortalInspection = {
   }>
 }
 
+type PortalGrabTarget = {
+  tagName: string
+  selector: string
+  text: string
+  role: string
+  accessibleName: string
+  attributes: Record<string, string>
+  rect: { x: number; y: number; width: number; height: number }
+  styles: Record<string, string>
+}
+
+type PortalGrabResult = {
+  page: { url: string; title: string; viewportWidth: number; viewportHeight: number }
+  target: PortalGrabTarget
+  targets: PortalGrabTarget[]
+  comment: string
+  screenshot: { dataUrl: string; width: number; height: number } | null
+}
+
 type JsonObject = Record<string, unknown>
 
 interface ConnectedNote extends JsonObject {
@@ -515,6 +540,35 @@ function setPortalSuppression(reason: unknown, suppressed: unknown): void {
   for (const record of portals.values()) applyPortalVisibility(record)
 }
 
+function suspendNativePortalsForRendererReload(): void {
+  // WebContentsView children outlive a renderer navigation (notably Vite's
+  // dependency-optimisation reload). They are composited above the renderer
+  // DOM, so leaving an old view visible can intercept every pointer event in
+  // the new document, including the frameless window controls. Hide them
+  // synchronously and require each remounted BrowserNode to publish fresh
+  // geometry before it can become visible again.
+  nativePortalSuppressionReasons.add('renderer-reload')
+  for (const record of portals.values()) {
+    record.desiredVisible = false
+    record.visible = false
+    record.presentationActive = false
+    record.presentationInteractive = false
+    applyPortalVisibility(record)
+    if (!portalViewAlive(record)) continue
+    void record.view.webContents.executeJavaScript(
+      'globalThis.__orchestaElementPicker?.cancel?.()',
+      true
+    ).catch(() => undefined)
+  }
+}
+
+function resumeNativePortalsAfterRendererReload(): void {
+  // desiredVisible remains false. A portal only returns after the freshly
+  // mounted renderer sends portal:update with current bounds/focus state.
+  nativePortalSuppressionReasons.delete('renderer-reload')
+  for (const record of portals.values()) applyPortalVisibility(record)
+}
+
 function emitPortalEvent(type: string, portalId: string, payload: Record<string, unknown> = {}) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('orchestra:event', { type, payload: { portalId, ...payload } })
@@ -732,6 +786,9 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
       allowRunningInsecureContent: false
     }
   })
+  // A neutral backing color prevents an unpainted GPU surface from appearing
+  // black during the first frame. Actual page pixels replace it immediately.
+  view.setBackgroundColor('#ffffff')
   const record: PortalRecord = {
     id: portalId,
     instanceId: randomUUID(),
@@ -1115,6 +1172,276 @@ async function inspectPortal(record: PortalRecord): Promise<PortalInspection> {
     }
   }
   return result
+}
+
+/**
+ * Element grabbing is deliberately hosted inside the guest page: a native
+ * WebContentsView is painted above React, so a renderer overlay cannot follow
+ * the real DOM reliably. The injected picker lives in a closed shadow root,
+ * extracts a small allow-listed payload and removes itself before capture.
+ */
+async function grabPortalElement(record: PortalRecord): Promise<PortalGrabResult | null> {
+  if (!portalViewAlive(record)) throw new Error('Portal WebContents indisponível')
+  const guest = record.view.webContents
+  // The renderer can legitimately be showing a cached frame after canvas
+  // motion or screenshot markup. A picker injected into a hidden native view
+  // cannot receive the user's pointer, which made Grab appear to work only
+  // after opening Draw. Explicitly reveal and focus the guest for this action.
+  record.frozen = false
+  record.desiredVisible = true
+  record.presentationActive = true
+  record.presentationInteractive = true
+  if (record.firstFrameReady && record.lifecycle === 'frozen') record.lifecycle = 'ready'
+  applyPortalVisibility(record)
+  try { guest.focus() } catch { /* portal teardown is checked above */ }
+  const picker = guest.executeJavaScript(`new Promise((resolve) => {
+    const previous = globalThis.__orchestaElementPicker;
+    if (previous?.cancel) previous.cancel();
+
+    const SECRET = ['access_token','auth_token','api_key','apikey','client_secret','oauth_state','x-amz-','session_id','sessionid','csrf','secret','password','passwd'];
+    const SAFE_ATTRIBUTES = new Set(['id','class','name','type','role','href','src','alt','title','placeholder','for','action','method']);
+    const secretLike = (value) => SECRET.some((part) => String(value || '').toLowerCase().includes(part));
+    const cleanUrl = (value) => {
+      try {
+        const parsed = new URL(String(value || ''), location.href);
+        if (!['http:','https:','file:'].includes(parsed.protocol)) return '';
+        parsed.search = '';
+        parsed.hash = '';
+        return parsed.toString();
+      } catch { return ''; }
+    };
+    const clamp = (value, length) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, length);
+    const cssEscape = (value) => globalThis.CSS?.escape ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\\\$&');
+    const selectorFor = (element) => {
+      if (element.id && !secretLike(element.id)) {
+        const candidate = '#' + cssEscape(element.id);
+        try { if (document.querySelectorAll(candidate).length === 1) return candidate; } catch {}
+      }
+      const parts = [];
+      let current = element;
+      while (current && current instanceof Element && current !== document.documentElement && parts.length < 8) {
+        let part = current.tagName.toLowerCase();
+        const stableClasses = Array.from(current.classList || []).filter((name) => name.length < 60 && !secretLike(name) && !/^css-[a-z0-9]+$/i.test(name)).slice(0, 2);
+        if (stableClasses.length) part += stableClasses.map((name) => '.' + cssEscape(name)).join('');
+        let sameTag = 0;
+        let position = 0;
+        for (const sibling of current.parentElement?.children || []) {
+          if (sibling.tagName === current.tagName) {
+            sameTag += 1;
+            if (sibling === current) position = sameTag;
+          }
+        }
+        if (sameTag > 1) part += ':nth-of-type(' + position + ')';
+        parts.unshift(part);
+        const candidate = parts.join(' > ');
+        try { if (document.querySelectorAll(candidate).length === 1) return candidate; } catch {}
+        current = current.parentElement;
+      }
+      return parts.join(' > ').slice(0, 700);
+    };
+    const attributesFor = (element) => {
+      const result = {};
+      for (const attribute of Array.from(element.attributes || [])) {
+        const name = attribute.name.toLowerCase();
+        if (!SAFE_ATTRIBUTES.has(name) && !name.startsWith('aria-')) continue;
+        let value = clamp(attribute.value, name === 'class' ? 200 : 500);
+        if (secretLike(value)) value = '[redacted]';
+        else if (['href','src','action'].includes(name)) value = cleanUrl(value);
+        result[name] = value;
+      }
+      return result;
+    };
+    const payloadFor = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const ariaLabel = element.getAttribute('aria-label') || '';
+      return {
+        tagName: element.tagName.toLowerCase(),
+        selector: selectorFor(element),
+        text: element instanceof HTMLInputElement && element.type === 'password' ? '' : clamp(element.innerText || element.textContent || '', 500),
+        role: clamp(element.getAttribute('role') || element.tagName.toLowerCase(), 100),
+        accessibleName: clamp(ariaLabel || element.getAttribute('alt') || element.getAttribute('title') || element.innerText || '', 300),
+        attributes: attributesFor(element),
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        styles: {
+          display: style.display, position: style.position, color: style.color,
+          backgroundColor: style.backgroundColor, border: style.border,
+          borderRadius: style.borderRadius, fontFamily: style.fontFamily,
+          fontSize: style.fontSize, fontWeight: style.fontWeight,
+          padding: style.padding, margin: style.margin
+        }
+      };
+    };
+
+    const host = document.createElement('div');
+    host.setAttribute('data-orchesta-element-picker', '');
+    host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
+    const shadow = host.attachShadow({ mode: 'closed' });
+    const selectedLayer = document.createElement('div');
+    selectedLayer.style.cssText = 'position:absolute;inset:0;pointer-events:none;';
+    const box = document.createElement('div');
+    box.style.cssText = 'position:absolute;display:none;border:2px solid #8b5cf6;background:rgba(139,92,246,.12);box-shadow:0 0 0 1px rgba(255,255,255,.9) inset;pointer-events:none;';
+    const label = document.createElement('div');
+    label.style.cssText = 'position:absolute;display:none;padding:5px 8px;border-radius:6px;background:#17131f;color:white;font:600 11px/1.2 ui-sans-serif,system-ui;box-shadow:0 5px 16px rgba(0,0,0,.25);white-space:nowrap;pointer-events:none;';
+    const composer = document.createElement('div');
+    composer.style.cssText = 'position:absolute;display:none;width:min(310px,calc(100vw - 16px));padding:10px;border:1px solid rgba(200,241,105,.58);border-radius:10px;background:#17191d;color:#f4f6f8;box-shadow:0 14px 42px rgba(0,0,0,.45);font:12px/1.35 ui-sans-serif,system-ui;pointer-events:auto;';
+    const composerHead = document.createElement('div');
+    composerHead.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px;';
+    const composerTitle = document.createElement('strong');
+    composerTitle.textContent = '1 elemento selecionado';
+    const composerHint = document.createElement('span');
+    composerHint.textContent = 'Clica noutros para adicionar';
+    composerHint.style.cssText = 'color:#8f99a5;font-size:10px;';
+    composerHead.append(composerTitle, composerHint);
+    const comment = document.createElement('textarea');
+    comment.placeholder = 'Comentário para o agente…';
+    comment.maxLength = 2000;
+    comment.rows = 3;
+    comment.style.cssText = 'box-sizing:border-box;width:100%;min-height:64px;resize:vertical;padding:8px;color:#f7f8fa;border:1px solid #3b424c;border-radius:7px;outline:none;background:#0f1115;font:12px/1.4 ui-sans-serif,system-ui;pointer-events:auto;';
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:8px;';
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.textContent = 'Cancelar';
+    cancelButton.style.cssText = 'height:28px;padding:0 9px;color:#b6bec8;border:0;border-radius:6px;background:#292d34;cursor:pointer;';
+    const submitButton = document.createElement('button');
+    submitButton.type = 'button';
+    submitButton.textContent = 'Escolher agente';
+    submitButton.style.cssText = 'height:28px;padding:0 10px;color:#172000;border:0;border-radius:6px;background:#c8f169;font-weight:700;cursor:pointer;';
+    actions.append(cancelButton, submitButton);
+    composer.append(composerHead, comment, actions);
+    shadow.append(selectedLayer, box, label, composer);
+    (document.body || document.documentElement).appendChild(host);
+    const previousCursor = document.documentElement.style.cursor;
+    document.documentElement.style.cursor = 'crosshair';
+    let current = null;
+    const selected = [];
+    const positionOverlay = (overlay, rect) => {
+      overlay.style.transform = 'translate(' + Math.round(rect.x) + 'px,' + Math.round(rect.y) + 'px)';
+      overlay.style.width = Math.max(0, Math.round(rect.width)) + 'px';
+      overlay.style.height = Math.max(0, Math.round(rect.height)) + 'px';
+    };
+    const positionComposer = () => {
+      const last = selected[selected.length - 1];
+      if (!last) { composer.style.display = 'none'; return; }
+      const rect = last.element.getBoundingClientRect();
+      const width = Math.min(310, Math.max(220, innerWidth - 16));
+      const estimatedHeight = 150;
+      let left = rect.right + 10;
+      if (left + width > innerWidth - 8) left = Math.max(8, Math.min(rect.left, innerWidth - width - 8));
+      let top = Math.max(8, rect.top);
+      if (top + estimatedHeight > innerHeight - 8) top = Math.max(8, rect.bottom - estimatedHeight);
+      composer.style.display = 'block';
+      composer.style.transform = 'translate(' + Math.round(left) + 'px,' + Math.round(top) + 'px)';
+    };
+    const refreshSelected = () => {
+      for (const entry of selected) positionOverlay(entry.outline, entry.element.getBoundingClientRect());
+      composerTitle.textContent = selected.length + (selected.length === 1 ? ' elemento selecionado' : ' elementos selecionados');
+      positionComposer();
+    };
+    const finish = () => {
+      if (!selected.length) return;
+      const targets = selected.map((entry) => payloadFor(entry.element));
+      const target = targets[targets.length - 1];
+      const payload = {
+        page: { url: cleanUrl(location.href), title: clamp(document.title, 300), viewportWidth: innerWidth, viewportHeight: innerHeight },
+        target,
+        targets,
+        comment: String(comment.value || '').trim().slice(0, 2000)
+      };
+      cleanup();
+      resolve(payload);
+    };
+    const cleanup = () => {
+      document.removeEventListener('mousemove', move, true);
+      document.removeEventListener('click', choose, true);
+      document.removeEventListener('keydown', keydown, true);
+      document.removeEventListener('scroll', refreshSelected, true);
+      globalThis.removeEventListener('resize', refreshSelected);
+      document.documentElement.style.cursor = previousCursor;
+      host.remove();
+      delete globalThis.__orchestaElementPicker;
+    };
+    const cancel = () => { cleanup(); resolve(null); };
+    const move = (event) => {
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      if (!element || element === host || host.contains(element)) return;
+      current = element;
+      const rect = element.getBoundingClientRect();
+      box.style.display = 'block';
+      positionOverlay(box, rect);
+      label.textContent = element.tagName.toLowerCase() + (element.id && !secretLike(element.id) ? '#' + element.id : '') + '  ' + Math.round(rect.width) + '×' + Math.round(rect.height);
+      label.style.display = 'block';
+      label.style.transform = 'translate(' + Math.max(6, rect.x) + 'px,' + Math.max(6, rect.y - 28) + 'px)';
+    };
+    const choose = (event) => {
+      if (event.composedPath().includes(host)) return;
+      if (!current) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const existing = selected.findIndex((entry) => entry.element === current);
+      if (existing >= 0) {
+        selected[existing].outline.remove();
+        selected.splice(existing, 1);
+      } else if (selected.length < 12) {
+        const outline = document.createElement('div');
+        outline.style.cssText = 'position:absolute;border:2px solid #c8f169;background:rgba(200,241,105,.12);box-shadow:0 0 0 1px rgba(15,17,21,.75),0 0 0 3px rgba(200,241,105,.18);pointer-events:none;';
+        selectedLayer.appendChild(outline);
+        selected.push({ element: current, outline });
+      }
+      refreshSelected();
+      if (selected.length) comment.focus({ preventScroll: true });
+    };
+    const keydown = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); cancel(); }
+      else if (event.key === 'Enter' && !event.shiftKey && event.composedPath().includes(host)) { event.preventDefault(); finish(); }
+    };
+    cancelButton.addEventListener('click', cancel);
+    submitButton.addEventListener('click', finish);
+    globalThis.__orchestaElementPicker = { cancel };
+    document.addEventListener('mousemove', move, true);
+    document.addEventListener('click', choose, true);
+    document.addEventListener('keydown', keydown, true);
+    document.addEventListener('scroll', refreshSelected, true);
+    globalThis.addEventListener('resize', refreshSelected);
+  })`, true) as Promise<Omit<PortalGrabResult, 'screenshot'> | null>
+
+  let selected: Omit<PortalGrabResult, 'screenshot'> | null
+  try {
+    selected = await withPortalTimeout(picker, 120000)
+  } catch (error) {
+    void guest.executeJavaScript('globalThis.__orchestaElementPicker?.cancel?.(); true', true).catch(() => undefined)
+    throw error
+  }
+  if (!selected) return null
+
+  let screenshot: PortalGrabResult['screenshot'] = null
+  try {
+    const image = await withPortalTimeout(guest.capturePage(), 8000)
+    const size = image.getSize()
+    const viewportWidth = Math.max(1, Number(selected.page.viewportWidth) || size.width)
+    const scale = size.width / viewportWidth
+    const targets = selected.targets?.length ? selected.targets : [selected.target]
+    const selectionBounds = targets.reduce((bounds, target) => ({
+      left: Math.min(bounds.left, target.rect.x),
+      top: Math.min(bounds.top, target.rect.y),
+      right: Math.max(bounds.right, target.rect.x + target.rect.width),
+      bottom: Math.max(bounds.bottom, target.rect.y + target.rect.height)
+    }), { left: Number.POSITIVE_INFINITY, top: Number.POSITIVE_INFINITY, right: 0, bottom: 0 })
+    const x = Math.max(0, Math.min(size.width - 1, Math.round(selectionBounds.left * scale)))
+    const y = Math.max(0, Math.min(size.height - 1, Math.round(selectionBounds.top * scale)))
+    const right = Math.max(x + 1, Math.min(size.width, Math.round(selectionBounds.right * scale)))
+    const bottom = Math.max(y + 1, Math.min(size.height, Math.round(selectionBounds.bottom * scale)))
+    const width = right - x
+    const height = bottom - y
+    const bytes = image.crop({ x, y, width, height }).toPNG()
+    if (bytes.length <= 2 * 1024 * 1024) {
+      screenshot = { dataUrl: `data:image/png;base64,${bytes.toString('base64')}`, width: Math.round(width / scale), height: Math.round(height / scale) }
+    }
+  } catch { /* Element metadata remains useful when capture is unavailable. */ }
+
+  return { ...selected, screenshot }
 }
 
 async function focusPortalElement(record: PortalRecord, selector: unknown, selectText = false): Promise<{ x: number; y: number }> {
@@ -1625,7 +1952,99 @@ function portalControlFrame(value: unknown): Buffer {
   return frame
 }
 
+const computerUseTools = new Map<string, string>([
+  ['computer.capabilities', 'capabilities'],
+  ['computer.list-apps', 'list_apps'],
+  ['computer.get-app-state', 'get_app_state'],
+  ['computer.click', 'click'],
+  ['computer.type-text', 'type_text'],
+  ['computer.press-key', 'press_key'],
+  ['computer.set-value', 'set_value'],
+  ['computer.scroll', 'scroll'],
+  ['computer.drag', 'drag']
+])
+
+function resolveComputerUseProvider(): string | null {
+  const candidates = [
+    path.resolve(app.getAppPath(), 'resources/computer-use-linux.py'),
+    path.resolve(process.cwd(), 'resources/computer-use-linux.py'),
+    path.resolve(process.cwd(), 'apps/desktop/resources/computer-use-linux.py'),
+    path.join(process.resourcesPath || '', 'computer-use-linux.py')
+  ]
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null
+}
+
+function runComputerUseProvider(operation: Record<string, unknown>): Promise<unknown> {
+  if (process.platform !== 'linux') {
+    return Promise.reject(new Error('Computer Use local ainda só está disponível no Linux'))
+  }
+  const providerPath = resolveComputerUseProvider()
+  if (!providerPath) return Promise.reject(new Error('Provider de Computer Use não encontrado'))
+  return new Promise((resolve, reject) => {
+    const child = spawn('python3', [providerPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: process.env
+    })
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    let outputBytes = 0
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      callback()
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish(() => reject(new Error('Computer Use excedeu 15 segundos')))
+    }, 15_000)
+    child.stdout.on('data', (chunk: Buffer) => {
+      outputBytes += chunk.length
+      if (outputBytes > 8 * 1024 * 1024) {
+        child.kill('SIGKILL')
+        finish(() => reject(new Error('Resposta de Computer Use excede 8 MiB')))
+        return
+      }
+      stdout.push(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk.subarray(0, 64 * 1024)))
+    child.once('error', (error) => finish(() => reject(error)))
+    child.once('close', (code) => finish(() => {
+      if (code !== 0) {
+        reject(new Error(Buffer.concat(stderr).toString('utf8').trim() || `Computer Use terminou com código ${code}`))
+        return
+      }
+      try {
+        const result = JSON.parse(Buffer.concat(stdout).toString('utf8')) as Record<string, unknown>
+        if (result.ok !== true) throw new Error(typeof result.error === 'string' ? result.error : 'Computer Use falhou')
+        resolve(result)
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    }))
+    child.stdin.end(JSON.stringify(operation))
+  })
+}
+
+async function dispatchComputerUse(type: string, payload: Record<string, unknown>): Promise<unknown> {
+  const tool = computerUseTools.get(type)
+  if (!tool) throw new Error(`Comando de Computer Use desconhecido: ${type}`)
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+  const terminalToken = typeof payload.authToken === 'string' ? payload.authToken : ''
+  if (!sessionId || !terminalToken) throw new Error('Computer Use requer uma sessão de terminal autenticada')
+  await waitForCore()
+  await sendCoreRequest('terminal.state', {
+    sessionId,
+    token: terminalToken,
+    clientToken: coreClientToken
+  })
+  const { authToken: _authToken, sessionId: _sessionId, ...operation } = payload
+  return runComputerUseProvider({ ...operation, tool })
+}
+
 async function dispatchPortalControl(type: string, payload: Record<string, unknown>): Promise<unknown> {
+  if (type.startsWith('computer.')) return dispatchComputerUse(type, payload)
   if (type === 'portal.list') {
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
     const terminalToken = typeof payload.authToken === 'string' ? payload.authToken : ''
@@ -1973,7 +2392,9 @@ function resolveCoreBinary(): string | null {
     path.resolve(__dirname, '../../../target/release/orchestra-core'),
     path.resolve(process.cwd(), '../../target/debug/orchestra-core'),
     path.resolve(process.cwd(), '../../target/release/orchestra-core'),
-    path.join(process.resourcesPath || '', 'bin/orchestra-core')
+    path.join(process.resourcesPath || '', 'bin/orchestra-core'),
+    path.join(path.dirname(process.execPath || ''), 'resources/bin/orchestra-core'),
+    '/opt/Orchestra/resources/bin/orchestra-core'
   ]
   return candidates.find((candidate) => fs.existsSync(candidate)) || null
 }
@@ -2043,21 +2464,21 @@ function ensureCoreDaemonRunning(forceSpawn = false, reason: 'startup' | 'refuse
   if (socketExists) {
     if (!forceSpawn) return false
 
-    // An incompatible peer is connected and therefore not ours. Never try to
-    // replace it. A refused UNIX socket, on the other hand, has no listener;
-    // removing only the stale pathname lets our daemon bind without touching
-    // any external process.
-    if (reason !== 'refused' || ownsCoreDaemon) return false
     try {
       const stat = fs.statSync(sockPath)
-      if (!stat.isSocket()) return false
-      fs.unlinkSync(sockPath)
-      socketClaimed = true
+      if (stat.isSocket()) {
+        fs.unlinkSync(sockPath)
+        socketClaimed = true
+      }
     } catch (error) {
-      console.warn('Could not reclaim a refused Orchestra socket:', error)
+      console.warn('Could not reclaim Orchestra socket:', error)
       return false
     }
   }
+
+  try {
+    fs.mkdirSync(path.dirname(sockPath), { recursive: true })
+  } catch (_) {}
 
   const binPath = resolveCoreBinary()
   if (!binPath) {
@@ -2092,9 +2513,6 @@ function ensureCoreDaemonRunning(forceSpawn = false, reason: 'startup' | 'refuse
     if (coreProcess !== child) return
     coreProcess = null
     ownsCoreDaemon = false
-    // Do not unlink here. A child can lose a bind race after another daemon
-    // takes the pathname; removing it would destroy that daemon's socket.
-    // The next ECONNREFUSED probe removes only a genuinely stale pathname.
     if (ownedCoreSocketPath === sockPath) ownedCoreSocketPath = null
     if (!shutdownStarted) {
       scheduleSocketReconnect('core-exited')
@@ -2144,16 +2562,16 @@ function recoverAfterSocketFailure(reason: 'refused' | 'incompatible' | 'closed'
     // created by this process. ECONNREFUSED proves there is no listener now;
     // the pathname itself is stale and does not identify a daemon to kill.
     ensureCoreDaemonRunning(true, 'refused')
-  } else if (reason === 'incompatible' && ownsCoreDaemon) {
-    // We own this process and can safely replace it. External incompatible
-    // daemons are left alone and are retried only within the bounded budget.
+  } else if (reason === 'incompatible') {
     const ownedProcess = coreProcess
-    const ownedSocket = ownedCoreSocketPath
     coreProcess = null
     ownsCoreDaemon = false
     ownedCoreSocketPath = null
-    if (ownedProcess && isLiveChild(ownedProcess)) ownedProcess.kill('SIGTERM')
-    ensureCoreDaemonRunning(false, 'startup')
+    if (ownedProcess && isLiveChild(ownedProcess)) {
+      try { ownedProcess.kill('SIGTERM') } catch (_) {}
+    }
+    // Reclaim stale/incompatible socket and spawn our bundled daemon
+    ensureCoreDaemonRunning(true, 'incompatible')
   }
   scheduleSocketReconnect(reason)
 }
@@ -2319,11 +2737,24 @@ function getIconPath(): string | undefined {
   const devIcon = path.join(__dirname, '../resources/icon.png')
   if (fs.existsSync(devIcon)) return devIcon
 
+  const distIcon = path.join(__dirname, '../dist/icon.png')
+  if (fs.existsSync(distIcon)) return distIcon
+
   // In packaged app
   try {
     const prodIcon = path.join(process.resourcesPath || '', 'icon.png')
     if (fs.existsSync(prodIcon)) return prodIcon
   } catch (_) {}
+
+  // Linux hicolor icon locations
+  for (const hicolorPath of [
+    '/usr/share/icons/hicolor/512x512/apps/orchestra.png',
+    '/usr/share/icons/hicolor/512x512/apps/orchestra-desktop.png',
+    '/usr/share/icons/hicolor/256x256/apps/orchestra.png',
+    '/usr/share/icons/hicolor/256x256/apps/orchestra-desktop.png'
+  ]) {
+    if (fs.existsSync(hicolorPath)) return hicolorPath
+  }
 
   return undefined
 }
@@ -2370,9 +2801,18 @@ function createWindow() {
     console.error(`[Renderer Failed Load] Code: ${errorCode}, Desc: ${errorDescription}, URL: ${validatedURL}`)
   })
 
+  mainWindow.webContents.on('did-start-loading', () => {
+    suspendNativePortalsForRendererReload()
+  })
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    resumeNativePortalsAfterRendererReload()
+  })
+
   // Prevent unhandled errors from crashing the app
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     console.error('Renderer process gone:', details.reason, details.exitCode)
+    suspendNativePortalsForRendererReload()
     if (details.reason !== 'clean-exit') {
       // Recreate the window
       createWindow()
@@ -2516,6 +2956,10 @@ app.whenReady().then(() => {
     if (acceptedRevision === null) return portalPresentationSnapshot(record, true)
 
     const mode = typeof value.mode === 'string' ? value.mode : 'live'
+    // Only the short canvas transition needs unthrottled compositor work.
+    // Snapshot/hidden portals can otherwise burn CPU/GPU indefinitely and
+    // make the entire desktop window unresponsive.
+    try { record.view.webContents.setBackgroundThrottling(mode !== 'transitioning') } catch { /* teardown race */ }
     const rawBounds = value.bounds && typeof value.bounds === 'object' ? value.bounds as Record<string, unknown> : record.bounds
     const canvasScale = clampPortalScale(value.canvasScale ?? value.scale ?? record.canvasScale)
     const safe = safePortalBounds({ ...rawBounds, scale: canvasScale })
@@ -2563,6 +3007,9 @@ app.whenReady().then(() => {
     if (snapshotMode && record.firstFrameReady) record.lifecycle = 'frozen'
     if (mode === 'live' && record.firstFrameReady && record.lifecycle === 'frozen') record.lifecycle = 'ready'
     const geometry = updatePortalPhysicalGeometry(record, safe.bounds, canvasScale, requestedVisible, logical)
+    if (mode === 'transitioning' && portalViewAlive(record)) {
+      try { record.view.webContents.invalidate() } catch { /* teardown race */ }
+    }
     if (presentationOrderChanged) applyPortalPresentationOrder()
     const presentation = portalPresentationSnapshot(record, false)
     emitPortalRecordEvent(record, 'portal:presentation', {
@@ -2720,6 +3167,19 @@ app.whenReady().then(() => {
     return { ...(await inspectPortal(record)), refsRevision: record.refsRevision }
   })
 
+  ipcMain.handle('portal:grab', async (_event, { portalId }) => {
+    const record = portals.get(String(portalId))
+    if (!record) throw new Error('Portal não encontrado')
+    return grabPortalElement(record)
+  })
+
+  ipcMain.handle('portal:grab-cancel', async (_event, { portalId }) => {
+    const record = portals.get(String(portalId))
+    if (!record || !portalViewAlive(record)) return { ok: false }
+    await record.view.webContents.executeJavaScript('globalThis.__orchestaElementPicker?.cancel?.(); true', true).catch(() => undefined)
+    return { ok: true }
+  })
+
   ipcMain.handle('portal:click', async (_event, { portalId, selector }) => {
     const record = portals.get(String(portalId))
     if (!record) throw new Error('Portal não encontrado')
@@ -2739,6 +3199,16 @@ app.whenReady().then(() => {
     // for its first compositor frame. That startup state is transient, not an
     // IPC failure: keep the stable placeholder without rejected-handler logs.
     try { return await screenshotPortal(record) } catch { return record.lastSnapshot || '' }
+  })
+
+  ipcMain.handle('clipboard:write-image', async (_event, { dataUrl }) => {
+    if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl) || dataUrl.length > 24 * 1024 * 1024) {
+      throw new Error('Imagem de clipboard inválida')
+    }
+    const image = nativeImage.createFromDataURL(dataUrl)
+    if (image.isEmpty()) throw new Error('Não foi possível ler a imagem anotada')
+    clipboard.writeImage(image)
+    return { ok: true, width: image.getSize().width, height: image.getSize().height }
   })
 
   ipcMain.handle('terminal:relay', async (_, { fromSessionId, toSessionId, message }) => {
@@ -2889,6 +3359,64 @@ app.whenReady().then(() => {
 
   ipcMain.handle('orchestra:invoke', async (_, { type, payload }) => {
     if (type === 'workspace.default-path') return process.cwd()
+    if (type === 'context.save_image') {
+      const dataUrl = payload && typeof payload === 'object' && typeof payload.dataUrl === 'string' ? payload.dataUrl : ''
+      const contextId = payload && typeof payload === 'object' && typeof payload.contextId === 'string' ? payload.contextId : ''
+      if (!/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl) || dataUrl.length > 4 * 1024 * 1024) {
+        throw new Error('Screenshot de contexto inválida')
+      }
+      const image = nativeImage.createFromDataURL(dataUrl)
+      if (image.isEmpty()) throw new Error('Não foi possível ler o screenshot do contexto')
+      const contextDirectory = path.join(app.getPath('temp'), 'orchestra-agent-context')
+      fs.mkdirSync(contextDirectory, { recursive: true })
+      const digest = createHash('sha256').update(contextId || dataUrl.slice(0, 256)).digest('hex').slice(0, 24)
+      const imagePath = path.join(contextDirectory, `${digest}.png`)
+      fs.writeFileSync(imagePath, image.toPNG())
+      return { ok: true, path: imagePath, ...image.getSize() }
+    }
+    if (type === 'workspace.read_image' || type === 'workspace.read_binary') {
+      try {
+        const filePath = payload && typeof payload === 'object' && typeof payload.path === 'string' ? payload.path : ''
+        const workspaceRoot = payload && typeof payload === 'object' && typeof payload.workspaceRoot === 'string' ? payload.workspaceRoot : ''
+        const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(workspaceRoot || process.cwd(), filePath)
+        if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+          const ext = path.extname(resolved).toLowerCase().replace('.', '')
+          const mimeTypes: Record<string, string> = {
+            png: 'image/png',
+            jpg: 'image/jpeg',
+            jpeg: 'image/jpeg',
+            gif: 'image/gif',
+            webp: 'image/webp',
+            svg: 'image/svg+xml',
+            ico: 'image/x-icon',
+            bmp: 'image/bmp',
+            avif: 'image/avif',
+            mp3: 'audio/mpeg',
+            wav: 'audio/wav',
+            ogg: 'audio/ogg',
+            mp4: 'video/mp4',
+            webm: 'video/webm',
+            pdf: 'application/pdf',
+          }
+          const mime = mimeTypes[ext] || 'application/octet-stream'
+          const bytes = fs.readFileSync(resolved)
+          const base64 = bytes.toString('base64')
+          const dataUrl = `data:${mime};base64,${base64}`
+          const stats = fs.statSync(resolved)
+          return {
+            ok: true,
+            dataUrl,
+            size: stats.size,
+            mime,
+            ext,
+            fileName: path.basename(resolved),
+            path: resolved,
+          }
+        }
+      } catch (err) {
+        console.warn('Reading image in main process failed:', err)
+      }
+    }
     await waitForCore()
     const requestGeneration = coreGeneration
     const sessionId = payload && typeof payload === 'object' && typeof payload.sessionId === 'string'

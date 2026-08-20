@@ -9,6 +9,7 @@ import { RecruitAgentModal } from './components/Modals/RecruitAgentModal'
 import { FilesDirectoryModal } from './components/Modals/FilesDirectoryModal'
 import { FloorModal } from './components/Modals/FloorModal'
 import { CommandPalette } from './components/Modals/CommandPalette'
+import { WorkspaceCreateModal } from './components/Modals/WorkspaceCreateModal'
 
 export const App: React.FC = () => {
   const {
@@ -22,7 +23,8 @@ export const App: React.FC = () => {
     isCommandPaletteOpen,
     isRecruitModalOpen,
     isFilesModalOpen,
-    isFloorModalOpen
+    isFloorModalOpen,
+    isWorkspaceModalOpen
   } = useWorkspaceStore()
 
   // Native browser portals sit above the renderer DOM. Keep them painted for
@@ -32,9 +34,9 @@ export const App: React.FC = () => {
   useEffect(() => {
     const portal = window.orchestra?.portal
     if (!portal?.suppress) return
-    const modalOpen = isCommandPaletteOpen || isRecruitModalOpen || isFilesModalOpen || isFloorModalOpen
+    const modalOpen = isCommandPaletteOpen || isRecruitModalOpen || isFilesModalOpen || isFloorModalOpen || isWorkspaceModalOpen
     void portal.suppress('modal', modalOpen).catch(() => undefined)
-  }, [isCommandPaletteOpen, isFilesModalOpen, isFloorModalOpen, isRecruitModalOpen])
+  }, [isCommandPaletteOpen, isFilesModalOpen, isFloorModalOpen, isRecruitModalOpen, isWorkspaceModalOpen])
 
   useEffect(() => {
     const portal = window.orchestra?.portal
@@ -46,10 +48,10 @@ export const App: React.FC = () => {
     let cancelled = false
     const load = async () => {
       try {
-        const workspaces = await window.orchestra?.invoke('workspace.list') as Array<{ id: string; name: string; path: string }>
+        const workspaces = await window.orchestra?.invoke('workspace.list') as Array<{ id: string; name: string; path: string; icon?: string; color?: string }>
         if (cancelled || !Array.isArray(workspaces)) return
         setWorkspaces(workspaces)
-        const activate = async (workspace: { id: string; name: string; path: string }) => {
+        const activate = async (workspace: { id: string; name: string; path: string; icon?: string; color?: string }) => {
           setActiveWorkspace(workspace)
           const storedFloors = await window.orchestra?.invoke('workspace.floor.list', { workspaceId: workspace.id }) as Array<{ id: string; name: string; branch: string; path: string; isLanding?: boolean }>
           if (Array.isArray(storedFloors) && storedFloors.length > 0) {
@@ -68,7 +70,7 @@ export const App: React.FC = () => {
           const defaultPath = await window.orchestra?.invoke('workspace.default-path') as string
           if (!cancelled && typeof defaultPath === 'string' && defaultPath) {
             const id = `ws_${crypto.randomUUID()}`
-            const workspace = { id, name: defaultPath.split('/').filter(Boolean).pop() || 'Workspace', path: defaultPath }
+            const workspace = { id, name: defaultPath.split('/').filter(Boolean).pop() || 'Workspace', path: defaultPath, icon: 'folder-kanban', color: '#2f91f5' }
             await window.orchestra?.invoke('workspace.save', workspace)
             if (!cancelled) {
               setWorkspaces([workspace])
@@ -108,6 +110,7 @@ export const App: React.FC = () => {
       <FilesDirectoryModal />
       <FloorModal />
       <CommandPalette />
+      <WorkspaceCreateModal />
     </div>
   )
 }
