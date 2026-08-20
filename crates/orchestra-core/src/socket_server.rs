@@ -3140,7 +3140,13 @@ mod tests {
         let session_id = format!("term_{}", uuid::Uuid::new_v4().simple());
         let database = Arc::new(Database::new(&database_path).expect("test database"));
         database
-            .save_workspace("ws", "Test workspace", &workspace_root.to_string_lossy())
+            .save_workspace(
+                "ws",
+                "Test workspace",
+                &workspace_root.to_string_lossy(),
+                "code",
+                "#2f91f5",
+            )
             .expect("save workspace");
         database
             .save_canvas_node(
