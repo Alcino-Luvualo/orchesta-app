@@ -2358,6 +2358,31 @@ impl SocketServer {
                 let commits = GitManager::get_log(&path.to_string_lossy(), limit)?;
                 Ok(json!({ "commits": commits }))
             }
+            "git.commit.show" => {
+                let path = Self::workspace_path(&payload, &db, false)?;
+                let hash = payload["hash"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Commit hash is required"))?;
+                let paths = payload["paths"]
+                    .as_array()
+                    .map(|values| {
+                        if values.len() > 64 {
+                            return Err(anyhow::anyhow!("Too many commit paths"));
+                        }
+                        values
+                            .iter()
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .map(str::to_string)
+                                    .ok_or_else(|| anyhow::anyhow!("Commit paths must be strings"))
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                GitManager::show_commit(&path.to_string_lossy(), hash, &paths)
+            }
             "git.stage" => {
                 let root = Self::workspace_root(&payload, &db)?;
                 let repo = WorkspaceManager::canonical_root(&root)?;

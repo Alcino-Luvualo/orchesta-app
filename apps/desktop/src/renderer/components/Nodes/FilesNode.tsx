@@ -69,6 +69,7 @@ type Worktree = { path: string; branch?: string; detached?: boolean }
 type ContentResult = { name: string; path: string; line?: number; snippet?: string }
 type Diagnostic = { severity: string; message: string; file?: string; line?: number; column?: number }
 type BlameLine = { line?: number; commit?: string; author?: string; authorTime?: string; summary?: string; content?: string }
+type CommitDetails = { hash: string; files: GitFile[]; diff: string; truncated?: boolean }
 type TreeRow = ReturnType<typeof flattenFileTree>[number]
 type Notice = { kind: 'success' | 'error' | 'info'; message: string }
 type ConfirmState = { title: string; message: string; action: () => Promise<void> }
@@ -218,6 +219,9 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const [diffText, setDiffText] = useState<{ working: string; staged: string }>({ working: '', staged: '' })
   const [selectedGitPath, setSelectedGitPath] = useState('')
   const [selectedCommitHash, setSelectedCommitHash] = useState('')
+  const [commitDetails, setCommitDetails] = useState<CommitDetails | null>(null)
+  const [commitDetailsLoading, setCommitDetailsLoading] = useState(false)
+  const [commitDetailsError, setCommitDetailsError] = useState<string | null>(null)
   const [contentResults, setContentResults] = useState<ContentResult[]>([])
   const [blameLines, setBlameLines] = useState<BlameLine[]>([])
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([])
@@ -244,6 +248,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
   const editorHostRef = useRef<HTMLDivElement>(null)
   const editorViewRef = useRef<EditorView | null>(null)
   const fileLoadGenerationRef = useRef(0)
+  const commitLoadGenerationRef = useRef(0)
   const saveFileRef = useRef<() => void>(() => undefined)
   const lastDiskContentRef = useRef('')
   const syncingDiskRef = useRef(false)
@@ -424,6 +429,33 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
     if (!changedFiles.length) { setSelectedGitPath(''); return }
     if (!selectedGitPath || !changedFiles.some((file) => file.path === selectedGitPath)) setSelectedGitPath(changedFiles[0].path)
   }, [changedFiles, selectedGitPath])
+
+  useEffect(() => {
+    const generation = ++commitLoadGenerationRef.current
+    if (viewMode !== 'graph' || !selectedCommitHash || !fileRoot || !projectPath) {
+      setCommitDetails(null)
+      setCommitDetailsError(null)
+      setCommitDetailsLoading(false)
+      return
+    }
+    setCommitDetails(null)
+    setCommitDetailsError(null)
+    setCommitDetailsLoading(true)
+    void invoke<CommitDetails>('git.commit.show', {
+      ...payloadBase,
+      path: relativeWorkspacePath(fileRoot, projectPath),
+      hash: selectedCommitHash
+    }).then((details) => {
+      if (generation !== commitLoadGenerationRef.current) return
+      setCommitDetails(details)
+    }).catch((reason) => {
+      if (generation !== commitLoadGenerationRef.current) return
+      setCommitDetailsError(errorMessage(reason, 'Não foi possível carregar as alterações deste commit.'))
+    }).finally(() => {
+      if (generation === commitLoadGenerationRef.current) setCommitDetailsLoading(false)
+    })
+    return () => { commitLoadGenerationRef.current += 1 }
+  }, [fileRoot, payloadBase, projectPath, selectedCommitHash, viewMode])
 
   const selectFile = useCallback(async (entry: FileTreeItem | { path: string; name: string; is_dir: false }) => {
     if (entry.is_dir || !fileRoot) return
@@ -915,7 +947,11 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
               <div className="graph-window" style={{ transform: `translateY(${graphWindow.start * graphWindow.rowHeight}px)` }}>{graphWindow.rows.map(({ commit, lane, laneCount, color }) => <button type="button" className={`graph-commit ${selectedCommitHash === commit.hash ? 'selected' : ''}`} style={{ '--lane': lane, '--lane-count': laneCount } as React.CSSProperties} key={commit.hash} role="option" aria-selected={selectedCommitHash === commit.hash} onClick={() => { setSelectedCommitHash(commit.hash); setHistoryTarget(commit.hash) }}><span className="graph-line" style={{ '--graph-color': color } as React.CSSProperties} /><span className="graph-commit-copy"><b>{commit.message}</b><small>{commit.hash.slice(0, 8)} · {commit.author || 'unknown'} · {commit.time || ''}</small></span>{commit.refs?.length ? <em>{commit.refs.join(' · ')}</em> : null}</button>)}</div>
               {commits.length === 0 && <div className="empty-state"><History className="icon" />Ainda não existem commits.</div>}
             </div>
-            {selectedCommit && <div className="commit-details"><div className="git-section-title"><span><GitCommitHorizontal className="icon" />Commit {selectedCommit.hash.slice(0, 8)}</span><small>{selectedCommit.parents?.length || 0} parent(s)</small></div><b>{selectedCommit.message}</b><p>{selectedCommit.author || 'Autor desconhecido'} · {selectedCommit.time || 'sem data'}</p>{selectedCommit.refs?.length ? <div className="commit-refs">{selectedCommit.refs.map((ref) => <span key={ref}>{ref}</span>)}</div> : null}<label>Target<input value={historyTarget} onChange={(event) => setHistoryTarget(event.target.value)} /></label></div>}
+            {selectedCommit && <div className="commit-details"><div className="git-section-title"><span><GitCommitHorizontal className="icon" />Commit {selectedCommit.hash.slice(0, 8)}</span><small>{selectedCommit.parents?.length || 0} parent(s)</small></div><b>{selectedCommit.message}</b><p>{selectedCommit.author || 'Autor desconhecido'} · {selectedCommit.time || 'sem data'}</p>{selectedCommit.refs?.length ? <div className="commit-refs">{selectedCommit.refs.map((ref) => <span key={ref}>{ref}</span>)}</div> : null}<label>Target<input value={historyTarget} onChange={(event) => setHistoryTarget(event.target.value)} /></label>
+              {commitDetailsLoading && <div className="commit-inspector-state" role="status"><LoaderCircle className="icon spin" />A carregar alterações…</div>}
+              {commitDetailsError && <div className="commit-inspector-state error" role="alert">{commitDetailsError}</div>}
+              {commitDetails && <div className="commit-inspector"><div className="commit-file-list">{commitDetails.files.map((file) => <div key={`${file.status}:${file.originalPath || ''}:${file.path}`}><i>{file.status}</i><span>{file.originalPath ? `${file.originalPath} → ${file.path}` : file.path}</span></div>)}{commitDetails.files.length === 0 && <div className="commit-inspector-state">Este commit não possui alterações de ficheiros.</div>}</div>{commitDetails.diff ? <pre className="git-diff-preview commit-diff"><code>{commitDetails.diff}</code></pre> : commitDetails.files.length > 0 ? <div className="commit-inspector-state">Sem diff textual para este commit.</div> : null}{commitDetails.truncated && <small>Diff limitado a 4 MiB.</small>}</div>}
+            </div>}
             <div className="git-graph-actions">
               <div className="git-action-row"><input value={branchDraft} onChange={(event) => setBranchDraft(event.target.value)} placeholder="nova branch" aria-label="Nome da nova branch" /><button type="button" className="compact-action" disabled={!branchDraft.trim() || Boolean(gitBusy)} onClick={() => { void runGitAction('Branch criada', 'git.branch.create', { name: branchDraft.trim(), startPoint: selectedCommitHash || undefined, checkout: false }); setBranchDraft('') }}><GitBranch className="icon" />Criar</button><select value={branchToDelete} onChange={(event) => setBranchToDelete(event.target.value)} aria-label="Branch para eliminar"><option value="">Eliminar branch…</option>{deletableBranches.map((branch) => <option value={branch.name} key={branch.name}>{branch.name}</option>)}</select><button type="button" className="compact-action danger" disabled={!branchToDelete || Boolean(gitBusy)} onClick={() => { const branch = deletableBranches.find((item) => item.name === branchToDelete); if (branch) deleteBranch(branch) }}><Trash2 className="icon" />Apagar</button></div>
               <div className="git-action-row"><input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder="nova tag" aria-label="Nome da nova tag" /><button type="button" className="compact-action" disabled={!tagDraft.trim() || Boolean(gitBusy)} onClick={() => { void runGitAction('Tag criada', 'git.tag.create', { name: tagDraft.trim(), target: selectedCommitHash || undefined }); setTagDraft('') }}><Tag className="icon" />Tag</button><select value={tagToDelete} onChange={(event) => setTagToDelete(event.target.value)} aria-label="Tag para eliminar"><option value="">Eliminar tag…</option>{tagRefs.map((ref) => <option value={ref.name} key={ref.name}>{ref.name}</option>)}</select><button type="button" className="compact-action danger" disabled={!tagToDelete || Boolean(gitBusy)} onClick={() => { const ref = tagRefs.find((item) => item.name === tagToDelete); if (ref) deleteTag(ref) }}><Trash2 className="icon" />Apagar tag</button></div>

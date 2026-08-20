@@ -248,6 +248,7 @@ if (!filesNodeSource.includes('setSelectedFilePath(joinWorkspacePath(projectPath
 if (filesNodeSource.includes("git.branch.delete', { name: currentBranch") || !filesNodeSource.includes('filterDeletableBranches')) throw new Error('Current branch delete guard regressed')
 if (filesNodeSource.includes('</span>{refs.map((ref)') || filesNodeSource.includes('stashes[0] &&')) throw new Error('Git refs/stashes lost compact selection')
 if (!filesNodeSource.includes('stashTarget') || !filesNodeSource.includes('git.create_floor')) throw new Error('Worktree/stash controls lost real selection handlers')
+if (!filesNodeSource.includes("'git.commit.show'") || !filesNodeSource.includes('commitLoadGenerationRef') || !filesNodeSource.includes('commitDetailsLoading') || !filesNodeSource.includes('commitDetailsError')) throw new Error('Git commit inspector lost loading/error/cancelable detail retrieval')
 if (!filesNodeSource.includes('useModalA11y') || !filesNodeSource.includes('ref={confirmRef}')) throw new Error('File tree destructive confirmation lost focus trapping')
 const canvasSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CanvasArea.tsx'), 'utf8')
 const browserSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/BrowserNode.tsx'), 'utf8')
