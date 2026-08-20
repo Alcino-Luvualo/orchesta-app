@@ -19,7 +19,7 @@ import { TerminalBlockList } from './TerminalBlockList'
 import { TerminalBlockStore } from './terminalBlocks'
 import { detectTerminalFileReferences, osc52Response, parseOsc52, readTerminalSecuritySettings, sanitizeTerminalUrl, TerminalSecuritySettings, writeTerminalSecuritySettings } from './terminalSecurity'
 import { getTerminalTransformScale, isIdentityTerminalScale, mapTerminalPointerToLayout } from './terminalGeometry'
-import { DEFAULT_TERMINAL_KEYBOARD_PROTOCOL, isDirectInteractiveTerminalCommand, isMultilineEnter, isNativeEnterData, multilineEnterPayload, TerminalKeyboardProtocol } from './terminalInput'
+import { DEFAULT_TERMINAL_KEYBOARD_PROTOCOL, isDirectInteractiveTerminalCommand, isMultilineEnter, isNativeEnterData, multilineEnterPayload, terminalPastePayload, TerminalKeyboardProtocol } from './terminalInput'
 
 type TerminalInteractionMode =
   | 'shell_prompt'
@@ -438,19 +438,29 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
       if (outputFrameRef.current === null) outputFrameRef.current = requestAnimationFrame(flushOutput)
     }
 
+    let inputWriteInFlight = false
     const flushInput = () => {
       inputFrameRef.current = null
-      if (!sessionReadyRef.current || inputQueueRef.current.length === 0) return
+      if (!sessionReadyRef.current || inputWriteInFlight || inputQueueRef.current.length === 0) return
       const text = inputQueueRef.current.join('')
       inputQueueRef.current = []
+      inputWriteInFlight = true
+      let continueDraining = true
       window.orchestra?.invoke('terminal.input', { sessionId: id, data: text }).then((result) => {
         const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
-        if (status === 'not_ready' || status === 'not_running') inputQueueRef.current.unshift(text)
+        if (status === 'not_ready' || status === 'not_running') {
+          inputQueueRef.current.unshift(text)
+          continueDraining = false
+        }
       }).catch(() => {
         // Restore the exact ordered chunk so a transient IPC failure does not
         // lose interactive-program input. It will be retried on the next
         // input event or after the session becomes ready again.
         inputQueueRef.current.unshift(text)
+        continueDraining = false
+      }).finally(() => {
+        inputWriteInFlight = false
+        if (continueDraining && sessionReadyRef.current && inputQueueRef.current.length > 0 && inputFrameRef.current === null) scheduleInput()
       })
     }
     const scheduleInput = () => {
@@ -588,10 +598,13 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
     window.addEventListener('blur', windowBlur)
     const pasteGuard = (event: ClipboardEvent) => {
       const text = event.clipboardData?.getData('text/plain') || ''
-      if (!/[\r\n]/.test(text) || term.modes.bracketedPasteMode) return
+      if (!text) return
+      // Own the browser paste path completely. Letting xterm handle the same
+      // event as this listener would duplicate content or add a second pair of
+      // bracketed-paste delimiters.
       event.preventDefault()
       event.stopImmediatePropagation()
-      queueInput(`\u001b[200~${text.replace(/\r\n?/g, '\n')}\u001b[201~`)
+      queueInput(terminalPastePayload(text, term.modes.bracketedPasteMode))
     }
     term.textarea?.addEventListener('paste', pasteGuard, true)
     const forceLocalSelection = (event: MouseEvent) => {

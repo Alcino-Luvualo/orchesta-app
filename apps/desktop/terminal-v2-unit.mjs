@@ -21,7 +21,8 @@ import {
   modifiedEnterSequence,
   multilineEnterSequence,
   shellMultilineEnterSequence,
-  multilineEnterPayload
+  multilineEnterPayload,
+  terminalPastePayload
 } from './src/renderer/components/Nodes/terminalInput.ts'
 import {
   getTerminalTransformScale,
@@ -128,6 +129,26 @@ function testNativeTerminalMultilineKeys() {
   assert(!isDirectInteractiveTerminalCommand('env FOO=1 bash -i'), 'wrapped shell launch was incorrectly classified as interactive')
 }
 
+function testTerminalPasteContract() {
+  const rich = 'ação 🌍\r\n\r\n\tlinha\rESC-like: [200~inside[201~'
+  const normalized = 'ação 🌍\n\n\tlinha\nESC-like: [200~inside[201~'
+  assert(terminalPastePayload(rich, false) === normalized, 'plain paste lost Unicode, tabs, blank lines or escape-like content')
+  assert(
+    terminalPastePayload(rich, true) === `[200~${normalized}[201~`,
+    'bracketed paste did not add exactly one outer frame'
+  )
+  assert(!terminalPastePayload('no-submit', false).endsWith('\r'), 'plain paste appended Enter')
+  assert(!terminalPastePayload('no-submit', true).endsWith('\r'), 'bracketed paste appended Enter')
+
+  for (const bytes of [1024, 64 * 1024, 256 * 1024]) {
+    const input = 'x'.repeat(bytes)
+    assert(terminalPastePayload(input, false) === input, `plain ${bytes}-byte paste changed content`)
+    const framed = terminalPastePayload(input, true)
+    assert(framed.slice(6, -6) === input, `bracketed ${bytes}-byte paste duplicated or truncated content`)
+    assert(framed.length === input.length + 12, `bracketed ${bytes}-byte paste applied more than one frame`)
+  }
+}
+
 function writeTerminal(term, data) {
   return new Promise((resolve) => term.write(data, resolve))
 }
@@ -207,7 +228,8 @@ testBlocks()
 testVirtualBlocks()
 testParser()
 testNativeTerminalMultilineKeys()
+testTerminalPasteContract()
 await testTerminalMultilineRender()
 testTerminalPointerTransformCompensation()
 testControlledCanvasNodeChanges()
-console.log(JSON.stringify({ ok: true, suite: 'terminal-v2-unit', cases: 8 }))
+console.log(JSON.stringify({ ok: true, suite: 'terminal-v2-unit', cases: 9 }))

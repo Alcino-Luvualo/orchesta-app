@@ -17,6 +17,7 @@ use tracing::{error, info};
 // (base64 encoding adds roughly one third to the raw byte count).
 const MAX_SCROLLBACK_BYTES: usize = 4 * 1024 * 1024;
 const OUTPUT_QUEUE_CAPACITY: usize = 128;
+const INPUT_CHUNK_BYTES: usize = 16 * 1024;
 const ORCHESTRA_SKILL_RELATIVE_PATH: &str = "skills/orchestra-canvas/SKILL.md";
 const ORCHESTRA_PLUGIN_RELATIVE_PATH: &str = ".agents/plugins/plugins/orchestra";
 const PACKAGED_SKILL_RELATIVE_PATH: &str = "skills/orchestra-canvas/SKILL.md";
@@ -740,7 +741,12 @@ impl PtyManager {
             .get(session_id)
             .ok_or_else(|| anyhow::anyhow!("Terminal is not running"))?;
         let mut writer = session.writer.lock().unwrap();
-        writer.write_all(data)?;
+        // Keep one ordered writer lock for the entire logical input while
+        // feeding the PTY in bounded chunks. write_all provides kernel-level
+        // backpressure without interleaving another key/paste between chunks.
+        for chunk in data.chunks(INPUT_CHUNK_BYTES) {
+            writer.write_all(chunk)?;
+        }
         writer.flush()?;
         Ok(())
     }
@@ -950,7 +956,7 @@ mod tests {
     use super::{
         configured_portal_socket, derived_portal_socket_path, is_npm_process_environment,
         is_protected_environment, normalized_size, orchestra_bootstrap, resolve_skill_and_plugin,
-        PtyManager, MAX_SCROLLBACK_BYTES, SHELL_ENV_REMOVE,
+        PtyManager, INPUT_CHUNK_BYTES, MAX_SCROLLBACK_BYTES, SHELL_ENV_REMOVE,
     };
     use std::time::Duration;
 
@@ -971,6 +977,16 @@ mod tests {
         // Reattach responses base64-encode the raw PTY history. Leave room for
         // JSON framing and the protocol's eight-megabyte maximum frame.
         assert!(MAX_SCROLLBACK_BYTES * 4 / 3 < crate::protocol::MAX_FRAME_SIZE);
+    }
+
+    #[test]
+    fn input_chunk_size_is_bounded_and_byte_aligned() {
+        assert_eq!(INPUT_CHUNK_BYTES, 16 * 1024);
+        let bytes = "🌍".repeat(64 * 1024).into_bytes();
+        let chunks = bytes.chunks(INPUT_CHUNK_BYTES).collect::<Vec<_>>();
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|chunk| chunk.len() <= INPUT_CHUNK_BYTES));
+        assert_eq!(chunks.concat(), bytes);
     }
 
     #[test]
@@ -1197,6 +1213,90 @@ mod tests {
             .kill(&session_id)
             .expect("explicit PTY kill should succeed");
         assert!(manager.write_input(&session_id, b"x").is_err());
+        drop(output);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn large_raw_pty_input_arrives_exactly_once_without_submit() {
+        let root = std::env::temp_dir().join(format!(
+            "orchestra-paste-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).expect("temporary paste root should be creatable");
+        let manager = PtyManager::new();
+        let session_id = format!("paste_session_{}", uuid::Uuid::new_v4().simple());
+        let (mut output, _token) = manager
+            .spawn_terminal(
+                session_id.clone(),
+                Some(root.to_string_lossy().to_string()),
+                120,
+                40,
+                None,
+                Some("stty raw -echo; printf ORCHESTRA_RAW_READY; cat".to_string()),
+            )
+            .expect("raw PTY fixture should spawn");
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut startup = Vec::new();
+            while !startup
+                .windows(b"ORCHESTRA_RAW_READY".len())
+                .any(|window| window == b"ORCHESTRA_RAW_READY")
+            {
+                startup.extend_from_slice(
+                    &output
+                        .recv()
+                        .await
+                        .expect("raw PTY fixture closed during startup")
+                        .data,
+                );
+            }
+        })
+        .await
+        .expect("raw PTY fixture should announce readiness");
+        while output.try_recv().is_some() {}
+
+        let payloads = [
+            vec![b'a'; 1024],
+            "ação 🌍\tlinha\r\n\n\x1b[200~literal\x1b[201~"
+                .repeat(2000)
+                .into_bytes(),
+            "0123456789abcdef🌍\t\r\n\n\x1b[200~x\x1b[201~"
+                .repeat(7200)
+                .into_bytes(),
+        ];
+        assert!(payloads[1].len() >= 64 * 1024);
+        assert!(payloads[2].len() >= 256 * 1024);
+
+        for expected in payloads {
+            manager
+                .write_input(&session_id, &expected)
+                .expect("large PTY input should be written");
+            let received = tokio::time::timeout(Duration::from_secs(10), async {
+                let mut received = Vec::with_capacity(expected.len());
+                while received.len() < expected.len() {
+                    let chunk = output.recv().await.expect("raw PTY output remains open");
+                    received.extend_from_slice(&chunk.data);
+                }
+                received
+            })
+            .await
+            .expect("raw PTY fixture should echo within timeout");
+            assert_eq!(
+                received, expected,
+                "PTY input was duplicated or transformed"
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), output.recv())
+                    .await
+                    .is_err(),
+                "PTY emitted bytes not present in the paste"
+            );
+        }
+
+        manager
+            .kill(&session_id)
+            .expect("paste fixture should stop");
         drop(output);
         let _ = std::fs::remove_dir_all(root);
     }
