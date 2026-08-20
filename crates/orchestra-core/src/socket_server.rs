@@ -65,6 +65,18 @@ fn clean_agent_response(bytes: &[u8], prompt: &str, marker: &str) -> String {
         .to_string()
 }
 
+fn agent_completion_contract(message: &str, request_id: &str) -> (String, String) {
+    let marker = format!("<ORCHESTRA_DONE:{request_id}>");
+    // Never place the complete marker in the injected prompt. Many terminals
+    // echo input, and matching that echo would report completion before the
+    // agent processed anything. The peer is instead asked to concatenate the
+    // three literal pieces into the acknowledgement line.
+    let prompt = format!(
+        "{message}\n\nWhen you have completed this request, print one line by concatenating these three literal parts: <ORCHESTRA_DONE: + {request_id} + >"
+    );
+    (prompt, marker)
+}
+
 fn terminal_state_hint(snapshot: &[u8]) -> &'static str {
     // This is deliberately a hint, never proof that a TUI consumed input.
     // PTYs do not expose semantic application state, so clients must inspect
@@ -738,7 +750,18 @@ impl SocketServer {
             }
             "connection.list" => {
                 let session_id = Self::require_terminal_auth(&pty, &payload)?;
-                Ok(json!(db.connected_nodes(&session_id)?))
+                let live_sessions = pty.list_sessions().into_iter().collect::<BTreeSet<_>>();
+                let mut connections = db.connected_nodes(&session_id)?;
+                for connection in &mut connections {
+                    let terminal_peer = connection["targetKind"].as_str() == Some("terminal");
+                    let reachable = !terminal_peer
+                        || connection["nodeId"]
+                            .as_str()
+                            .is_some_and(|peer| live_sessions.contains(peer));
+                    connection["reachable"] = json!(reachable);
+                    connection["status"] = json!(if reachable { "running" } else { "stale" });
+                }
+                Ok(json!(connections))
             }
             "note.create" => {
                 let source = payload["sessionId"]
@@ -984,7 +1007,7 @@ impl SocketServer {
                     return Err(anyhow::anyhow!("Agent message exceeds 256 KiB"));
                 }
                 let wait = payload["wait"].as_bool().unwrap_or(false);
-                let timeout_secs = payload["timeoutSecs"].as_u64().unwrap_or(90).clamp(5, 600);
+                let timeout_secs = payload["timeoutSecs"].as_u64().unwrap_or(90).clamp(1, 600);
 
                 if !pty.authorizes(source, token) {
                     return Err(anyhow::anyhow!("Unauthorized terminal request"));
@@ -1033,11 +1056,7 @@ impl SocketServer {
                 drop(request_registry);
                 db.record_agent_request(&request_id, source, target, "ask", "queued", wait)?;
                 Self::emit_agent_status(&writer, &request_id, source, target, "queued").await;
-                let done_marker = format!("<ORCHESTRA_DONE:{}>", request_id);
-                let prompt = format!(
-                    "{}\n\nWhen you have completed this request, print {} on its own line.",
-                    message, done_marker
-                );
+                let (prompt, done_marker) = agent_completion_contract(message, &request_id);
                 let mut output = if wait {
                     Some(pty.subscribe(target).ok_or_else(|| {
                         anyhow::anyhow!("Could not subscribe to target terminal output")
@@ -1055,12 +1074,18 @@ impl SocketServer {
                     db.record_agent_request(&request_id, source, target, "ask", "failed", wait)?;
                     return Err(error);
                 }
-                db.record_agent_request(&request_id, source, target, "ask", "delivered", wait)?;
-                Self::emit_agent_status(&writer, &request_id, source, target, "delivering").await;
+                db.record_agent_request(&request_id, source, target, "ask", "pty_written", wait)?;
+                Self::emit_agent_status(&writer, &request_id, source, target, "pty_written").await;
 
                 if let Some(receiver) = output.as_mut() {
-                    Self::emit_agent_status(&writer, &request_id, source, target, "generating")
-                        .await;
+                    Self::emit_agent_status(
+                        &writer,
+                        &request_id,
+                        source,
+                        target,
+                        "awaiting_completion",
+                    )
+                    .await;
                     let deadline =
                         tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
                     let mut response = Vec::<u8>::new();
@@ -1090,7 +1115,12 @@ impl SocketServer {
                                 "requestId": request_id,
                                 "status": "timed_out",
                                 "response": clean_agent_response(&response, &prompt, &done_marker),
-                                "marker": done_marker
+                                "marker": done_marker,
+                                "ptyWritten": true,
+                                "delivered": false,
+                                "agentAcknowledged": false,
+                                "completed": false,
+                                "unverified": true
                             }));
                         }
 
@@ -1105,7 +1135,12 @@ impl SocketServer {
                                         "requestId": request_id,
                                         "status": "cancelled",
                                         "response": clean_agent_response(&response, &prompt, &done_marker),
-                                        "marker": done_marker
+                                        "marker": done_marker,
+                                        "ptyWritten": true,
+                                        "delivered": false,
+                                        "agentAcknowledged": false,
+                                        "completed": false,
+                                        "unverified": true
                                     }));
                                 }
                             }
@@ -1137,6 +1172,11 @@ impl SocketServer {
                                         "requestId": request_id,
                                         "status": "completed",
                                         "response": clean_response,
+                                        "ptyWritten": true,
+                                        "delivered": true,
+                                        "agentAcknowledged": true,
+                                        "completed": true,
+                                        "unverified": false
                                     }));
                                 }
                             }
@@ -1161,7 +1201,12 @@ impl SocketServer {
                                     "requestId": request_id,
                                     "status": "timed_out",
                                     "response": strip_ansi(&String::from_utf8_lossy(&response)).trim(),
-                                    "marker": done_marker
+                                    "marker": done_marker,
+                                    "ptyWritten": true,
+                                    "delivered": false,
+                                    "agentAcknowledged": false,
+                                    "completed": false,
+                                    "unverified": true
                                 }));
                             }
                             }
@@ -1170,10 +1215,15 @@ impl SocketServer {
                 }
 
                 requests.lock().await.remove(&request_id);
-                Self::emit_agent_status(&writer, &request_id, source, target, "delivered").await;
+                Self::emit_agent_status(&writer, &request_id, source, target, "unverified").await;
                 Ok(json!({
                     "requestId": request_id,
-                    "status": "delivered",
+                    "status": "unverified",
+                    "ptyWritten": true,
+                    "delivered": false,
+                    "agentAcknowledged": false,
+                    "completed": false,
+                    "unverified": true,
                     "fromSessionId": source,
                     "toSessionId": target
                 }))
@@ -1261,7 +1311,12 @@ impl SocketServer {
 
                 pty.send_prompt(target, message)?;
                 Ok(json!({
-                    "delivered": true,
+                    "status": "unverified",
+                    "ptyWritten": true,
+                    "delivered": false,
+                    "agentAcknowledged": false,
+                    "completed": false,
+                    "unverified": true,
                     "fromSessionId": source,
                     "toSessionId": target
                 }))
@@ -1740,6 +1795,16 @@ impl SocketServer {
             }
             "terminal.spawn.visible" => {
                 let source = Self::require_terminal_auth(&pty, &payload)?;
+                let connect_to = payload["connectTo"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let connection_requested = connect_to.is_some();
+                if connect_to.is_some_and(|target| target != "self") {
+                    return Err(anyhow::anyhow!(
+                        "VALIDATION_UNSUPPORTED_CONNECT_TARGET: --connect-to currently accepts only 'self'"
+                    ));
+                }
                 let context = db.canvas_node_context(&source)?.ok_or_else(|| {
                     anyhow::anyhow!("The source terminal is not represented on a canvas")
                 })?;
@@ -1817,15 +1882,21 @@ impl SocketServer {
                     let _ = pty.kill(&session_id);
                     return Err(error);
                 }
-                if payload["connectTo"].as_str() == Some("self") {
-                    if let Err(error) = db.save_canvas_edge(workspace_id, &json!({
-                        "id": format!("e_{}_{}", source, node["id"].as_str().unwrap_or_default()),
-                        "floorId": context["floorId"],
-                        "source": source,
-                        "target": node["id"],
-                        "label": "connected",
-                        "permissions": ["send_prompt", "receive_response", "share_context"]
-                    })) {
+                let permissions = ["send_prompt", "receive_response", "share_context"];
+                let edge_id = connection_requested
+                    .then(|| format!("e_{}_{}", source, node["id"].as_str().unwrap_or_default()));
+                if let Some(edge_id) = edge_id.as_deref() {
+                    if let Err(error) = db.save_canvas_edge(
+                        workspace_id,
+                        &json!({
+                            "id": edge_id,
+                            "floorId": context["floorId"],
+                            "source": source,
+                            "target": node["id"],
+                            "label": "connected",
+                            "permissions": permissions
+                        }),
+                    ) {
                         // The node is persisted before its cable because the
                         // edge validator needs both endpoints to exist. If
                         // the second half fails (bad floor, DB contention,
@@ -1860,9 +1931,18 @@ impl SocketServer {
                 }
                 Self::emit_terminal_state(&writer, &terminal_sessions, &session_id, Some(&view_id))
                     .await;
-                Ok(
-                    json!({ "sessionId": session_id, "token": terminal_token, "visible": true, "refreshRequired": false, "state": Self::terminal_state_payload(&terminal_session, Some(&view_id)) }),
-                )
+                Ok(json!({
+                    "sessionId": session_id,
+                    "token": terminal_token,
+                    "visible": true,
+                    "terminalCreated": true,
+                    "connectionRequested": connection_requested,
+                    "connectionCreated": edge_id.is_some(),
+                    "edgeId": edge_id,
+                    "permissions": if connection_requested { permissions.as_slice() } else { &[] },
+                    "refreshRequired": false,
+                    "state": Self::terminal_state_payload(&terminal_session, Some(&view_id))
+                }))
             }
             "terminal.spawn" => {
                 let session_id = payload["sessionId"]
@@ -2196,10 +2276,13 @@ impl SocketServer {
                 let _terminal_io_guard = terminal_io_lock.lock().await;
                 pty.write_input(target, &data)?;
                 Ok(json!({
-                    "inputWritten": true,
-                    "agentReceived": false,
-                    "agentProcessed": false,
-                    "semanticDelivery": "unknown",
+                    "status": "unverified",
+                    "ptyWritten": true,
+                    "delivered": false,
+                    "agentAcknowledged": false,
+                    "completed": false,
+                    "unverified": true,
+                    "semanticDelivery": "unverified",
                     "fromSessionId": source,
                     "toSessionId": target
                 }))
@@ -2921,9 +3004,33 @@ mod tests {
     async fn authenticated_health_operations_agree_and_reject_bad_tokens() {
         let socket_path = test_socket("auth-health");
         let database_path = socket_path.with_extension("db");
+        let workspace_root = std::env::temp_dir().join(format!(
+            "orchestra-spawn-workspace-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&workspace_root).expect("test workspace");
+        let session_id = format!("term_{}", uuid::Uuid::new_v4().simple());
         let database = Arc::new(Database::new(&database_path).expect("test database"));
+        database
+            .save_workspace("ws", "Test workspace", &workspace_root.to_string_lossy())
+            .expect("save workspace");
+        database
+            .save_canvas_node(
+                "ws",
+                &json!({
+                    "id": session_id,
+                    "floorId": null,
+                    "kind": "terminal",
+                    "x": 10,
+                    "y": 20,
+                    "width": 520,
+                    "height": 360,
+                    "properties": { "title": "Coordinator" }
+                }),
+            )
+            .expect("save source canvas node");
         let server = Arc::new(SocketServer::new(
-            database,
+            database.clone(),
             PtyManager::new(),
             TerminalSessionRegistry::new(),
         ));
@@ -2948,14 +3055,13 @@ mod tests {
             .expect("client token")
             .to_string();
 
-        let session_id = format!("term_{}", uuid::Uuid::new_v4().simple());
         let spawn = request(
             &mut stream,
             "terminal.spawn",
             json!({
                 "clientToken": client_token,
                 "sessionId": session_id,
-                "cwd": std::env::temp_dir(),
+                "cwd": workspace_root,
                 "command": "cat"
             }),
         )
@@ -3017,6 +3123,144 @@ mod tests {
             .as_str()
             .is_some_and(|error| error.starts_with("SESSION_NOT_REGISTERED:")));
 
+        let unsupported = request(
+            &mut stream,
+            "terminal.spawn.visible",
+            json!({
+                "clientToken": client_token,
+                "sessionId": session_id,
+                "token": terminal_token,
+                "cwd": ".",
+                "connectTo": "arbitrary-terminal"
+            }),
+        )
+        .await;
+        assert_eq!(unsupported["ok"], false, "{unsupported}");
+        assert!(unsupported["error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("VALIDATION_UNSUPPORTED_CONNECT_TARGET:")));
+        let agents_after_rejection = request(&mut stream, "agent.list", auth()).await;
+        assert_eq!(
+            agents_after_rejection["result"]
+                .as_array()
+                .expect("agents")
+                .len(),
+            1,
+            "unsupported target must not create an orphan terminal"
+        );
+
+        let connected_spawn = request(
+            &mut stream,
+            "terminal.spawn.visible",
+            json!({
+                "clientToken": client_token,
+                "sessionId": session_id,
+                "token": terminal_token,
+                "cwd": ".",
+                "command": "while IFS= read -r line; do case \"$line\" in *ask_completed*) break;; esac; done; printf '\\n<ORCHESTRA_DONE:ask_completed>\\n'; sleep 5",
+                "connectTo": "self"
+            }),
+        )
+        .await;
+        assert_eq!(connected_spawn["ok"], true, "{connected_spawn}");
+        assert_eq!(connected_spawn["result"]["terminalCreated"], true);
+        assert_eq!(connected_spawn["result"]["connectionCreated"], true);
+        assert!(connected_spawn["result"]["edgeId"].is_string());
+        assert_eq!(
+            connected_spawn["result"]["permissions"],
+            json!(["send_prompt", "receive_response", "share_context"])
+        );
+        let target_session = connected_spawn["result"]["sessionId"]
+            .as_str()
+            .expect("spawned session id")
+            .to_string();
+        let target_token = connected_spawn["result"]["token"]
+            .as_str()
+            .expect("spawned terminal token")
+            .to_string();
+
+        let connected = request(&mut stream, "connection.list", auth()).await;
+        assert_eq!(connected["ok"], true, "{connected}");
+        let edges = connected["result"].as_array().expect("connections");
+        assert_eq!(edges.len(), 1, "self spawn must create exactly one edge");
+        assert_eq!(edges[0]["nodeId"], target_session);
+        assert_eq!(edges[0]["reachable"], true);
+
+        let sent = request(
+            &mut stream,
+            "agent.message.send",
+            json!({
+                "clientToken": client_token,
+                "sessionId": session_id,
+                "token": terminal_token,
+                "agent": target_session,
+                "message": "hello"
+            }),
+        )
+        .await;
+        assert_eq!(sent["result"]["ptyWritten"], true, "{sent}");
+        assert_eq!(sent["result"]["delivered"], false, "{sent}");
+        assert_eq!(sent["result"]["unverified"], true, "{sent}");
+
+        let completed = request(
+            &mut stream,
+            "agent.ask",
+            json!({
+                "clientToken": client_token,
+                "sessionId": session_id,
+                "token": terminal_token,
+                "agent": target_session,
+                "message": "complete the fixture",
+                "requestId": "ask_completed",
+                "wait": true,
+                "timeoutSecs": 2
+            }),
+        )
+        .await;
+        assert_eq!(completed["result"]["status"], "completed", "{completed}");
+        assert_eq!(completed["result"]["agentAcknowledged"], true);
+        assert_eq!(completed["result"]["completed"], true);
+        assert_eq!(completed["result"]["unverified"], false);
+
+        let timed_out = request(
+            &mut stream,
+            "agent.ask",
+            json!({
+                "clientToken": client_token,
+                "sessionId": session_id,
+                "token": terminal_token,
+                "agent": target_session,
+                "message": "do not acknowledge this fixture",
+                "requestId": "ask_timeout",
+                "wait": true,
+                "timeoutSecs": 1
+            }),
+        )
+        .await;
+        assert_eq!(timed_out["result"]["status"], "timed_out", "{timed_out}");
+        assert_eq!(timed_out["result"]["ptyWritten"], true);
+        assert_eq!(timed_out["result"]["completed"], false);
+        assert_eq!(timed_out["result"]["unverified"], true);
+
+        let target_killed = request(
+            &mut stream,
+            "terminal.kill",
+            json!({
+                "clientToken": client_token,
+                "sessionId": target_session,
+                "token": target_token
+            }),
+        )
+        .await;
+        assert_eq!(target_killed["ok"], true, "{target_killed}");
+        let stale_connection = request(&mut stream, "connection.list", auth()).await;
+        assert_eq!(stale_connection["result"][0]["reachable"], false);
+        assert_eq!(stale_connection["result"][0]["status"], "stale");
+        let pruned_agents = request(&mut stream, "agent.list", auth()).await;
+        assert!(!pruned_agents["result"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["sessionId"] == target_session)));
+
         let killed = request(&mut stream, "terminal.kill", auth()).await;
         assert_eq!(killed["ok"], true, "{killed}");
         drop(stream);
@@ -3030,5 +3274,15 @@ mod tests {
         let _ = std::fs::remove_file(&database_path);
         let _ = std::fs::remove_file(database_path.with_extension("db-wal"));
         let _ = std::fs::remove_file(database_path.with_extension("db-shm"));
+        let _ = std::fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn completion_marker_is_not_present_in_the_injected_prompt() {
+        let (prompt, marker) = agent_completion_contract("Do the work", "ask_123");
+        assert_eq!(marker, "<ORCHESTRA_DONE:ask_123>");
+        assert!(!prompt.contains(&marker));
+        assert!(prompt.contains("<ORCHESTRA_DONE:"));
+        assert!(prompt.contains("ask_123"));
     }
 }
