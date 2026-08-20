@@ -95,8 +95,14 @@ if (portalCaptureStart < 0 || portalCaptureEnd < 0 || !portalCaptureSource.inclu
 if (portalCaptureSource.includes('capturePage({') || portalCaptureSource.includes('clip:') || portalCaptureSource.includes('scale: record.canvasScale')) {
   throw new Error('Portal snapshot capture applies viewport bounds or canvas scale twice')
 }
-if (!portalCaptureSource.includes('revealedForCapture') || !portalCaptureSource.includes('record.desiredVisible') || !portalCaptureSource.includes('nativePortalSuppressionReasons.size === 0')) {
-  throw new Error('First portal frame capture must wake a valid hidden compositor surface')
+if (!portalCaptureSource.includes('portalOffscreenWarmupBounds(record.physicalBounds)') || !portalCaptureSource.includes('captureWarmupActive') || !portalCaptureSource.includes('record.desiredVisible') || !portalCaptureSource.includes('nativePortalSuppressionReasons.size === 0')) {
+  throw new Error('First portal frame capture must wake the compositor outside the visible node bounds')
+}
+if (!portalCaptureSource.includes('record.view.setBounds(record.physicalBounds)') || !portalCaptureSource.includes('finally {')) {
+  throw new Error('First portal frame capture must restore the latest physical bounds on every exit')
+}
+if (!mainSource.includes('function portalDiagnostics') || !mainSource.includes('snapshotCurrent:') || !mainSource.includes('crashed:') || !mainSource.includes('attached:') || !portalCaptureSource.includes('captureNavigationGeneration')) {
+  throw new Error('Portal diagnostics lost lifecycle/attachment/snapshot consistency fields')
 }
 if (!mainSource.includes("ipcMain.handle('portal:screenshot'") || !mainSource.includes("if (!record) return ''") || !mainSource.includes("return record.lastSnapshot || ''")) {
   throw new Error('Portal screenshot startup retries must remain non-fatal')

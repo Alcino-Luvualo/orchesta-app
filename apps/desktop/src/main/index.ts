@@ -242,10 +242,13 @@ interface PortalRecord {
   // ResizeObserver is flushing. Keep a second monotonic token so an older
   // request from the same motion generation cannot restore stale geometry.
   boundsRevision: number
+  navigationGeneration: number
   lifecycle: 'creating' | 'loading' | 'ready' | 'frozen' | 'error' | 'crashed' | 'destroying' | 'destroyed'
+  attached: boolean
   firstFrameReady: boolean
   lastError: string | null
   lastSnapshot: string | null
+  lastSnapshotUrl: string | null
   // The cached DOM frame is only lossless while it is displayed at the same
   // logical viewport/scale it was captured at. Board zoom and node resize
   // otherwise stretch an old low-resolution image during motion.
@@ -258,6 +261,7 @@ interface PortalRecord {
   } | null
   snapshotRefreshTimer: ReturnType<typeof setTimeout> | null
   captureInFlight: Promise<string> | null
+  captureWarmupActive: boolean
   /** Requested canvas viewport in CSS/layout units (never native pixels). */
   logicalViewport: { width: number; height: number }
   /** Last geometry committed to the native WebContentsView. */
@@ -378,6 +382,15 @@ function portalBoundsEqual(left: PortalBounds, right: PortalBounds): boolean {
   return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height
 }
 
+function portalOffscreenWarmupBounds(bounds: PortalBounds): PortalBounds {
+  return {
+    x: -Math.max(32, bounds.width + 32),
+    y: -Math.max(32, bounds.height + 32),
+    width: bounds.width,
+    height: bounds.height
+  }
+}
+
 function portalZoomForScale(scale: number): number {
   // A ReactFlow scale changes the DOM page's rendered size. Native portal
   // bounds are physical pixels (`logical * scale`). Chromium's viewport is
@@ -434,7 +447,9 @@ function updatePortalPhysicalGeometry(
 
   if (portalViewAlive(record)) {
     if (boundsChanged) {
-      try { record.view.setBounds(bounds) } catch { /* WebContentsView teardown race */ }
+      try {
+        record.view.setBounds(record.captureWarmupActive ? portalOffscreenWarmupBounds(bounds) : bounds)
+      } catch { /* WebContentsView teardown race */ }
     }
     // Do not reset page zoom on every bounds packet. This was the source of
     // visible portal flicker and layout reflow while dragging the canvas.
@@ -454,10 +469,7 @@ function portalPresentationSnapshot(record: PortalRecord, stale: boolean) {
     portalId: record.id,
     instanceId: record.instanceId,
     state: record.lifecycle,
-    firstFrame: record.firstFrameReady,
-    visible: portalShouldBeVisible(record),
     desiredVisible: record.desiredVisible,
-    frozen: record.frozen,
     bounds: record.physicalBounds,
     physicalBounds: record.physicalBounds,
     logicalViewport: record.logicalViewport,
@@ -468,19 +480,36 @@ function portalPresentationSnapshot(record: PortalRecord, stale: boolean) {
     focused: record.presentationActive,
     interactive: record.presentationInteractive,
     zIndex: record.presentationZIndex,
-    error: record.lastError
+    error: record.lastError,
+    ...portalDiagnostics(record)
+  }
+}
+
+function portalDiagnostics(record: PortalRecord) {
+  let loading = record.lifecycle === 'creating' || record.lifecycle === 'loading'
+  try {
+    if (portalViewAlive(record)) loading = loading || record.view.webContents.isLoading()
+  } catch { /* WebContents teardown race */ }
+  return {
+    attached: record.attached && portalViewAlive(record),
+    loading,
+    firstFrame: record.firstFrameReady,
+    visible: portalShouldBeVisible(record),
+    frozen: record.frozen,
+    crashed: record.lifecycle === 'crashed',
+    snapshotAvailable: Boolean(record.lastSnapshot),
+    snapshotUrl: record.lastSnapshotUrl,
+    snapshotCurrent: Boolean(record.lastSnapshot && record.lastSnapshotUrl === record.url)
   }
 }
 
 function portalEnsureSnapshot(record: PortalRecord) {
   let title = record.title
-  let loading = record.lifecycle === 'creating' || record.lifecycle === 'loading'
   let canGoBack = false
   let canGoForward = false
   try {
     if (portalViewAlive(record)) {
       title = record.view.webContents.getTitle() || title
-      loading = loading || record.view.webContents.isLoading()
       canGoBack = record.view.webContents.navigationHistory.canGoBack()
       canGoForward = record.view.webContents.navigationHistory.canGoForward()
     }
@@ -490,7 +519,6 @@ function portalEnsureSnapshot(record: PortalRecord) {
     instanceId: record.instanceId,
     url: record.url,
     title,
-    loading,
     history: { canGoBack, canGoForward },
     canGoBack,
     canGoForward,
@@ -501,10 +529,9 @@ function portalEnsureSnapshot(record: PortalRecord) {
     canvasScale: record.canvasScale,
     state: record.lifecycle,
     lifecycle: record.lifecycle,
-    firstFrame: record.firstFrameReady,
-    visible: portalShouldBeVisible(record),
     generation: record.motionGeneration,
-    revision: record.boundsRevision
+    revision: record.boundsRevision,
+    ...portalDiagnostics(record)
   }
 }
 
@@ -748,13 +775,17 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
     lastWheelAt: 0,
     motionGeneration: 0,
     boundsRevision: 0,
+    navigationGeneration: 0,
     lifecycle: 'creating',
+    attached: false,
     firstFrameReady: false,
     lastError: null,
     lastSnapshot: null,
+    lastSnapshotUrl: null,
     lastSnapshotGeometry: null,
     snapshotRefreshTimer: null,
     captureInFlight: null,
+    captureWarmupActive: false,
     logicalViewport: { width: 1, height: 1 },
     physicalBounds: { x: 0, y: 0, width: 1, height: 1 },
     canvasScale: 1,
@@ -773,6 +804,7 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   record.lifecycle = 'loading'
   portals.set(portalId, record)
   mainWindow?.contentView.addChildView(view)
+  record.attached = Boolean(mainWindow && !mainWindow.isDestroyed())
   applyPortalVisibility(record)
   // before-mouse-event is the cancellable Electron path. It prevents
   // Chromium from scrolling/zooming the page before the board receives the
@@ -805,6 +837,7 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   view.webContents.on('did-start-loading', () => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
     record.lifecycle = 'loading'
+    record.navigationGeneration += 1
     record.firstFrameReady = false
     record.lastError = null
     clearPortalRefs(record)
@@ -849,8 +882,10 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   view.webContents.on('did-navigate-in-page', (_event, url) => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
     clearPortalRefs(record)
+    if (record.url !== url) record.navigationGeneration += 1
     record.url = url
     emitPortalRecordEvent(record, 'portal:navigation', { url, canGoBack: view.webContents.navigationHistory.canGoBack(), canGoForward: view.webContents.navigationHistory.canGoForward() })
+    schedulePortalSnapshot(record)
   })
   view.webContents.on('page-title-updated', (_event, title) => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
@@ -913,6 +948,7 @@ function destroyPortal(portalId: string) {
   // unwinding. Making the map removal first makes destruction idempotent.
   portals.delete(portalId)
   record.lifecycle = 'destroying'
+  record.attached = false
   record.desiredVisible = false
   record.firstFrameReady = false
   if (record.pinchResetTimer) clearTimeout(record.pinchResetTimer)
@@ -1259,15 +1295,18 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
     throw new Error('Geometria do portal ainda não está pronta para o primeiro frame')
   }
   const webContents = record.view.webContents
-  let revealedForCapture = false
+  const captureNavigationGeneration = record.navigationGeneration
+  let warmedOffscreen = false
 
   const acceptSnapshot = (bytes: Buffer): string | null => {
     if (bytes.length === 0) return null
     if (portals.get(record.id) !== record) throw new Error('Portal substituído durante a captura')
+    if (record.navigationGeneration !== captureNavigationGeneration) return null
     const snapshot = `data:image/png;base64,${bytes.toString('base64')}`
     record.firstFrameReady = true
     if (record.lifecycle === 'loading' || record.lifecycle === 'creating') record.lifecycle = record.frozen ? 'frozen' : 'ready'
     record.lastSnapshot = snapshot
+    record.lastSnapshotUrl = record.url
     record.lastSnapshotGeometry = {
       width: record.physicalBounds.width,
       height: record.physicalBounds.height,
@@ -1276,7 +1315,6 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
       canvasScale: record.canvasScale
     }
     applyPortalVisibility(record)
-    revealedForCapture = false
     return snapshot
   }
 
@@ -1284,36 +1322,35 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
     // Some Linux Chromium/GPU paths do not paint a WebContentsView while it
     // is hidden at creation time. A valid, desired-visible portal therefore
     // needs one compositor tick as a native child before capturePage/CDP can
-    // produce its first frame. This is scoped to first-frame capture only;
-    // normal modal/focus suppression and snapshot transitions remain hidden.
+    // produce its first frame. Warm it outside the parent content rectangle:
+    // the unpainted native surface must never cover the node's real bounds.
     if (!record.firstFrameReady && record.desiredVisible && record.presentationActive && nativePortalSuppressionReasons.size === 0) {
       try {
+        record.captureWarmupActive = true
+        record.view.setBounds(portalOffscreenWarmupBounds(record.physicalBounds))
         record.view.setVisible(true)
-        revealedForCapture = true
+        warmedOffscreen = true
+        await new Promise((resolve) => setTimeout(resolve, 40))
       } catch { /* teardown race */ }
     }
-    webContents.invalidate()
-  } catch {
-      // Repaint is best-effort; CDP can still capture a loaded document.
-  }
-
-  // capturePage() without a rectangle returns the exact compositor surface.
-  // Supplying logical bounds here makes Electron apply the canvas/page zoom a
-  // second time, shrinking the page into the upper-left corner of the DOM
-  // snapshot during pointer, drag and focus transitions.
-  try {
-    const image = await withPortalTimeout(webContents.capturePage(), 8000)
-    if (!image.isEmpty()) {
-      const snapshot = acceptSnapshot(image.toPNG())
-      if (snapshot) return snapshot
+    try { webContents.invalidate() } catch { /* CDP may still capture a loaded document */ }
+    // capturePage() without a rectangle returns the exact compositor surface.
+    // Supplying logical bounds here makes Electron apply the canvas/page zoom a
+    // second time, shrinking the page into the upper-left corner of the DOM
+    // snapshot during pointer, drag and focus transitions.
+    try {
+      const image = await withPortalTimeout(webContents.capturePage(), 8000)
+      if (!image.isEmpty()) {
+        const snapshot = acceptSnapshot(image.toPNG())
+        if (snapshot) return snapshot
+      }
+    } catch {
+      // CDP can still capture the current surface when native capture is not
+      // ready yet (for example during the first compositor frame).
     }
-  } catch {
-    // CDP can still capture the current surface when native capture is not
-    // ready yet (for example during the first compositor frame).
-  }
 
-  let debuggerAttachedHere = false
-  try {
+    let debuggerAttachedHere = false
+    try {
       if (!webContents.debugger.isAttached()) {
         webContents.debugger.attach('1.3')
         debuggerAttachedHere = true
@@ -1342,9 +1379,17 @@ async function capturePortalSnapshotNow(record: PortalRecord): Promise<string> {
       } catch { /* WebContents teardown race */ }
     }
 
-  if (revealedForCapture) applyPortalVisibility(record)
-  if (record.lastSnapshot) return record.lastSnapshot
-  throw new Error('O compositor do portal ainda não tem um primeiro frame')
+    if (record.lastSnapshot && record.lastSnapshotUrl === record.url) return record.lastSnapshot
+    throw new Error('O compositor do portal ainda não tem um primeiro frame')
+  } finally {
+    if (warmedOffscreen || record.captureWarmupActive) {
+      record.captureWarmupActive = false
+      if (portals.get(record.id) === record && portalViewAlive(record)) {
+        try { record.view.setBounds(record.physicalBounds) } catch { /* teardown race */ }
+        applyPortalVisibility(record)
+      }
+    }
+  }
 }
 
 function screenshotPortal(record: PortalRecord): Promise<string> {
@@ -1649,10 +1694,7 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
       url: record.url,
       partition: record.partition,
       bounds: record.bounds,
-      visible: portalShouldBeVisible(record),
-      frozen: record.frozen,
       state: record.lifecycle,
-      firstFrame: record.firstFrameReady,
       logicalViewport: record.logicalViewport,
       physicalBounds: record.physicalBounds,
       canvasScale: record.canvasScale,
@@ -1661,7 +1703,8 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
       zIndex: record.presentationZIndex,
       generation: record.motionGeneration,
       revision: record.boundsRevision,
-      zoomFactor: record.zoomFactor
+      zoomFactor: record.zoomFactor,
+      ...portalDiagnostics(record)
     }))
   }
 
