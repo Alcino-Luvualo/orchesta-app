@@ -264,8 +264,12 @@ impl GitManager {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
                 .collect::<Vec<_>>();
+            let hash = parts[0].trim();
+            if hash.is_empty() || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                continue;
+            }
             commits.push(serde_json::json!({
-                "hash": parts[0],
+                "hash": hash,
                 "parents": parts[1].split_whitespace().filter(|value| !value.is_empty()).collect::<Vec<_>>(),
                 "author": parts[2],
                 "time": parts[3],
@@ -892,12 +896,16 @@ mod tests {
                 .as_bool()
                 .unwrap_or(false)
         );
-        assert!(
-            GitManager::get_log(&repo.to_string_lossy(), 10)
-                .expect("log")
-                .len()
-                >= 2
-        );
+        let log = GitManager::get_log(&repo.to_string_lossy(), 10).expect("log");
+        assert!(log.len() >= 2);
+        for commit in log {
+            GitManager::show_commit(
+                &repo.to_string_lossy(),
+                commit["hash"].as_str().expect("log hash"),
+                &[],
+            )
+            .expect("every log hash must be directly inspectable");
+        }
         fs::remove_dir_all(repo).expect("remove repository");
     }
 

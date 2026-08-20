@@ -344,6 +344,19 @@ async function main() {
     if (read.content !== 'Olá, Orchestra\n') throw new Error('Workspace UTF-8 round trip failed')
     await client.call('git.stage', { workspaceId, workspaceRoot, file: 'hello.txt' })
     await client.call('git.commit', { workspaceId, workspaceRoot, path: '.', message: 'e2e file' })
+    const committedLog = await client.call('git.log', { workspaceId, workspaceRoot, path: '.', limit: 2 })
+    const committedHash = committedLog.commits?.find((commit) => commit.message === 'e2e file')?.hash
+    if (!committedHash) throw new Error('Git log did not return the E2E commit')
+    const committedDetails = await client.call('git.commit.show', { workspaceId, workspaceRoot, path: '.', hash: committedHash })
+    if (!committedDetails.files?.some((file) => file.path === 'hello.txt') || !committedDetails.diff?.includes('Olá, Orchestra')) {
+      throw new Error('Git commit inspector did not return the selected commit changes')
+    }
+    try {
+      await client.call('git.commit.show', { workspaceId, workspaceRoot, path: '.', hash: 'HEAD;touch-pwned' })
+      throw new Error('Git commit inspector accepted an unsafe hash')
+    } catch (error) {
+      if (!String(error.message).match(/hash|invalid/i)) throw error
+    }
     try {
       await client.call('workspace.read_file', { workspaceId, workspaceRoot, path: '../outside.txt' })
       throw new Error('Workspace path traversal was accepted')
@@ -397,7 +410,7 @@ async function main() {
     // connected-agent skill.
     const redactionProbe = 'e2e-super-secret-token'
     const rejected = runCli(['connections'], 'e2e_terminal', redactionProbe, { expectFailure: true })
-    if (!/unauthorized/i.test(rejected) || rejected.includes(redactionProbe)) {
+    if (!/(?:AUTH_INVALID|unauthorized)/i.test(rejected) || rejected.includes(redactionProbe)) {
       throw new Error('CLI authentication failure was not safely rejected/redacted')
     }
 
@@ -820,7 +833,7 @@ async function main() {
       const cancellationEventIndex = client.events.length
       const pendingAsk = client.call('agent.ask', { sessionId: 'e2e_source', token: sourceToken, agent: 'e2e_target', message: 'sleep 5', wait: true, timeoutSecs: 20, requestId })
       mark('ask sent')
-      await waitForEvent(client, (event) => event.type === 'agent.request.progress' && event.payload?.requestId === requestId && ['delivering', 'generating'].includes(event.payload?.status), cancellationEventIndex)
+      await waitForEvent(client, (event) => event.type === 'agent.request.progress' && event.payload?.requestId === requestId && ['pty_written', 'awaiting_completion'].includes(event.payload?.status), cancellationEventIndex)
       await client.call('agent.request.cancel', { sessionId: 'e2e_source', token: sourceToken, requestId })
       const cancelled = await pendingAsk
       if (cancelled.status !== 'cancelled') throw new Error(`Agent cancellation returned ${cancelled.status}`)
