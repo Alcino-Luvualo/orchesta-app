@@ -2038,25 +2038,16 @@ function ensureCoreDaemonRunning(forceSpawn = false, reason: 'startup' | 'refuse
 
   const sockPath = getSocketPath()
   const socketExists = fs.existsSync(sockPath)
-  let socketClaimed = !socketExists
 
   if (socketExists) {
     if (!forceSpawn) return false
 
     // An incompatible peer is connected and therefore not ours. Never try to
-    // replace it. A refused UNIX socket, on the other hand, has no listener;
-    // removing only the stale pathname lets our daemon bind without touching
-    // any external process.
+    // replace it. For an explicitly refused endpoint, start the core and let
+    // its inode-checked bind path decide whether the socket is truly stale.
+    // Keeping unlink ownership in one process closes the probe/unlink race
+    // where two Desktop instances could each remove the other's new socket.
     if (reason !== 'refused' || ownsCoreDaemon) return false
-    try {
-      const stat = fs.statSync(sockPath)
-      if (!stat.isSocket()) return false
-      fs.unlinkSync(sockPath)
-      socketClaimed = true
-    } catch (error) {
-      console.warn('Could not reclaim a refused Orchestra socket:', error)
-      return false
-    }
   }
 
   const binPath = resolveCoreBinary()
@@ -2082,7 +2073,7 @@ function ensureCoreDaemonRunning(forceSpawn = false, reason: 'startup' | 'refuse
   })
   coreProcess = child
   ownsCoreDaemon = true
-  ownedCoreSocketPath = socketClaimed ? sockPath : null
+  ownedCoreSocketPath = sockPath
   coreSpawnInFlight = false
   child.unref()
   child.once('error', (error) => {
@@ -2304,7 +2295,6 @@ async function shutdownTerminalSessions() {
 
 function stopCoreDaemon() {
   const ownedProcess = coreProcess
-  const ownedSocket = ownedCoreSocketPath
   coreProcess = null
   coreSpawnInFlight = false
   ownsCoreDaemon = false

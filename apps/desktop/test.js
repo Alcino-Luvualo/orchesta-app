@@ -75,6 +75,17 @@ for (const [label, pattern] of authChecks) {
   if (!pattern.test(mainSource)) throw new Error(`Terminal/core regression guard missing: ${label}`)
 }
 
+const coreStartSource = mainSource.slice(
+  mainSource.indexOf('function ensureCoreDaemonRunning'),
+  mainSource.indexOf('\nfunction settleDisconnectedCore')
+)
+if (coreStartSource.includes('unlinkSync(') || coreStartSource.includes('removeSync(')) {
+  throw new Error('Desktop must delegate stale core socket recovery to the inode-checked daemon bind')
+}
+if (!coreStartSource.includes('ORCHESTRA_SOCKET: sockPath')) {
+  throw new Error('Desktop child core lost its exact instance socket')
+}
+
 const portalCaptureStart = mainSource.indexOf('async function capturePortalSnapshotNow')
 const portalCaptureEnd = mainSource.indexOf('\nfunction screenshotPortal', portalCaptureStart)
 const portalCaptureSource = mainSource.slice(portalCaptureStart, portalCaptureEnd)

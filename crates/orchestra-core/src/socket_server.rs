@@ -11,10 +11,12 @@ use anyhow::{anyhow, Result};
 use base64::Engine;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -97,6 +99,138 @@ struct PendingRequest {
 type RequestRegistry = Arc<Mutex<HashMap<String, PendingRequest>>>;
 type SubscriptionRegistry = Arc<Mutex<HashMap<String, (String, tokio::task::JoinHandle<()>)>>>;
 
+/// Removes only the pathname created by this exact listener. A replacement
+/// daemon may bind the same path after this listener closes, so path equality
+/// alone is not enough during shutdown.
+#[derive(Debug)]
+struct SocketOwnership {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+impl Drop for SocketOwnership {
+    fn drop(&mut self) {
+        let Ok(metadata) = std::fs::symlink_metadata(&self.path) else {
+            return;
+        };
+        if metadata.file_type().is_socket()
+            && metadata.dev() == self.device
+            && metadata.ino() == self.inode
+        {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Bind the control socket without ever unlinking a live daemon. A pathname is
+/// considered stale only when it is a socket owned by this uid, a connection
+/// is explicitly refused, and its device/inode still match immediately before
+/// removal. Timeouts and ambiguous I/O failures are treated as conflicts.
+async fn bind_control_socket(socket_path: &Path) -> Result<(UnixListener, SocketOwnership)> {
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    if let Ok(initial) = std::fs::symlink_metadata(socket_path) {
+        if !initial.file_type().is_socket() {
+            return Err(anyhow!(
+                "INSTANCE_CONFLICT: control socket path exists and is not a socket: {}",
+                socket_path.display()
+            ));
+        }
+        if initial.uid() != nix::unistd::Uid::current().as_raw() {
+            return Err(anyhow!(
+                "INSTANCE_CONFLICT: control socket is owned by another user: {}",
+                socket_path.display()
+            ));
+        }
+
+        match tokio::time::timeout(Duration::from_millis(500), UnixStream::connect(socket_path))
+            .await
+        {
+            Ok(Ok(stream)) => {
+                drop(stream);
+                return Err(anyhow!(
+                    "INSTANCE_CONFLICT: an Orchestra core already owns {}",
+                    socket_path.display()
+                ));
+            }
+            Ok(Err(error)) if error.kind() == ErrorKind::ConnectionRefused => {
+                let current = std::fs::symlink_metadata(socket_path).map_err(|error| {
+                    anyhow!(
+                        "SOCKET_STALE: socket changed while checking {}: {error}",
+                        socket_path.display()
+                    )
+                })?;
+                if !current.file_type().is_socket()
+                    || current.dev() != initial.dev()
+                    || current.ino() != initial.ino()
+                    || current.uid() != initial.uid()
+                {
+                    return Err(anyhow!(
+                        "INSTANCE_CONFLICT: control socket changed during stale recovery: {}",
+                        socket_path.display()
+                    ));
+                }
+                std::fs::remove_file(socket_path).map_err(|error| {
+                    anyhow!(
+                        "SOCKET_STALE: could not remove refused socket {}: {error}",
+                        socket_path.display()
+                    )
+                })?;
+            }
+            Ok(Err(error)) if error.kind() == ErrorKind::NotFound => {
+                // Another contender removed a stale pathname. The atomic bind
+                // below decides ownership; EADDRINUSE remains a clear conflict.
+            }
+            Ok(Err(error)) => {
+                return Err(anyhow!(
+                    "INSTANCE_CONFLICT: cannot prove socket {} is stale: {error}",
+                    socket_path.display()
+                ));
+            }
+            Err(_) => {
+                return Err(anyhow!(
+                    "INSTANCE_CONFLICT: timed out probing live socket {}",
+                    socket_path.display()
+                ));
+            }
+        }
+    }
+
+    let listener = UnixListener::bind(socket_path).map_err(|error| {
+        anyhow!(
+            "INSTANCE_CONFLICT: could not claim control socket {}: {error}",
+            socket_path.display()
+        )
+    })?;
+    let metadata = std::fs::symlink_metadata(socket_path)?;
+    let ownership = SocketOwnership {
+        path: socket_path.to_path_buf(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    Ok((listener, ownership))
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut terminate) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = terminate.recv() => {},
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
+}
+
 pub struct SocketServer {
     db: Arc<Database>,
     pty: PtyManager,
@@ -117,26 +251,27 @@ impl SocketServer {
     }
 
     pub async fn start(&self, socket_path: PathBuf) -> Result<()> {
-        if socket_path.exists() {
-            let _ = std::fs::remove_file(&socket_path);
-        }
-        if let Some(parent) = socket_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        self.run_until(socket_path, shutdown_signal()).await
+    }
 
-        let listener = UnixListener::bind(&socket_path)?;
-        // The socket is a local control plane. A user-readable socket is not
-        // sufficient: any local process could otherwise inject terminal
-        // input or read workspace data before a request token is checked.
-        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+    async fn run_until<F>(&self, socket_path: PathBuf, shutdown: F) -> Result<()>
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        let (listener, _ownership) = bind_control_socket(&socket_path).await?;
         info!(
             "Orchestra Rust Daemon listening on unix socket: {:?}",
             socket_path
         );
         let requests: RequestRegistry = Arc::new(Mutex::new(HashMap::new()));
+        tokio::pin!(shutdown);
 
         loop {
-            match listener.accept().await {
+            let accepted = tokio::select! {
+                accepted = listener.accept() => accepted,
+                _ = &mut shutdown => return Ok(()),
+            };
+            match accepted {
                 Ok((stream, _)) => {
                     if stream.peer_cred().ok().map(|cred| cred.uid())
                         != Some(nix::unistd::Uid::current().as_raw())
@@ -252,7 +387,7 @@ impl SocketServer {
                             "protocolVersion": PROTOCOL_VERSION,
                             "requestId": rid,
                             "ok": false,
-                            "error": "Unauthenticated client; call system.hello first"
+                            "error": "CLIENT_AUTH_INVALID: call system.hello on this connection first"
                         }),
                     )
                     .await?;
@@ -367,12 +502,21 @@ impl SocketServer {
     fn require_terminal_auth(pty: &PtyManager, payload: &Value) -> Result<String> {
         let session_id = payload["sessionId"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("AUTH_MISSING: missing sessionId"))?;
         let token = payload["token"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("AUTH_MISSING: missing terminal token"))?;
+        if pty.token_for(session_id).is_none() {
+            return Err(anyhow::anyhow!(
+                "SESSION_NOT_REGISTERED: terminal is not running"
+            ));
+        }
         if !pty.authorizes(session_id, token) {
-            return Err(anyhow::anyhow!("Unauthorized terminal request"));
+            return Err(anyhow::anyhow!(
+                "AUTH_INVALID: terminal token does not match this live session"
+            ));
         }
         Ok(session_id.to_string())
     }
@@ -575,6 +719,7 @@ impl SocketServer {
             })),
 
             "agent.list" => {
+                let source = Self::require_terminal_auth(&pty, &payload)?;
                 let sessions = pty.list_sessions();
                 let agents = sessions
                     .into_iter()
@@ -583,23 +728,17 @@ impl SocketServer {
                         json!({
                             "sessionId": session_id,
                             "connections": connections,
-                            "status": "running"
+                            "status": "running",
+                            "reachable": true,
+                            "authenticatedSource": source
                         })
                     })
                     .collect::<Vec<_>>();
                 Ok(json!(agents))
             }
             "connection.list" => {
-                let session_id = payload["sessionId"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing sessionId"))?;
-                let token = payload["token"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing terminal token"))?;
-                if !pty.authorizes(session_id, token) {
-                    return Err(anyhow::anyhow!("Unauthorized terminal request"));
-                }
-                Ok(json!(db.connected_nodes(session_id)?))
+                let session_id = Self::require_terminal_auth(&pty, &payload)?;
+                Ok(json!(db.connected_nodes(&session_id)?))
             }
             "note.create" => {
                 let source = payload["sessionId"]
@@ -1583,9 +1722,9 @@ impl SocketServer {
             "terminal.state" => {
                 let session_id = Self::require_terminal_auth(&pty, &payload)?;
                 let view_id = Self::terminal_view_id(client_token, &session_id);
-                let session = terminal_sessions
-                    .snapshot(&session_id)
-                    .ok_or_else(|| anyhow!("Terminal session is not registered"))?;
+                let session = terminal_sessions.snapshot(&session_id).ok_or_else(|| {
+                    anyhow!("SESSION_NOT_REGISTERED: logical terminal session is missing")
+                })?;
                 Ok(Self::terminal_state_payload(&session, Some(&view_id)))
             }
             "terminal.detach" => {
@@ -2646,5 +2785,250 @@ impl SocketServer {
 
             _ => Err(anyhow::anyhow!("Unknown message type: {}", msg_type)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener as StdUnixListener;
+    use tokio::sync::oneshot;
+
+    fn test_socket(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "orchestra-{label}-{}.sock",
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    #[tokio::test]
+    async fn normal_shutdown_and_restart_reuses_the_same_socket() {
+        let path = test_socket("restart");
+        let (listener, ownership) = bind_control_socket(&path).await.expect("first bind");
+        let mode = std::fs::symlink_metadata(&path)
+            .expect("socket metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        drop(listener);
+        drop(ownership);
+        assert!(!path.exists(), "owned socket should be removed on shutdown");
+
+        let (listener, ownership) = bind_control_socket(&path).await.expect("restart bind");
+        drop(listener);
+        drop(ownership);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn refused_stale_socket_is_recovered() {
+        let path = test_socket("stale");
+        let stale = StdUnixListener::bind(&path).expect("create stale socket");
+        drop(stale);
+        assert!(path.exists());
+
+        let (listener, ownership) = bind_control_socket(&path)
+            .await
+            .expect("recover stale socket");
+        assert!(UnixStream::connect(&path).await.is_ok());
+        drop(listener);
+        drop(ownership);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn second_core_fails_without_replacing_the_live_socket() {
+        let path = test_socket("conflict");
+        let (first_listener, first_ownership) =
+            bind_control_socket(&path).await.expect("first core binds");
+        let before = std::fs::symlink_metadata(&path).expect("first socket metadata");
+
+        let error = bind_control_socket(&path)
+            .await
+            .expect_err("second core must fail")
+            .to_string();
+        assert!(error.starts_with("INSTANCE_CONFLICT:"), "{error}");
+        let after = std::fs::symlink_metadata(&path).expect("live socket remains");
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        assert!(UnixStream::connect(&path).await.is_ok());
+
+        drop(first_listener);
+        drop(first_ownership);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_unlink_a_replacement_socket() {
+        let path = test_socket("replacement");
+        let (listener, ownership) = bind_control_socket(&path).await.expect("owned bind");
+        drop(listener);
+        std::fs::remove_file(&path).expect("simulate external stale recovery");
+        let replacement = StdUnixListener::bind(&path).expect("replacement bind");
+
+        drop(ownership);
+        assert!(path.exists(), "old owner must preserve replacement inode");
+
+        drop(replacement);
+        std::fs::remove_file(path).expect("remove replacement socket");
+    }
+
+    async fn request(stream: &mut UnixStream, message_type: &str, payload: Value) -> Value {
+        let request_id = format!("test_{}", uuid::Uuid::new_v4().simple());
+        let bytes = serde_json::to_vec(&json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "requestId": request_id,
+            "type": message_type,
+            "payload": payload
+        }))
+        .expect("serialize request");
+        stream
+            .write_all(&(bytes.len() as u32).to_be_bytes())
+            .await
+            .expect("write request length");
+        stream.write_all(&bytes).await.expect("write request");
+
+        loop {
+            let mut length = [0u8; 4];
+            stream
+                .read_exact(&mut length)
+                .await
+                .expect("read response length");
+            let mut response = vec![0u8; u32::from_be_bytes(length) as usize];
+            stream
+                .read_exact(&mut response)
+                .await
+                .expect("read response");
+            let response: Value = serde_json::from_slice(&response).expect("parse response");
+            if response["requestId"].as_str() == Some(request_id.as_str()) {
+                return response;
+            }
+        }
+    }
+
+    async fn connect_when_ready(path: &Path) -> UnixStream {
+        for _ in 0..100 {
+            if let Ok(stream) = UnixStream::connect(path).await {
+                return stream;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("server did not bind {}", path.display());
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_operations_agree_and_reject_bad_tokens() {
+        let socket_path = test_socket("auth-health");
+        let database_path = socket_path.with_extension("db");
+        let database = Arc::new(Database::new(&database_path).expect("test database"));
+        let server = Arc::new(SocketServer::new(
+            database,
+            PtyManager::new(),
+            TerminalSessionRegistry::new(),
+        ));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = server.clone();
+            let socket_path = socket_path.clone();
+            tokio::spawn(async move {
+                server
+                    .run_until(socket_path, async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await
+            })
+        };
+
+        let mut stream = connect_when_ready(&socket_path).await;
+        let hello = request(&mut stream, "system.hello", json!({})).await;
+        assert_eq!(hello["ok"], true);
+        let client_token = hello["result"]["clientToken"]
+            .as_str()
+            .expect("client token")
+            .to_string();
+
+        let session_id = format!("term_{}", uuid::Uuid::new_v4().simple());
+        let spawn = request(
+            &mut stream,
+            "terminal.spawn",
+            json!({
+                "clientToken": client_token,
+                "sessionId": session_id,
+                "cwd": std::env::temp_dir(),
+                "command": "cat"
+            }),
+        )
+        .await;
+        assert_eq!(spawn["ok"], true, "{spawn}");
+        let terminal_token = spawn["result"]["token"]
+            .as_str()
+            .expect("terminal token")
+            .to_string();
+        let auth = || {
+            json!({
+                "clientToken": client_token,
+                "sessionId": session_id,
+                "token": terminal_token
+            })
+        };
+
+        let state = request(&mut stream, "terminal.state", auth()).await;
+        assert_eq!(state["ok"], true, "{state}");
+        assert_eq!(state["result"]["sessionId"], session_id);
+
+        let connections = request(&mut stream, "connection.list", auth()).await;
+        assert_eq!(connections["ok"], true, "{connections}");
+        assert!(connections["result"].is_array());
+
+        let agents = request(&mut stream, "agent.list", auth()).await;
+        assert_eq!(agents["ok"], true, "{agents}");
+        assert!(agents["result"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["sessionId"] == session_id)));
+
+        let invalid = request(
+            &mut stream,
+            "terminal.state",
+            json!({
+                "clientToken": client_token,
+                "sessionId": session_id,
+                "token": "invalid-token"
+            }),
+        )
+        .await;
+        assert_eq!(invalid["ok"], false);
+        assert!(invalid["error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("AUTH_INVALID:")));
+
+        let stale = request(
+            &mut stream,
+            "terminal.state",
+            json!({
+                "clientToken": client_token,
+                "sessionId": "missing-session",
+                "token": "invalid-token"
+            }),
+        )
+        .await;
+        assert_eq!(stale["ok"], false);
+        assert!(stale["error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("SESSION_NOT_REGISTERED:")));
+
+        let killed = request(&mut stream, "terminal.kill", auth()).await;
+        assert_eq!(killed["ok"], true, "{killed}");
+        drop(stream);
+        shutdown_tx.send(()).expect("request shutdown");
+        server_task
+            .await
+            .expect("server task")
+            .expect("server shutdown");
+        assert!(!socket_path.exists());
+
+        let _ = std::fs::remove_file(&database_path);
+        let _ = std::fs::remove_file(database_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(database_path.with_extension("db-shm"));
     }
 }
