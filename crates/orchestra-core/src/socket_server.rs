@@ -103,6 +103,31 @@ fn terminal_state_hint(snapshot: &[u8]) -> &'static str {
     }
 }
 
+fn terminal_command_argv(payload: &Value) -> Result<Option<Vec<String>>> {
+    let Some(values) = payload["argv"].as_array() else {
+        return Ok(None);
+    };
+    if values.is_empty() || values.len() > 65 {
+        return Err(anyhow::anyhow!("Terminal argv must contain 1 to 65 items"));
+    }
+    let argv = values
+        .iter()
+        .map(|value| {
+            let value = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Terminal argv items must be strings"))?;
+            if value.len() > 4096 || value.contains('\0') {
+                return Err(anyhow::anyhow!("Terminal argv item is invalid"));
+            }
+            Ok(value.to_string())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if argv[0].is_empty() || argv[0].starts_with('-') {
+        return Err(anyhow::anyhow!("Terminal executable cannot start with '-'"));
+    }
+    Ok(Some(argv))
+}
+
 struct PendingRequest {
     source_session_id: String,
     cancel: watch::Sender<bool>,
@@ -1826,6 +1851,7 @@ impl SocketServer {
                     .as_str()
                     .filter(|value| !value.trim().is_empty())
                     .map(str::to_string);
+                let command_argv = terminal_command_argv(&payload)?;
                 let (receiver, terminal_token) = pty.spawn_terminal(
                     session_id.clone(),
                     Some(cwd.clone()),
@@ -1833,6 +1859,7 @@ impl SocketServer {
                     rows,
                     None,
                     command,
+                    command_argv,
                 )?;
                 match terminal_sessions.create(
                     session_id.clone(),
@@ -1978,6 +2005,7 @@ impl SocketServer {
                     .filter(|value| !value.trim().is_empty())
                     .filter(|value| *value != "zsh" && *value != "bash")
                     .map(str::to_string);
+                let command_argv = terminal_command_argv(&payload)?;
 
                 let session_cwd = cwd.clone();
                 let (receiver, terminal_token) = pty.spawn_terminal(
@@ -1987,6 +2015,7 @@ impl SocketServer {
                     rows,
                     env_vars,
                     command_line,
+                    command_argv,
                 )?;
                 let view_id = Self::terminal_view_id(client_token, &session_id);
                 match terminal_sessions.create(

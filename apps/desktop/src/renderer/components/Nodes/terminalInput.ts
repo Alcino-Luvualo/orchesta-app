@@ -61,6 +61,13 @@ export function terminalPastePayload(text: string, bracketedPaste: boolean): str
     : normalized
 }
 
+/** Quote one filesystem path as a single POSIX-shell word without submitting it. */
+export function shellQuotePath(path: string): string {
+  if (!path) return "''"
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(path)) return path
+  return `'${path.replace(/'/g, `'"'"'`)}'`
+}
+
 /** Keep a newline in the active line editor without submitting it. */
 export function multilineEnterSequence(bracketedPaste: boolean): string {
   return bracketedPaste ? `${BRACKETED_PASTE_START}\n${BRACKETED_PASTE_END}` : '\u0016\n'

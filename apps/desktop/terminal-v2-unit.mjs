@@ -20,6 +20,7 @@ import {
   isNativeEnterData,
   modifiedEnterSequence,
   multilineEnterSequence,
+  shellQuotePath,
   shellMultilineEnterSequence,
   multilineEnterPayload,
   terminalPastePayload
@@ -30,6 +31,7 @@ import {
   mapTerminalPointerToLayout
 } from './src/renderer/components/Nodes/terminalGeometry.ts'
 import { applyCanvasNodeChanges } from './src/renderer/components/Canvas/canvasNodeChanges.ts'
+import { TerminalVoiceController } from './src/renderer/components/Nodes/terminalVoice.ts'
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -149,6 +151,87 @@ function testTerminalPasteContract() {
   }
 }
 
+function testShellPathInsertion() {
+  assert(shellQuotePath('/tmp/plain-file.txt') === '/tmp/plain-file.txt', 'safe path was unnecessarily changed')
+  assert(shellQuotePath('/tmp/name with spaces.txt') === "'/tmp/name with spaces.txt'", 'spaced path was not one shell word')
+  assert(shellQuotePath("/tmp/owner's file") === "'/tmp/owner'\"'\"'s file'", 'single quote path escaping is not POSIX-shell compatible')
+  for (const value of ['/tmp/plain-file.txt', '/tmp/name with spaces.txt', "/tmp/owner's file"]) {
+    const quoted = shellQuotePath(value)
+    assert(!quoted.endsWith('\r') && !quoted.endsWith('\n'), 'path insertion appended Enter')
+  }
+}
+
+async function testVoiceInputLifecycle() {
+  const controller = new TerminalVoiceController()
+  const updates = []
+  const inserted = []
+  let terminalId = 'terminal-a'
+  const callbacks = {
+    currentTerminalId: () => terminalId,
+    insert: (text) => inserted.push(text),
+    update: (snapshot) => updates.push(snapshot.state)
+  }
+  const provider = (transcribe) => ({
+    id: 'test', label: 'Test provider', audioLeavesMachine: false, networkDisclosure: 'local', transcribe
+  })
+
+  await controller.start({
+    terminalId,
+    permission: async () => 'denied',
+    provider: provider(async () => undefined),
+    callbacks
+  })
+  assert(controller.current.state === 'error' && inserted.length === 0, 'denied microphone permission was not surfaced safely')
+
+  await controller.start({
+    terminalId,
+    permission: async () => 'granted',
+    provider: provider(async ({ onPhase }) => onPhase('processing')),
+    callbacks
+  })
+  assert(controller.current.state === 'error' && controller.current.error?.includes('Nenhuma fala'), 'silent voice input did not produce an explicit state')
+
+  await controller.start({
+    terminalId,
+    permission: async () => 'granted',
+    provider: provider(async () => { throw new Error('provider failed') }),
+    callbacks
+  })
+  assert(controller.current.state === 'error' && controller.current.error === 'provider failed', 'provider error was hidden')
+
+  await controller.start({
+    terminalId,
+    permission: async () => 'granted',
+    provider: provider(async ({ onTranscript, onPhase }) => {
+      onTranscript('hello')
+      onPhase('processing')
+      onTranscript('world')
+    }),
+    callbacks
+  })
+  assert(inserted.join('') === 'hello world', 'progressive transcript chunks were duplicated or joined incorrectly')
+  assert(!inserted.join('').endsWith('\r') && !inserted.join('').endsWith('\n'), 'voice input auto-submitted the terminal')
+  for (const expected of ['requesting-permission', 'recording', 'processing', 'inserting', 'idle']) {
+    assert(updates.includes(expected), `voice lifecycle never entered ${expected}`)
+  }
+
+  const waitForAbort = ({ signal }) => new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+  const cancelPending = controller.start({ terminalId, permission: async () => 'granted', provider: provider(waitForAbort), callbacks })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  controller.cancel()
+  await cancelPending
+  assert(controller.current.state === 'cancelled', 'explicit voice cancellation did not win the provider race')
+
+  terminalId = 'terminal-a'
+  const changePending = controller.start({ terminalId, permission: async () => 'granted', provider: provider(waitForAbort), callbacks })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  terminalId = 'terminal-b'
+  controller.terminalChanged(terminalId)
+  await changePending
+  assert(controller.current.state === 'cancelled', 'terminal change did not cancel in-flight transcription')
+}
+
+
 function writeTerminal(term, data) {
   return new Promise((resolve) => term.write(data, resolve))
 }
@@ -229,7 +312,9 @@ testVirtualBlocks()
 testParser()
 testNativeTerminalMultilineKeys()
 testTerminalPasteContract()
+testShellPathInsertion()
+await testVoiceInputLifecycle()
 await testTerminalMultilineRender()
 testTerminalPointerTransformCompensation()
 testControlledCanvasNodeChanges()
-console.log(JSON.stringify({ ok: true, suite: 'terminal-v2-unit', cases: 9 }))
+console.log(JSON.stringify({ ok: true, suite: 'terminal-v2-unit', cases: 11 }))

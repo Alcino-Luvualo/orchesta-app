@@ -621,6 +621,9 @@ main {
 .terminal-security-prompt div { display: flex; gap: 5px; }
 .terminal-security-prompt button { padding: 3px 5px; color: var(--text); border: 1px solid rgba(255,255,255,.14); border-radius: 3px; background: rgba(255,255,255,.06); font: 8px var(--ui); }
 .terminal-security-prompt button:hover { color: #172000; background: var(--primary); }
+.terminal-voice-consent { max-width: min(92%, 440px); }
+.terminal-voice-state { position: absolute; z-index: 7; right: 10px; bottom: 10px; display: flex; align-items: center; gap: 8px; max-width: min(88%, 390px); padding: 6px 8px; color: var(--text); border: 1px solid var(--primary-border); border-radius: 6px; background: rgba(20,24,27,.97); box-shadow: 0 10px 28px rgba(0,0,0,.35); font: 8px var(--ui); }
+.terminal-voice-state span { overflow-wrap: anywhere; }.terminal-voice-state button { margin-left: auto; padding: 3px 6px; color: var(--text); border: 1px solid var(--line); border-radius: 3px; background: var(--hover); font: inherit; }.terminal-voice-state.error { border-color: color-mix(in srgb, var(--danger), transparent 40%); }.terminal-voice-button.recording, .terminal-voice-button.processing, .terminal-voice-button.inserting { color: var(--danger); background: color-mix(in srgb, var(--danger), transparent 84%); }.terminal-voice-button.recording .icon { animation: terminal-voice-pulse 1.1s ease-in-out infinite; }@keyframes terminal-voice-pulse { 50% { opacity: .4; transform: scale(.86); } }
 
 .rich-command-editor {
   position: relative;
@@ -1655,6 +1658,7 @@ main {
 [data-theme="light"] .terminal-block-sticky { background: rgba(246,248,244,.96); }
 [data-theme="light"] .terminal-security-prompt { color: #273029; border-color: #d3b45b; background: rgba(246,248,244,.98); }
 [data-theme="light"] .terminal-security-prompt button { color: #273029; border-color: #d0d7cf; background: rgba(0,0,0,.04); }
+[data-theme="light"] .terminal-voice-state { color: #273029; background: rgba(246,248,244,.98); }
 [data-theme="light"] .terminal-block { color: #4e5a51; border-color: #d0d7cf; background: rgba(255,255,255,.55); }
 [data-theme="light"] .terminal-block-command { color: #273029; }
 [data-theme="light"] .terminal-block-output { color: #4e5a51; background: rgba(0,0,0,.04); }

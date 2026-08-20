@@ -430,6 +430,7 @@ impl PtyManager {
         rows: u16,
         env_vars: Option<HashMap<String, String>>,
         command_line: Option<String>,
+        command_argv: Option<Vec<String>>,
     ) -> Result<(PtyOutputSubscription, String)> {
         if self.sessions.lock().unwrap().contains_key(&session_id) {
             return Err(anyhow::anyhow!(
@@ -453,7 +454,24 @@ impl PtyManager {
             })
             .unwrap_or_else(|| "/bin/sh".to_string());
 
-        let mut cmd = CommandBuilder::new(shell.clone());
+        let command_argv = command_argv.filter(|argv| !argv.is_empty());
+        if let Some(argv) = command_argv.as_ref() {
+            if argv.len() > 65
+                || argv.iter().any(|value| {
+                    value.len() > 4096 || value.chars().any(|character| character == '\0')
+                })
+                || argv[0].is_empty()
+                || argv[0].starts_with('-')
+            {
+                return Err(anyhow::anyhow!("Terminal argv is invalid or too large"));
+            }
+        }
+        let mut cmd = CommandBuilder::new(
+            command_argv
+                .as_ref()
+                .map(|argv| argv[0].as_str())
+                .unwrap_or(&shell),
+        );
         sanitize_shell_environment(&mut cmd);
         cmd.env("TERM", "xterm-256color");
         // Keep interactive agents and TUIs on the same color-capable
@@ -566,7 +584,9 @@ impl PtyManager {
         // which made every session start with a noisy Orchestra banner. The
         // same context remains available through ORCHESTRA_BOOTSTRAP_FILE,
         // ORCHESTRA_SKILL_PATH and the authenticated CLI.
-        if let Some(command_line) = command_line {
+        if let Some(argv) = command_argv {
+            cmd.args(argv.into_iter().skip(1));
+        } else if let Some(command_line) = command_line {
             // The command is deliberately executed by the user's shell so
             // aliases, npm shims and agent launchers behave exactly as they
             // do in a normal terminal.
@@ -1085,6 +1105,7 @@ mod tests {
                 24,
                 None,
                 Some("printf auth-ready; sleep 5".to_string()),
+                None,
             )
             .expect("terminal should spawn");
 
@@ -1094,6 +1115,55 @@ mod tests {
 
         manager.kill(&session_id).expect("terminal should stop");
         assert!(!manager.authorizes(&session_id, &token));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn direct_argv_does_not_execute_shell_operators() {
+        let root = std::env::temp_dir().join(format!(
+            "orchestra-argv-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).expect("temporary argv root should be creatable");
+        let side_effect = root.join("must-not-exist");
+        let literal = format!("literal;touch {}", side_effect.display());
+        let printf = ["/usr/bin/printf", "/bin/printf"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).is_file())
+            .expect("printf fixture");
+        let manager = PtyManager::new();
+        let session_id = format!("argv_session_{}", uuid::Uuid::new_v4().simple());
+        let (mut output, _) = manager
+            .spawn_terminal(
+                session_id.clone(),
+                Some(root.to_string_lossy().to_string()),
+                80,
+                24,
+                None,
+                None,
+                Some(vec![printf.to_string(), "%s".to_string(), literal.clone()]),
+            )
+            .expect("direct argv should spawn");
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = output.recv().await {
+                bytes.extend_from_slice(&chunk.data);
+                if String::from_utf8_lossy(&bytes).contains(&literal) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .expect("direct argv output timeout");
+        assert!(
+            received,
+            "direct argv did not preserve the literal argument"
+        );
+        assert!(!side_effect.exists(), "argv was interpreted by a shell");
+        manager
+            .kill(&session_id)
+            .expect("direct argv session cleanup");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1112,6 +1182,7 @@ mod tests {
                 Some(root.to_string_lossy().to_string()),
                 80,
                 24,
+                None,
                 None,
                 None,
             )
@@ -1157,6 +1228,7 @@ mod tests {
                 Some(root.to_string_lossy().to_string()),
                 80,
                 24,
+                None,
                 None,
                 None,
             )
@@ -1234,6 +1306,7 @@ mod tests {
                 40,
                 None,
                 Some("stty raw -echo; printf ORCHESTRA_RAW_READY; cat".to_string()),
+                None,
             )
             .expect("raw PTY fixture should spawn");
 
