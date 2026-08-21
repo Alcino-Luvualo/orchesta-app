@@ -1,5 +1,4 @@
 import React, { useEffect, useRef } from 'react';
-import { useReactFlow, useStoreApi } from '@xyflow/react';
 import { useWorkspaceStore } from '../../../store/workspaceStore';
 import { NodeRect, pairedAnchors, getAnchorOnRect, Point } from './AnchorResolver';
 import { routeCable } from './CableRouter';
@@ -13,43 +12,41 @@ export const CableSystem: React.FC<{
   selectedEdgeId: string | null;
   onEdgeClick: (id: string) => void;
 }> = ({ connectMode, connectionSourceId, connectionPointer, connectionHoverId, selectedEdgeId, onEdgeClick }) => {
-  const storeNodes = useWorkspaceStore(s => s.nodes);
-  const storeEdges = useWorkspaceStore(s => s.edges);
-  const flow = useReactFlow();
-  
   const svgRef = useRef<SVGSVGElement>(null);
   const simsRef = useRef<Map<string, CableSimulation>>(new Map());
   const tempSimRef = useRef<CableSimulation | null>(null);
-  
-  const store = useStoreApi();
 
-  const readScreenObstacles = (svgRect: DOMRect): NodeRect[] => {
+  const readRenderedObstacles = (svg: SVGSVGElement, svgRect: DOMRect): NodeRect[] => {
     const persistedNodes = useWorkspaceStore.getState().nodes
-    const domNodes = Array.from(document.querySelectorAll<HTMLElement>('.react-flow__node'))
-    return persistedNodes.map((node) => {
+    const renderableNodeIds = new Set(persistedNodes
+      .filter((node) => !['device', 'routine'].includes(String(node.kind)))
+      .map((node) => node.id))
+    const flowRoot = svg.closest('.react-flow')
+    const domNodesById = new Map(Array.from(flowRoot?.querySelectorAll<HTMLElement>('.react-flow__node') || [])
+      .map((element) => [element.dataset.id || '', element]))
+
+    return persistedNodes.flatMap((node) => {
+      if (!renderableNodeIds.has(node.id)) return []
       // This layer is outside React Flow's transformed viewport. Reading the
       // rendered rectangle keeps cables in the same screen coordinate space as
-      // the card during pan, zoom, drag and resize.
-      const domNode = domNodes.find((element) => element.dataset.id === node.id)
+      // the card during pan, zoom, drag and resize. A persisted coordinate is
+      // deliberately not a fallback: if React Flow did not render the card,
+      // drawing its cable would leave a floating endpoint on the canvas.
+      const domNode = domNodesById.get(node.id)
+      if (!domNode || !domNode.isConnected) return []
+      const style = window.getComputedStyle(domNode)
+      if (style.display === 'none' || style.visibility === 'hidden') return []
       const rect = domNode?.getBoundingClientRect()
       if (rect && rect.width > 0 && rect.height > 0) {
-        return {
+        return [{
           id: node.id,
           x: rect.left - svgRect.left,
           y: rect.top - svgRect.top,
           width: rect.width,
           height: rect.height,
-        }
+        }]
       }
-
-      const viewport = flow.getViewport()
-      return {
-        id: node.id,
-        x: viewport.x + node.x * viewport.zoom - svgRect.left,
-        y: viewport.y + node.y * viewport.zoom - svgRect.top,
-        width: (node.width || 300) * viewport.zoom,
-        height: (node.height || 200) * viewport.zoom,
-      }
+      return []
     })
   }
 
@@ -62,17 +59,25 @@ export const CableSystem: React.FC<{
       const svg = svgRef.current;
       const edges = useWorkspaceStore.getState().edges;
       const svgRect = svg.getBoundingClientRect();
-      const obstacles = readScreenObstacles(svgRect);
+      const obstacles = readRenderedObstacles(svg, svgRect);
 
       // Render regular connections
-      const currentEdges = new Set<string>();
+      const renderedEdges = new Set<string>();
       
       edges.forEach(edge => {
-        currentEdges.add(edge.id);
         const source = obstacles.find(n => n.id === edge.source);
         const target = obstacles.find(n => n.id === edge.target);
         
-        if (!source || !target) return;
+        if (!source || !target) {
+          // An edge can remain persisted while a legacy/filtered node is not
+          // rendered, or during a brief React Flow reconciliation frame. Drop
+          // both the simulation and its last SVG immediately so stale geometry
+          // cannot survive as a cable with two floating endpoints.
+          simsRef.current.delete(edge.id);
+          svg.querySelector(`#cable-g-${edge.id}`)?.remove();
+          return;
+        }
+        renderedEdges.add(edge.id);
         
         const { start, end, leadStart, leadEnd } = pairedAnchors(source, target);
         const route = routeCable(start, leadStart, leadEnd, end, obstacles.filter(o => o.id !== source.id && o.id !== target.id));
@@ -159,7 +164,7 @@ export const CableSystem: React.FC<{
       
       // Cleanup old edges
       for (const [id, sim] of simsRef.current.entries()) {
-        if (!currentEdges.has(id)) {
+        if (!renderedEdges.has(id)) {
           simsRef.current.delete(id);
           const g = svg.querySelector(`#cable-g-${id}`);
           if (g) g.remove();
@@ -167,9 +172,11 @@ export const CableSystem: React.FC<{
       }
 
       // Render temporary connection if connecting
+      let temporaryCableRendered = false;
       if (connectMode && connectionSourceId && connectionPointer) {
         const source = obstacles.find(n => n.id === connectionSourceId);
         if (source) {
+          temporaryCableRendered = true;
           let endPoint = connectionPointer;
           let targetObs = obstacles.find(n => n.id === connectionHoverId);
           
@@ -256,7 +263,8 @@ export const CableSystem: React.FC<{
           anchorB.setAttribute('cx', endAnchor.x.toString());
           anchorB.setAttribute('cy', endAnchor.y.toString());
         }
-      } else {
+      }
+      if (!temporaryCableRendered) {
         if (tempSimRef.current) {
           tempSimRef.current = null;
           const g = svg.querySelector(`#cable-g-temp`);
@@ -272,7 +280,7 @@ export const CableSystem: React.FC<{
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [flow, connectMode, connectionSourceId, connectionPointer, connectionHoverId, selectedEdgeId, onEdgeClick, store]);
+  }, [connectMode, connectionSourceId, connectionPointer, connectionHoverId, selectedEdgeId, onEdgeClick]);
 
   return (
     <div style={{

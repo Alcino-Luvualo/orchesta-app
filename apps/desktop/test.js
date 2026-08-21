@@ -420,6 +420,12 @@ if (!workspaceStoreSource.includes("orchestra:node-deleting") || !canvasSource.i
 const cableSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CableSystem/CableSystem.tsx'), 'utf8')
 if (!cableSource.includes('onEdgeClick(edge.id)') || !canvasSource.includes('deleteEdge(selectedEdgeId); setSelectedEdgeId(null)') || !workspaceStoreSource.includes('history: [...state.history, { nodes: state.nodes, edges: state.edges }]') || !canvasSource.includes("'canvas.edge.delete'")) throw new Error('Disconnect must preserve edge selection, undo history, persistence, and visual removal')
 if (!cableSource.includes('getBoundingClientRect()') || !cableSource.includes('screen coordinates') || cableSource.includes('mask="url(#nodes-mask)"')) throw new Error('Cables must use rendered DOM rectangles without a mismatched flow-space mask')
+const missingCableEndpointGuard = cableSource.indexOf('if (!source || !target) {')
+const renderedCableRegistration = cableSource.indexOf('renderedEdges.add(edge.id)')
+if (missingCableEndpointGuard < 0 || renderedCableRegistration < missingCableEndpointGuard || !cableSource.includes('simsRef.current.delete(edge.id)') || !cableSource.includes('persisted coordinate is') || cableSource.includes('const viewport = flow.getViewport()')) {
+  throw new Error('A cable can survive without two currently rendered endpoint nodes')
+}
+if (!cableSource.includes('temporaryCableRendered') || !cableSource.includes('if (!temporaryCableRendered)')) throw new Error('Temporary cables can survive after their source node disappears')
 if (!browserSource.includes("scheduleBoundsSync('transitioning', true)") || !mainSource.includes("mode === 'transition'") || !mainSource.includes("mode !== 'transitioning'")) throw new Error('Browser portal motion must keep the native view aligned during drag')
 if (!mainSource.includes('record.view.webContents.setZoomFactor(nextZoom)')) throw new Error('Browser logical viewport no longer follows the canvas scale')
 const modalSources = [
