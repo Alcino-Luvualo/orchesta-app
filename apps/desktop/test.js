@@ -385,11 +385,13 @@ if (!cssSource.includes('.portal-placeholder { display: flex;')) throw new Error
 if (cssSource.includes('.canvas-focus-active .react-flow__pane')) throw new Error('Focus mode must not dim the React Flow pane parent of the focused node')
 if (cssSource.includes('.canvas-focus-active .react-flow__node.canvas-node-focus { max-width:')) throw new Error('Focus node sizing must stay in flow coordinates')
 if (!canvasSource.includes('onNodeDrag={() => window.dispatchEvent')) throw new Error('Portal motion watchdog has no node-drag heartbeat')
+if (!canvasSource.includes("portal.suppress('node-drag', true)") || !canvasSource.includes("portal.suppress('node-drag', false)")) throw new Error('Node drag must suppress native browser portals until final geometry settles')
 if (/onMoveStart=\{\(\) => window\.dispatchEvent\(new CustomEvent\('orchestra:canvas-motion'/.test(canvasSource)) throw new Error('A simple board pointer-down still snapshots every browser portal')
 const workspaceStoreSource = fs.readFileSync(path.join(sourceRoot, 'renderer/store/workspaceStore.ts'), 'utf8')
 if (!workspaceStoreSource.includes("orchestra:node-deleting") || !canvasSource.includes("orchestra:node-deleting") || !canvasSource.includes('restoreFocus(false)')) throw new Error('Deleting a focused node must exit focus before removal')
 const cableSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CableSystem/CableSystem.tsx'), 'utf8')
 if (!cableSource.includes('onEdgeClick(edge.id)') || !canvasSource.includes('deleteEdge(selectedEdgeId); setSelectedEdgeId(null)') || !workspaceStoreSource.includes('history: [...state.history, { nodes: state.nodes, edges: state.edges }]') || !canvasSource.includes("'canvas.edge.delete'")) throw new Error('Disconnect must preserve edge selection, undo history, persistence, and visual removal')
+if (!cableSource.includes('nodeLookup.get(node.id)') || !cableSource.includes('internals.positionAbsolute')) throw new Error('Cables must resolve live React Flow positions while a node is dragging')
 if (!mainSource.includes('record.view.webContents.setZoomFactor(nextZoom)')) throw new Error('Browser logical viewport no longer follows the canvas scale')
 const modalSources = [
   'components/Modals/RecruitAgentModal.tsx',

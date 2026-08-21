@@ -23,6 +23,32 @@ export const CableSystem: React.FC<{
   
   const store = useStoreApi();
 
+  /**
+   * React Flow updates its internal node position immediately while a node is
+   * being dragged. The persisted workspace store intentionally trails that
+   * value by a React render, so using only the workspace coordinates makes a
+   * cable look detached for one or more frames. Resolve its geometry from the
+   * live node lookup first and retain the workspace record as the durable
+   * fallback (also covers nodes before their first DOM measurement).
+   */
+  const liveObstacles = () => {
+    const nodeLookup = store.getState().nodeLookup
+    return useWorkspaceStore.getState().nodes.map((node) => {
+      const internal = nodeLookup.get(node.id)
+      const position = internal?.internals.positionAbsolute
+      const measured = internal?.measured
+      const width = Number(measured?.width ?? internal?.width ?? node.width ?? 300)
+      const height = Number(measured?.height ?? internal?.height ?? node.height ?? 200)
+      return {
+        id: node.id,
+        x: Number.isFinite(position?.x) ? position.x : node.x,
+        y: Number.isFinite(position?.y) ? position.y : node.y,
+        width: Number.isFinite(width) && width > 0 ? width : 300,
+        height: Number.isFinite(height) && height > 0 ? height : 200,
+      }
+    })
+  }
+
   useEffect(() => {
     let animationFrameId: number;
 
@@ -30,16 +56,9 @@ export const CableSystem: React.FC<{
       if (!svgRef.current) return;
       
       const svg = svgRef.current;
-      const nodes = useWorkspaceStore.getState().nodes;
       const edges = useWorkspaceStore.getState().edges;
       
-      const obstacles = nodes.map(n => ({
-        id: n.id,
-        x: n.x,
-        y: n.y,
-        width: n.width || 300,
-        height: n.height || 200,
-      }));
+      const obstacles = liveObstacles();
       
       const vp = flow.getViewport();
       const transformGroup = svg.querySelector('#cable-transform-group');
@@ -252,7 +271,7 @@ export const CableSystem: React.FC<{
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [flow, connectMode, connectionSourceId, connectionPointer, connectionHoverId, selectedEdgeId, onEdgeClick]);
+  }, [flow, connectMode, connectionSourceId, connectionPointer, connectionHoverId, selectedEdgeId, onEdgeClick, store]);
 
   return (
     <div style={{
