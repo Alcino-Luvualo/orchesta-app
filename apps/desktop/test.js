@@ -245,6 +245,25 @@ if (Math.abs(fractionalPortal.scale - 0.9965) > 0.002) throw new Error('Fraction
 const movingPortal = geometry.getPortalGeometry({ left: 140.4, top: 95.7, right: 540.4, bottom: 395.7 }, { left: 0, top: 0, width: 1200, height: 800 }, 400, 300)
 if (!movingPortal.visible || movingPortal.bounds.x !== 140 || movingPortal.bounds.y !== 95 || movingPortal.bounds.width !== 401 || movingPortal.bounds.height !== 301 || movingPortal.scale !== 1) throw new Error('Portal motion geometry did not preserve rounded bounds')
 
+// Cable anchors must meet the node border. The corner safety margin belongs
+// only on the edge tangent; moving both coordinates inward makes a wire look
+// detached after a node is dragged or resized.
+const anchorSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CableSystem/AnchorResolver.ts'), 'utf8')
+const anchorModule = { exports: {} }
+const anchorCode = typescript.transpileModule(anchorSource, {
+  compilerOptions: { module: typescript.ModuleKind.CommonJS, target: typescript.ScriptTarget.ES2022 }
+}).outputText
+new Function('exports', 'module', anchorCode)(anchorModule.exports, anchorModule)
+const anchorResolver = anchorModule.exports
+const rightAnchor = anchorResolver.getAnchorOnRect({ x: 10, y: 20, width: 100, height: 80 }, { x: 240, y: 60 })
+if (rightAnchor.edge !== 'right' || rightAnchor.anchor.x !== 110 || rightAnchor.anchor.y <= 20 || rightAnchor.anchor.y >= 100) {
+  throw new Error('Cable right anchor drifted inside the node or into a corner')
+}
+const topAnchor = anchorResolver.getAnchorOnRect({ x: 10, y: 20, width: 100, height: 80 }, { x: 60, y: -80 })
+if (topAnchor.edge !== 'top' || topAnchor.anchor.y !== 20 || topAnchor.anchor.x <= 10 || topAnchor.anchor.x >= 110) {
+  throw new Error('Cable top anchor drifted inside the node or into a corner')
+}
+
 // Keep the file tree and graph layout helpers executable in the smoke suite.
 // These checks are deliberately DOM-free: they protect keyboard order, status
 // interpretation and merge-lane layout even when Electron is unavailable.

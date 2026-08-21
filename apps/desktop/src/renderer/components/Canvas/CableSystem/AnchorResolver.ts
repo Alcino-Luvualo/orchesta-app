@@ -57,9 +57,15 @@ export function getAnchorOnRect(rect: NodeRect, target: Point): { anchor: Point;
     x = centerX + slope * (rect.height / 2);
   }
 
-  // Clamp to avoid corners
-  x = Math.max(rect.x + padding, Math.min(rect.x + rect.width - padding, x));
-  y = Math.max(rect.y + padding, Math.min(rect.y + rect.height - padding, y));
+  // Keep the normal coordinate on the node border. Only clamp the tangent
+  // coordinate so the cable stays away from rounded corners. Clamping both
+  // axes moves the endpoint inside the card, which makes a connected cable
+  // look detached when the node is dragged or resized.
+  if (edge === 'left' || edge === 'right') {
+    y = Math.max(rect.y + padding, Math.min(rect.y + rect.height - padding, y));
+  } else {
+    x = Math.max(rect.x + padding, Math.min(rect.x + rect.width - padding, x));
+  }
 
   return { anchor: { x, y }, edge };
 }
