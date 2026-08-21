@@ -95,42 +95,11 @@ export const CanvasArea: React.FC = () => {
   const persistedEdgeIdsRef = useRef<Set<string>>(new Set())
   const persistedNodeHashesRef = useRef<Map<string, string>>(new Map())
   const persistedEdgeHashesRef = useRef<Map<string, string>>(new Map())
-  // WebContentsViews are native children and sit above the React Flow DOM.
-  // Hide them for the short drag gesture: BrowserNode displays its cached DOM
-  // snapshot, which receives the exact same transform as the card. Releasing
-  // after BrowserNode's final bounds commit prevents a stale native page from
-  // being left behind at the point where the drag started.
-  const nativePortalDragReleaseRef = useRef<number | null>(null)
   // A local close must win over the external refresh poll while the daemon
   // finishes deleting the persisted record. Without this fence, the poll can
   // observe the old row and immediately re-add the node after clicking X.
   const deletingNodeIdsRef = useRef<Set<string>>(new Set())
   const fittedWorkspaceRef = useRef<string | null>(null)
-
-  const suppressNativePortalsForNodeDrag = useCallback((suppressed: boolean) => {
-    const portal = window.orchestra?.portal
-    if (!portal) return
-    if (nativePortalDragReleaseRef.current !== null) {
-      window.clearTimeout(nativePortalDragReleaseRef.current)
-      nativePortalDragReleaseRef.current = null
-    }
-    if (suppressed) {
-      void portal.suppress('node-drag', true).catch(() => undefined)
-      return
-    }
-    // BrowserNode holds its final transition for 72 ms. Leave a small extra
-    // compositor margin before a global native view is allowed back on top.
-    nativePortalDragReleaseRef.current = window.setTimeout(() => {
-      nativePortalDragReleaseRef.current = null
-      void portal.suppress('node-drag', false).catch(() => undefined)
-    }, 180)
-  }, [])
-
-  useEffect(() => () => {
-    if (nativePortalDragReleaseRef.current !== null) window.clearTimeout(nativePortalDragReleaseRef.current)
-    nativePortalDragReleaseRef.current = null
-    void window.orchestra?.portal?.suppress('node-drag', false).catch(() => undefined)
-  }, [])
 
   useEffect(() => {
     measuredNodeDimensionsRef.current.clear()
@@ -1226,14 +1195,10 @@ export const CanvasArea: React.FC = () => {
         }}
         onNodeDragStart={() => {
           commitHistory()
-          suppressNativePortalsForNodeDrag(true)
           window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: true, reason: 'node' } }))
         }}
         onNodeDrag={() => window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: true, reason: 'node' } }))}
-        onNodeDragStop={() => {
-          window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: false, reason: 'node' } }))
-          suppressNativePortalsForNodeDrag(false)
-        }}
+        onNodeDragStop={() => window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: false, reason: 'node' } }))}
         onNodeDoubleClick={(_, node) => {
           if (node.type === 'text' || node.type === 'shape') {
             window.dispatchEvent(new CustomEvent('orchestra:edit-node', { detail: { nodeId: node.id } }))

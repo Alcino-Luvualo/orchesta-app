@@ -23,28 +23,32 @@ export const CableSystem: React.FC<{
   
   const store = useStoreApi();
 
-  /**
-   * React Flow updates its internal node position immediately while a node is
-   * being dragged. The persisted workspace store intentionally trails that
-   * value by a React render, so using only the workspace coordinates makes a
-   * cable look detached for one or more frames. Resolve its geometry from the
-   * live node lookup first and retain the workspace record as the durable
-   * fallback (also covers nodes before their first DOM measurement).
-   */
-  const liveObstacles = () => {
-    const nodeLookup = store.getState().nodeLookup
-    return useWorkspaceStore.getState().nodes.map((node) => {
-      const internal = nodeLookup.get(node.id)
-      const position = internal?.internals.positionAbsolute
-      const measured = internal?.measured
-      const width = Number(measured?.width ?? internal?.width ?? node.width ?? 300)
-      const height = Number(measured?.height ?? internal?.height ?? node.height ?? 200)
+  const readScreenObstacles = (svgRect: DOMRect): NodeRect[] => {
+    const persistedNodes = useWorkspaceStore.getState().nodes
+    const domNodes = Array.from(document.querySelectorAll<HTMLElement>('.react-flow__node'))
+    return persistedNodes.map((node) => {
+      // This layer is outside React Flow's transformed viewport. Reading the
+      // rendered rectangle keeps cables in the same screen coordinate space as
+      // the card during pan, zoom, drag and resize.
+      const domNode = domNodes.find((element) => element.dataset.id === node.id)
+      const rect = domNode?.getBoundingClientRect()
+      if (rect && rect.width > 0 && rect.height > 0) {
+        return {
+          id: node.id,
+          x: rect.left - svgRect.left,
+          y: rect.top - svgRect.top,
+          width: rect.width,
+          height: rect.height,
+        }
+      }
+
+      const viewport = flow.getViewport()
       return {
         id: node.id,
-        x: Number.isFinite(position?.x) ? position.x : node.x,
-        y: Number.isFinite(position?.y) ? position.y : node.y,
-        width: Number.isFinite(width) && width > 0 ? width : 300,
-        height: Number.isFinite(height) && height > 0 ? height : 200,
+        x: viewport.x + node.x * viewport.zoom - svgRect.left,
+        y: viewport.y + node.y * viewport.zoom - svgRect.top,
+        width: (node.width || 300) * viewport.zoom,
+        height: (node.height || 200) * viewport.zoom,
       }
     })
   }
@@ -57,14 +61,8 @@ export const CableSystem: React.FC<{
       
       const svg = svgRef.current;
       const edges = useWorkspaceStore.getState().edges;
-      
-      const obstacles = liveObstacles();
-      
-      const vp = flow.getViewport();
-      const transformGroup = svg.querySelector('#cable-transform-group');
-      if (transformGroup) {
-        transformGroup.setAttribute('transform', `translate(${vp.x}, ${vp.y}) scale(${vp.zoom})`);
-      }
+      const svgRect = svg.getBoundingClientRect();
+      const obstacles = readScreenObstacles(svgRect);
 
       // Render regular connections
       const currentEdges = new Set<string>();
@@ -185,7 +183,10 @@ export const CableSystem: React.FC<{
           } else {
             // flowToScreen / screenToFlow: connectionPointer is in SCREEN space or FLOW space?
             // In CanvasArea, connectionPointer is screen space. We need to convert to flow space.
-            endAnchor = flow.screenToFlowPosition(connectionPointer);
+            endAnchor = {
+              x: connectionPointer.x - svgRect.left,
+              y: connectionPointer.y - svgRect.top,
+            };
           }
 
           const aRes = getAnchorOnRect(source, endAnchor);
@@ -294,17 +295,9 @@ export const CableSystem: React.FC<{
           pointerEvents: 'none',
         }}
       >
-        <defs>
-          <mask id="nodes-mask">
-            <rect x="-10000" y="-10000" width="20000" height="20000" fill="white" />
-            {storeNodes.map(n => (
-              <rect key={n.id} x={n.x} y={n.y} width={n.width || 300} height={n.height || 200} rx="12" fill="black" />
-            ))}
-          </mask>
-        </defs>
         <g id="cable-transform-group">
-          <g id="cable-container" mask="url(#nodes-mask)">
-            {/* Dynamically populated by RAF */}
+          <g id="cable-container">
+            {/* Dynamically populated by RAF in screen coordinates. */}
           </g>
         </g>
       </svg>

@@ -240,7 +240,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
       flushUpdates()
     }
 
-    const queueGeometry = (mode: PortalPresentationMode, forceVisible = mode === 'live') => {
+    const queueGeometry = (mode: PortalPresentationMode, forceVisible = mode === 'live' || mode === 'transitioning') => {
       const geometry = readGeometry()
       const logicalViewport = getLogicalViewport()
       const visible = Boolean(forceVisible && geometry.visible)
@@ -287,7 +287,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
       queueUpdate(request)
     }
 
-    const scheduleBoundsSync = (modeOrEvent?: PortalPresentationMode | Event) => {
+    const scheduleBoundsSync = (modeOrEvent?: PortalPresentationMode | Event, forceVisible?: boolean) => {
       const explicitlyRequestedMode = typeof modeOrEvent === 'string' ? modeOrEvent : undefined
       if ((motionRef.current || settlingRef.current) && !explicitlyRequestedMode) return
       if (disposed || disposedRef.current || boundsRafRef.current !== null) return
@@ -299,7 +299,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         // portal. They must not reveal the native surface before final bounds
         // and zoom have settled.
         if ((motionRef.current || settlingRef.current) && nextMode === 'live') nextMode = 'transitioning'
-        queueGeometry(nextMode, nextMode === 'live')
+        queueGeometry(nextMode, forceVisible ?? (nextMode === 'live' || nextMode === 'transitioning'))
       })
     }
 
@@ -317,18 +317,18 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         motionRef.current = true
         motionGenerationRef.current += 1
         // Freeze the current Chromium zoom factor so setZoomFactor() is NOT
-        // called on every frame while the canvas is panning/zooming. Render a
-        // DOM snapshot during the gesture so it follows ReactFlow exactly;
-        // the native child would otherwise lag behind its node.
+        // called on every frame while the canvas is panning/zooming. The
+        // native child itself is repositioned on every motion heartbeat, so
+        // the actual page and its card never separate during a drag.
         if (frozenScaleRef.current === null) {
           const geometry = readGeometry()
           frozenScaleRef.current = asFinite(geometry.scale, 1)
         }
         if (boundsRafRef.current !== null) window.cancelAnimationFrame(boundsRafRef.current)
         boundsRafRef.current = null
-        setPresentationValue(snapshotRef.current ? 'snapshot' : 'transitioning')
+        setPresentationValue('transitioning')
         lastBoundsKeyRef.current = ''
-        scheduleBoundsSync(snapshotRef.current ? 'transitioning' : 'snapshot')
+        scheduleBoundsSync('transitioning', true)
         return
       }
       if (!motionRef.current) {
@@ -336,20 +336,20 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
       }
       motionRef.current = false
       settlingRef.current = true
-      // Apply the final bounds and zoom while the native view remains hidden.
-      // Revealing it in the same compositor frame is what caused the frequent
-      // black surface during browser resize and board zoom.
+      // Apply the final bounds and zoom before returning to the normal live
+      // presentation. Keeping the native view visible avoids a stale detached
+      // page or a placeholder after a drag.
       frozenScaleRef.current = null
       if (boundsRafRef.current !== null) window.cancelAnimationFrame(boundsRafRef.current)
       boundsRafRef.current = null
       lastBoundsKeyRef.current = ''
-      scheduleBoundsSync('transitioning')
+      scheduleBoundsSync('transitioning', true)
       settleTimerRef.current = window.setTimeout(() => {
         settleTimerRef.current = null
         if (disposed || disposedRef.current || motionRef.current) return
         settlingRef.current = false
         lastBoundsKeyRef.current = ''
-        scheduleBoundsSync('live')
+        scheduleBoundsSync('live', true)
       }, 72)
     }
 
@@ -413,7 +413,12 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         clearWatchdog()
         motionReasonsRef.current.delete(reason)
       }
-      setMotion(motionReasonsRef.current.size > 0)
+      const motionActive = motionReasonsRef.current.size > 0
+      setMotion(motionActive)
+      // onNodeDrag/onMove are heartbeats. Publish the current DOM rectangle
+      // for every heartbeat once motion is active; a single start packet
+      // would leave the native child at the first drag position.
+      if (motionActive && motionRef.current) scheduleBoundsSync('transitioning', true)
     }
     window.addEventListener('orchestra:canvas-motion', onCanvasMotion)
 

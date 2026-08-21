@@ -3027,7 +3027,7 @@ app.whenReady().then(() => {
       ? value.logicalViewport as { width?: unknown; height?: unknown }
       : undefined
     const snapshotMode = mode === 'snapshot'
-    const requestedVisible = mode === 'hidden' || mode === 'destroyed' || mode === 'transition' || mode === 'transitioning' || snapshotMode
+    const requestedVisible = mode === 'hidden' || mode === 'destroyed' || mode === 'transition' || snapshotMode
       ? false
       : Boolean(value.visible ?? true) && safe.fullyInside
     let presentationOrderChanged = false
@@ -3065,7 +3065,7 @@ app.whenReady().then(() => {
     }
     record.frozen = snapshotMode
     if (snapshotMode && record.firstFrameReady) record.lifecycle = 'frozen'
-    if (mode === 'live' && record.firstFrameReady && record.lifecycle === 'frozen') record.lifecycle = 'ready'
+    if ((mode === 'live' || mode === 'transitioning') && record.firstFrameReady && record.lifecycle === 'frozen' && safe.fullyInside) record.lifecycle = 'ready'
     const geometry = updatePortalPhysicalGeometry(record, safe.bounds, canvasScale, requestedVisible, logical)
     if (mode === 'transitioning' && portalViewAlive(record)) {
       try { record.view.webContents.invalidate() } catch { /* teardown race */ }
