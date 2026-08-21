@@ -664,7 +664,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
           window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: true, reason: 'resize' } }))
         }}
         onResize={(_, params) => {
-          updateNode(id, { width: params.width, height: params.height })
+          updateNode(id, { x: params.x, y: params.y, width: params.width, height: params.height })
           window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: true, reason: 'resize' } }))
         }}
         onResizeEnd={() => window.dispatchEvent(new CustomEvent('orchestra:canvas-motion', { detail: { active: false, reason: 'resize' } }))}

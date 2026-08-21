@@ -51,6 +51,15 @@ for (const required of ["Image.configure({ allowBase64: true })", 'event.clipboa
 if (!noteNodeSource.includes('if (!editor || isEditing || content === lastLocalMarkdown.current) return') || !noteNodeSource.includes('finishEditing()')) {
   throw new Error('Focused agent-created notes can still be overwritten by external sync')
 }
+if (!noteNodeSource.includes('x: params.x') || !noteNodeSource.includes('y: params.y') || !noteNodeSource.includes('width: params.width') || !noteNodeSource.includes('height: params.height')) {
+  throw new Error('Note resizing must persist both geometry and position when dragging a left/top border')
+}
+for (const nodeFile of ['FilesNode.tsx', 'TerminalNode.tsx', 'TextNode.tsx', 'ShapeNode.tsx', 'BrowserNode.tsx']) {
+  const nodeSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes', nodeFile), 'utf8')
+  if (!nodeSource.includes('x: params.x') || !nodeSource.includes('y: params.y')) {
+    throw new Error(`${nodeFile} resizing dropped the position returned by React Flow`)
+  }
+}
 if (!mainSource.includes('lastWrittenNotes.get(notePath) ?? lastSyncedNotes.get(notePath)') || !mainSource.includes('lastWrittenNotes.set(notePath, existingContent)')) {
   throw new Error('Core-created note files no longer establish a conflict baseline')
 }

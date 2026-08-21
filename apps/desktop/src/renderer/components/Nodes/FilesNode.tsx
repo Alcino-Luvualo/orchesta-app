@@ -1050,7 +1050,7 @@ export const FilesNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
 
   return (
     <div className="node files-node" data-kind="files" style={{ width: '100%', height: '100%', minWidth: 330, minHeight: 220 }} onClick={() => setSelectedNodeId(id)}>
-      <NodeResizer isVisible={data.selected} minWidth={330} minHeight={220} handleClassName="nodrag nopan canvas-resize-handle" lineClassName="nodrag nopan canvas-resize-line" onResizeStart={commitHistory} onResize={(_, params) => updateNode(id, { width: params.width, height: params.height })} />
+      <NodeResizer isVisible={data.selected} minWidth={330} minHeight={220} handleClassName="nodrag nopan canvas-resize-handle" lineClassName="nodrag nopan canvas-resize-line" onResizeStart={commitHistory} onResize={(_, params) => updateNode(id, { x: params.x, y: params.y, width: params.width, height: params.height })} />
       <Handle type="target" position={Position.Left} className="port left" />
       <Handle type="source" position={Position.Right} className="port right" />
       <header className="files-head">

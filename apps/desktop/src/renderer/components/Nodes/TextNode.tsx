@@ -40,7 +40,7 @@ export const TextNode: React.FC<{ id: string; data: CanvasComponentData }> = ({ 
       handleClassName="nodrag nopan canvas-resize-handle"
       lineClassName="nodrag nopan canvas-resize-line"
       onResizeStart={commitHistory}
-      onResize={(_, params) => updateNode(id, { width: params.width, height: params.height })}
+      onResize={(_, params) => updateNode(id, { x: params.x, y: params.y, width: params.width, height: params.height })}
     />
     <Handle type="target" position={Position.Left} className="port left" />
     <Handle type="source" position={Position.Right} className="port right" />

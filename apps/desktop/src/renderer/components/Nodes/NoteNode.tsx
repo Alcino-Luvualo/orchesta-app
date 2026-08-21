@@ -271,7 +271,7 @@ export const NoteNode: React.FC<{ id: string; data: CanvasComponentData }> = ({ 
     <div className={`node note-node ${isEditing ? 'note-editor-focused' : ''}`} data-kind="note" data-editor-focused={isEditing ? 'true' : undefined} style={{ width: '100%', height: '100%', minWidth: 220, minHeight: 180, background: color, '--note-paper': color, '--note-ink': colors.ink, '--note-muted': colors.muted } as React.CSSProperties} onClick={() => setSelectedNodeId(id)}>
       {/* Resize controls are intentionally paused while the ProseMirror surface has focus.
           React Flow's line affordance otherwise paints across the sticky note during typing. */}
-      <NodeResizer isVisible={Boolean(data.selected && !isEditing)} minWidth={220} minHeight={180} handleClassName="nodrag nopan canvas-resize-handle note-resize-handle" lineClassName="nodrag nopan canvas-resize-line note-resize-line" onResizeStart={commitHistory} onResize={(_, params) => updateNode(id, { width: params.width, height: params.height })} />
+      <NodeResizer isVisible={Boolean(data.selected && !isEditing)} minWidth={220} minHeight={180} handleClassName="nodrag nopan canvas-resize-handle note-resize-handle" lineClassName="nodrag nopan canvas-resize-line note-resize-line" onResizeStart={commitHistory} onResize={(_, params) => updateNode(id, { x: params.x, y: params.y, width: params.width, height: params.height })} />
       <Handle type="target" position={Position.Left} className="port left" />
       <Handle type="source" position={Position.Right} className="port right" />
       <div className="sticky-note-head">
