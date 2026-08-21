@@ -21,7 +21,7 @@ import { detectTerminalFileReferences, osc52Response, parseOsc52, readTerminalSe
 import { getTerminalTransformScale, isIdentityTerminalScale, mapTerminalPointerToLayout } from './terminalGeometry'
 import { DEFAULT_TERMINAL_KEYBOARD_PROTOCOL, isDirectInteractiveTerminalCommand, isMultilineEnter, isNativeEnterData, multilineEnterPayload, shellQuotePath, terminalPastePayload, TerminalKeyboardProtocol } from './terminalInput'
 import { agentContextInput, AgentContext, materializeAgentContext } from './agentContext'
-import { createBrowserSpeechRecognitionProvider, requestBrowserMicrophonePermission, TerminalVoiceController, VoiceInputSnapshot } from './terminalVoice'
+import { createBrowserSpeechRecognitionProvider, createLocalWhisperProvider, requestBrowserMicrophonePermission, TerminalVoiceController, VoiceInputSnapshot } from './terminalVoice'
 
 type TerminalInteractionMode =
   | 'shell_prompt'
@@ -265,7 +265,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   const runtimeChip = String(props.runtime || props.nodeVersion || 'v26.7.0')
   const gitSummary = typeof props.gitSummary === 'string' && props.gitSummary.trim() ? props.gitSummary : 'Git · clean'
   const explorerLabel = String(props.explorerLabel || 'File explorer')
-  if (voiceProviderRef.current === undefined) voiceProviderRef.current = createBrowserSpeechRecognitionProvider()
+  if (voiceProviderRef.current === undefined) voiceProviderRef.current = createLocalWhisperProvider() || createBrowserSpeechRecognitionProvider()
   if (!securitySettingsRef.current) securitySettingsRef.current = readTerminalSecuritySettings()
   if (!historyStoreRef.current) historyStoreRef.current = new CommandHistoryStore(id, id)
   if (!blockStoreRef.current) blockStoreRef.current = new TerminalBlockStore()

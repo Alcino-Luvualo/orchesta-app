@@ -503,6 +503,28 @@ impl Database {
         Ok(())
     }
 
+    pub fn resize_canvas_node(
+        &self,
+        workspace_id: &str,
+        node_id: &str,
+        width: f64,
+        height: f64,
+    ) -> Result<bool> {
+        if !width.is_finite()
+            || !height.is_finite()
+            || !(80.0..=4000.0).contains(&width)
+            || !(60.0..=4000.0).contains(&height)
+        {
+            return Err(anyhow::anyhow!("Invalid node dimensions"));
+        }
+        let conn = self.get_conn()?;
+        let changed = conn.execute(
+            "UPDATE canvas_nodes SET width=?3, height=?4, updated_at=?5 WHERE id=?1 AND workspace_id=?2",
+            params![node_id, workspace_id, width, height, chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(changed == 1)
+    }
+
     pub fn canvas_node_context(&self, node_id: &str) -> Result<Option<serde_json::Value>> {
         let conn = self.get_conn()?;
         let row = conn.query_row(

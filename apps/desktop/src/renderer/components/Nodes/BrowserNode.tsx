@@ -369,7 +369,11 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         if (typeof result.error === 'string' && result.error) setError(result.error)
       }
       lastBoundsKeyRef.current = ''
-      queueGeometry('creating', false)
+      // Mark the real bounds as desired-visible before the first capture. The
+      // main process warms the native view outside the window until Chromium
+      // paints; visible=false created a cycle where capture and visibility
+      // waited on one another forever.
+      queueGeometry('creating', true)
       scheduleBoundsSync()
     }).catch((reason) => {
       if (disposed || disposedRef.current) return

@@ -227,7 +227,21 @@ export const CanvasArea: React.FC = () => {
         const retainedEdges = current.edges.filter((edge) => !persistedEdgeIdsRef.current.has(edge.id) || remoteEdgeIds.has(edge.id))
         const missingNodes = nextRemoteNodes.filter((node) => !deletingNodeIds.has(node.id) && !retainedNodes.some((existing) => existing.id === node.id))
         const missingEdges = nextRemoteEdges.filter((edge) => !retainedEdges.some((existing) => existing.id === edge.id))
-        if (missingNodes.length || retainedNodes.length !== current.nodes.length) current.setNodes([...retainedNodes, ...missingNodes])
+        // Existing records may also be resized through the authenticated CLI.
+        // Merge only geometry here; note text and other live renderer state
+        // have their own conflict-aware channels and must not be overwritten
+        // by a slower database polling tick.
+        let externalGeometryChanged = false
+        const remoteNodesById = new Map(nextRemoteNodes.map((node) => [node.id, node]))
+        const geometryMergedNodes = retainedNodes.map((node) => {
+          const remote = remoteNodesById.get(node.id)
+          if (!remote || remote.x === node.x && remote.y === node.y && remote.width === node.width && remote.height === node.height) return node
+          externalGeometryChanged = true
+          return { ...node, x: remote.x, y: remote.y, width: remote.width, height: remote.height }
+        })
+        if (missingNodes.length || externalGeometryChanged || retainedNodes.length !== current.nodes.length) {
+          current.setNodes([...geometryMergedNodes, ...missingNodes])
+        }
         const repairedEdges = nextRemoteEdges.filter((edge) => {
           const previous = retainedEdges.find((existing) => existing.id === edge.id)
           return previous && JSON.stringify(previous) !== JSON.stringify(edge)
@@ -993,7 +1007,7 @@ export const CanvasArea: React.FC = () => {
           points,
           stroke: drawingColor,
           strokeWidth: drawingWidth,
-          fill: recognized.kind === 'rectangle' || recognized.kind === 'ellipse' ? `${drawingColor}1f` : 'transparent',
+          fill: recognized.kind !== 'freehand' && recognized.kind !== 'line' ? `${drawingColor}1f` : 'transparent',
           smartDrawing: isSmartShape,
         },
       })
@@ -1298,7 +1312,7 @@ export const CanvasArea: React.FC = () => {
             <span className="context-separator" />
           </>}
           {selectedNode.kind === 'shape' && <>
-            {selectedNode.properties.drawing !== true && <select className="context-select shape-select" value={String(selectedNode.properties.shapeType || 'rounded')} onChange={(event) => updateSelectedProperties({ shapeType: event.target.value })} aria-label="Tipo de forma"><option value="rectangle">Retângulo</option><option value="rounded">Arredondado</option><option value="ellipse">Elipse</option><option value="diamond">Losango</option><option value="triangle">Triângulo</option><option value="line">Linha</option></select>}
+            {selectedNode.properties.drawing !== true && <select className="context-select shape-select" value={String(selectedNode.properties.shapeType || 'rounded')} onChange={(event) => updateSelectedProperties({ shapeType: event.target.value })} aria-label="Tipo de forma"><option value="rectangle">Retângulo</option><option value="rounded">Arredondado</option><option value="ellipse">Elipse</option><option value="diamond">Losango</option><option value="triangle">Triângulo</option><option value="star">Estrela</option><option value="heart">Coração</option><option value="line">Linha</option></select>}
             {selectedNode.properties.drawing !== true && selectedNode.properties.shapeType !== 'line' && <label className="context-color-control" title="Cor de preenchimento"><input type="color" value={colorInputValue(selectedNode.properties.fill, '#28321d')} onPointerDown={() => commitHistory()} onChange={(event) => updateSelectedProperties({ fill: event.target.value }, false)} /><span style={{ background: colorInputValue(selectedNode.properties.fill, '#28321d') }} /></label>}
             <label className="context-color-control stroke" title="Cor do contorno"><input type="color" value={colorInputValue(selectedNode.properties.stroke, '#c8f169')} onPointerDown={() => commitHistory()} onChange={(event) => updateSelectedProperties({ stroke: event.target.value }, false)} /><span style={{ background: colorInputValue(selectedNode.properties.stroke, '#c8f169') }} /></label>
             <select className="context-select" value={Number(selectedNode.properties.strokeWidth) || 2} onChange={(event) => updateSelectedProperties({ strokeWidth: Number(event.target.value) })} aria-label="Espessura do traço"><option value="1">1 px</option><option value="2">2 px</option><option value="3">3 px</option><option value="5">5 px</option><option value="8">8 px</option></select>

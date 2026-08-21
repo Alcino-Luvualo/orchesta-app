@@ -277,6 +277,11 @@ enum Commands {
         #[command(subcommand)]
         command: NoteCommands,
     },
+    /// Resize canvas objects created by this authenticated terminal
+    Canvas {
+        #[command(subcommand)]
+        command: CanvasCommands,
+    },
     /// Inspect registered workspaces and their floors
     Workspace {
         #[command(subcommand)]
@@ -327,6 +332,18 @@ enum NoteCommands {
     Write { note_id: String, content: String },
     /// Append content to a connected sticky note
     Append { note_id: String, content: String },
+}
+
+#[derive(Subcommand)]
+enum CanvasCommands {
+    /// Resize a note, browser, or terminal created by this agent
+    Resize {
+        node_id: String,
+        #[arg(long)]
+        width: f64,
+        #[arg(long)]
+        height: f64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1196,6 +1213,19 @@ async fn main() -> Result<()> {
             };
             (message_type, note_payload)
         }
+        Commands::Canvas { command } => {
+            let (session_id, token) = terminal_auth()?;
+            match command {
+                CanvasCommands::Resize {
+                    node_id,
+                    width,
+                    height,
+                } => (
+                    "canvas.node.resize",
+                    json!({ "sessionId": session_id, "token": token, "nodeId": node_id, "width": width, "height": height }),
+                ),
+            }
+        }
         Commands::NoteRead { note_id } => {
             let (session_id, token) = terminal_auth()?;
             (
@@ -1357,6 +1387,34 @@ mod tests {
         assert_eq!(&frame[4..], b"hello");
         assert!(encode_frame(&[], MAX_FRAME_SIZE, "Request").is_err());
         assert!(encode_frame(b"123456", 5, "Request").is_err());
+    }
+
+    #[test]
+    fn canvas_resize_command_parses_owned_geometry() {
+        let cli = Cli::try_parse_from([
+            "orchestra",
+            "canvas",
+            "resize",
+            "note_created",
+            "--width",
+            "640",
+            "--height",
+            "360",
+        ])
+        .expect("canvas resize command should parse");
+        let Commands::Canvas {
+            command:
+                CanvasCommands::Resize {
+                    node_id,
+                    width,
+                    height,
+                },
+        } = cli.command
+        else {
+            panic!("unexpected command")
+        };
+        assert_eq!(node_id, "note_created");
+        assert_eq!((width, height), (640.0, 360.0));
     }
 
     #[test]

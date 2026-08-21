@@ -345,7 +345,7 @@ fn sanitize_shell_environment(cmd: &mut CommandBuilder) {
     }
 }
 
-fn inherited_shell_path() -> Option<String> {
+fn executable_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     // nvm exports NVM_BIN after selecting a Node version. Prepending this
@@ -368,9 +368,64 @@ fn inherited_shell_path() -> Option<String> {
         }
     }
 
+    // GUI launchers normally omit user-local and version-manager directories.
+    // Add the conventional locations only when they exist, then discover all
+    // installed nvm Node versions without hardcoding a username or version.
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for candidate in [
+            home.join(".local/bin"),
+            home.join(".cargo/bin"),
+            home.join(".nvm/current/bin"),
+        ] {
+            if candidate.is_dir() && !paths.iter().any(|entry| entry == &candidate) {
+                paths.push(candidate);
+            }
+        }
+        let versions = home.join(".nvm/versions/node");
+        if let Ok(entries) = std::fs::read_dir(versions) {
+            let mut bins = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().join("bin"))
+                .filter(|candidate| candidate.is_dir())
+                .collect::<Vec<_>>();
+            bins.sort();
+            bins.reverse();
+            for candidate in bins {
+                if !paths.iter().any(|entry| entry == &candidate) {
+                    paths.push(candidate);
+                }
+            }
+        }
+    }
+
+    paths
+}
+
+fn inherited_shell_path() -> Option<String> {
+    let paths = executable_search_paths();
+
     std::env::join_paths(paths)
         .ok()
         .map(|value| value.to_string_lossy().into_owned())
+}
+
+fn resolve_command_program(program: &str) -> Result<PathBuf> {
+    let requested = PathBuf::from(program);
+    if requested.components().count() > 1 || requested.is_absolute() {
+        return requested
+            .is_file()
+            .then_some(requested)
+            .ok_or_else(|| anyhow::anyhow!("Terminal program does not exist: {program}"));
+    }
+    executable_search_paths()
+        .into_iter()
+        .map(|directory| directory.join(&requested))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unable to spawn {program}: executable was not found in the desktop or user PATH"
+            )
+        })
 }
 
 fn configured_portal_socket(value: Option<&str>) -> Option<String> {
@@ -466,10 +521,14 @@ impl PtyManager {
                 return Err(anyhow::anyhow!("Terminal argv is invalid or too large"));
             }
         }
+        let resolved_program = command_argv
+            .as_ref()
+            .map(|argv| resolve_command_program(&argv[0]))
+            .transpose()?;
         let mut cmd = CommandBuilder::new(
-            command_argv
-                .as_ref()
-                .map(|argv| argv[0].as_str())
+            resolved_program
+                .as_deref()
+                .and_then(std::path::Path::to_str)
                 .unwrap_or(&shell),
         );
         sanitize_shell_environment(&mut cmd);

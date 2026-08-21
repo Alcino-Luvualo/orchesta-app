@@ -217,10 +217,22 @@ export const NoteNode: React.FC<{ id: string; data: CanvasComponentData }> = ({ 
   // Apply edits arriving from the Rust-connected note file without replacing
   // content that this editor has just emitted locally.
   useEffect(() => {
-    if (!editor || content === lastLocalMarkdown.current) return
+    if (!editor || isEditing || content === lastLocalMarkdown.current) return
     lastLocalMarkdown.current = content
     editor.commands.setContent(markdownAsHtml(content), { emitUpdate: false })
-  }, [content, editor])
+  }, [content, editor, isEditing])
+
+  const finishEditing = () => {
+    if (editor && !editor.isDestroyed) {
+      const markdown = markdownFromDocument(editor.getJSON() as { content?: JsonNode[] })
+      lastLocalMarkdown.current = markdown
+      // Reassert the editor's value. An agent/file watcher may have updated
+      // the Zustand node while the user was typing; focused local input owns
+      // that conflict and is flushed before external updates are accepted.
+      updateNode(id, { properties: { content: markdown } })
+    }
+    setIsEditing(false)
+  }
 
   useEffect(() => {
     if (saveState !== 'saving') return
@@ -287,7 +299,7 @@ export const NoteNode: React.FC<{ id: string; data: CanvasComponentData }> = ({ 
         onFocusCapture={() => { setIsEditing(true); setSelectedNodeId(id) }}
         onBlurCapture={(event) => {
           const nextTarget = event.relatedTarget
-          if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setIsEditing(false)
+          if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) finishEditing()
         }}
       >
         <EditorContent editor={editor} />

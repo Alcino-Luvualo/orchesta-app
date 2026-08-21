@@ -6,6 +6,7 @@ import fs from 'fs'
 import { createHash, randomUUID } from 'crypto'
 import { canvasPinchGestureFactor, canvasPinchZoomFactor } from '../renderer/utils/canvasPinchZoom'
 import { clampPortalScale, getPortalGeometry, PortalBounds } from '../shared/browserPortalGeometry'
+import { findNonOverlappingPosition } from '../shared/canvasPlacement'
 
 // Electron renderers do not consistently publish their semantic tree to
 // AT-SPI on Linux unless accessibility is requested before app readiness.
@@ -1790,6 +1791,10 @@ function processOrchestraChange(
       const content = fs.readFileSync(filePath, 'utf-8')
       if (content === lastSyncedNotes.get(filePath)) return
       lastSyncedNotes.set(filePath, content)
+      // This is now the renderer's canonical disk baseline. A later canvas
+      // edit should replace this value; it must not be mistaken for another
+      // unseen external edit and bounced back into the focused editor.
+      lastWrittenNotes.set(filePath, content)
       const noteId = path.basename(name, '.md')
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('orchestra:event', {
@@ -2146,15 +2151,33 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
       token: terminalToken,
       clientToken: coreClientToken
     }) as Record<string, unknown>
+    const workspaceId = String(context.workspaceId || '')
+    const width = 720
+    const height = 460
+    const existingNodes = await sendCoreRequest('canvas.node.list', {
+      workspaceId,
+      floorId: context.floorId ?? null,
+      clientToken: coreClientToken
+    })
+    const placement = findNonOverlappingPosition(
+      Array.isArray(existingNodes) ? existingNodes as Array<{ x?: number; y?: number; width?: number; height?: number }> : [],
+      {
+        x: Number(context.x || 0) + Number(context.width || 520) + 96,
+        y: Number(context.y || 0),
+        width,
+        height
+      },
+      32
+    )
     const record = ensurePortal(portalId, url)
     const node = {
       id: portalId,
       floorId: context.floorId ?? null,
       kind: 'browser',
-      x: Number(context.x || 0) + Number(context.width || 520) + 96,
-      y: Number(context.y || 0),
-      width: 720,
-      height: 460,
+      x: placement.x,
+      y: placement.y,
+      width,
+      height,
       z_index: 1,
       locked: false,
       collapsed: false,
@@ -2162,12 +2185,12 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
         title: 'Browser Portal',
         url: record.url,
         portalId,
+        createdBySessionId: sessionId,
         cwd: typeof (context.properties as Record<string, unknown> | undefined)?.cwd === 'string'
           ? (context.properties as Record<string, unknown>).cwd
           : ''
       }
     }
-    const workspaceId = String(context.workspaceId || '')
     try {
       await sendCoreRequest('canvas.node.save', { workspaceId, floorId: context.floorId ?? null, node, clientToken: coreClientToken })
       await sendCoreRequest('canvas.edge.save', {
@@ -3328,11 +3351,13 @@ app.whenReady().then(() => {
           let content = requestedContent
           if (fs.existsSync(notePath)) {
             const existingContent = fs.readFileSync(notePath, 'utf-8')
-            const previousWrite = lastWrittenNotes.get(notePath)
-            if (existingContent !== requestedContent && (previousWrite === undefined || existingContent !== previousWrite)) {
+            const previousWrite = lastWrittenNotes.get(notePath) ?? lastSyncedNotes.get(notePath)
+            if (existingContent !== requestedContent && previousWrite !== undefined && existingContent !== previousWrite) {
               // A process outside the canvas changed the canonical note. Keep
               // that version and let the renderer merge it into the editor.
               content = existingContent
+              lastWrittenNotes.set(notePath, existingContent)
+              lastSyncedNotes.set(notePath, existingContent)
               if (mainWindow && !mainWindow.isDestroyed()) {
                 mainWindow.webContents.send('orchestra:event', {
                   type: 'orchestra:note-external-update',
@@ -3340,12 +3365,20 @@ app.whenReady().then(() => {
                 })
               }
             } else if (existingContent !== requestedContent) {
-              atomicWriteFile(notePath, requestedContent)
               lastWrittenNotes.set(notePath, requestedContent)
+              lastSyncedNotes.set(notePath, requestedContent)
+              atomicWriteFile(notePath, requestedContent)
+            } else {
+              // Core-created notes predate Electron's write tracking. Seed a
+              // baseline on their first context sync so the user's first edit
+              // is correctly recognised as the newer side.
+              lastWrittenNotes.set(notePath, existingContent)
+              lastSyncedNotes.set(notePath, existingContent)
             }
           } else {
-            atomicWriteFile(notePath, requestedContent)
             lastWrittenNotes.set(notePath, requestedContent)
+            lastSyncedNotes.set(notePath, requestedContent)
+            atomicWriteFile(notePath, requestedContent)
           }
           return { ...note, content, filePath: notePath }
         })

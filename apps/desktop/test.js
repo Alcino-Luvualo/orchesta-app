@@ -48,6 +48,12 @@ if (noteNodeSource.includes('new MutationObserver(syncCompletedTasks)')) throw n
 for (const required of ["Image.configure({ allowBase64: true })", 'event.clipboardData?.items', 'reader.readAsDataURL', 'replaceSelectionWith(image)']) {
   if (!noteNodeSource.includes(required)) throw new Error(`Pasted note image support is missing: ${required}`)
 }
+if (!noteNodeSource.includes('if (!editor || isEditing || content === lastLocalMarkdown.current) return') || !noteNodeSource.includes('finishEditing()')) {
+  throw new Error('Focused agent-created notes can still be overwritten by external sync')
+}
+if (!mainSource.includes('lastWrittenNotes.get(notePath) ?? lastSyncedNotes.get(notePath)') || !mainSource.includes('lastWrittenNotes.set(notePath, existingContent)')) {
+  throw new Error('Core-created note files no longer establish a conflict baseline')
+}
 for (const required of ['workspace-create-modal', 'setWorkspaceModalOpen', 'WORKSPACE_ICONS', 'Criar workspace']) {
   if (!source.includes(required)) throw new Error(`Workspace creation flow is missing: ${required}`)
 }
@@ -307,8 +313,34 @@ const roughRectangle = [
   { x: 0, y: 40 }, { x: 1, y: 20 }, { x: 0, y: 0 }
 ]
 if (smartDrawing.recognizeDrawing(roughRectangle).kind !== 'rectangle') throw new Error('Smart drawing no longer recognizes a closed rectangle')
+const smartStar = Array.from({ length: 11 }, (_, index) => {
+  const point = index % 10
+  const angle = -Math.PI / 2 + point * Math.PI / 5
+  const radius = point % 2 === 0 ? 55 : 24
+  return { x: 80 + Math.cos(angle) * radius, y: 80 + Math.sin(angle) * radius }
+})
+if (smartDrawing.recognizeDrawing(smartStar).kind !== 'star') throw new Error('Smart drawing does not recognize a five-point star')
+const smartHeart = Array.from({ length: 97 }, (_, index) => {
+  const angle = Math.PI * 2 * (index % 96) / 96
+  return { x: 80 + 3 * 16 * Math.sin(angle) ** 3, y: 65 - 3 * (13 * Math.cos(angle) - 5 * Math.cos(2 * angle) - 2 * Math.cos(3 * angle) - Math.cos(4 * angle)) }
+})
+if (smartDrawing.recognizeDrawing(smartHeart).kind !== 'heart') throw new Error('Smart drawing does not recognize a heart')
+const ambiguousClosedStroke = [{ x: 0, y: 0 }, { x: 30, y: 5 }, { x: 80, y: 0 }, { x: 60, y: 30 }, { x: 100, y: 80 }, { x: 45, y: 60 }, { x: 0, y: 100 }, { x: 15, y: 45 }, { x: 0, y: 0 }]
+if (smartDrawing.recognizeDrawing(ambiguousClosedStroke).kind !== 'freehand') throw new Error('Ambiguous closed drawing was forced into a geometric shape')
 const smoothPath = smartDrawing.smoothDrawingPath([{ x: 0, y: 0 }, { x: 20, y: 10 }, { x: 40, y: 0 }])
 if (!smoothPath.includes(' Q ') || !smoothPath.endsWith('40 0')) throw new Error('Freehand drawing path lost smoothing')
+const placementSource = fs.readFileSync(path.join(sourceRoot, 'shared/canvasPlacement.ts'), 'utf8')
+const placementModule = { exports: {} }
+const placementCode = typescript.transpileModule(placementSource, {
+  compilerOptions: { module: typescript.ModuleKind.CommonJS, target: typescript.ScriptTarget.ES2022 }
+}).outputText
+new Function('exports', 'module', placementCode)(placementModule.exports, placementModule)
+const placement = placementModule.exports.findNonOverlappingPosition([
+  { x: 0, y: 0, width: 400, height: 300 },
+  { x: 424, y: 0, width: 400, height: 300 },
+  { x: 0, y: 324, width: 400, height: 300 }
+], { x: 0, y: 0, width: 400, height: 300 }, 24)
+if (placementModule.exports.rectanglesOverlap({ ...placement, width: 400, height: 300 }, { x: 0, y: 0, width: 400, height: 300 }, 24)) throw new Error('Canvas placement still overlaps an existing node')
 const filesNodeSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/FilesNode.tsx'), 'utf8')
 if (!/workspace\.tree'[\s\S]{0,160}depth: 1/.test(filesNodeSource) || /depth:\s*[248]\b/.test(filesNodeSource)) throw new Error('File tree initial/lazy depth regressed')
 if (!filesNodeSource.includes('setSelectedFilePath(joinWorkspacePath(projectPath, row.item.path))')) throw new Error('F2 no longer targets the focused tree row')
@@ -321,6 +353,10 @@ const canvasSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/
 const browserSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/BrowserNode.tsx'), 'utf8')
 const terminalSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/TerminalNode.tsx'), 'utf8')
 const terminalVoiceSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/terminalVoice.ts'), 'utf8')
+const recruitAgentModalSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Modals/RecruitAgentModal.tsx'), 'utf8')
+if (!recruitAgentModalSource.includes('firstInstalled.path || firstInstalled.cmd') || !recruitAgentModalSource.includes('tool.path || tool.cmd')) throw new Error('Detected agents lost their absolute executable path')
+if (!browserSource.includes("queueGeometry('creating', true)")) throw new Error('New browser portals can deadlock before their first visible frame')
+if (!terminalVoiceSource.includes('createLocalWhisperProvider') || !terminalVoiceSource.includes('transcribeWithLocalWhisper') || !terminalSource.includes('createLocalWhisperProvider() || createBrowserSpeechRecognitionProvider()')) throw new Error('Voice input lost its local Whisper provider/fallback')
 if (!terminalSource.includes('scrollback: 1_000_000')) throw new Error('Terminal scrollback budget regressed from the unlimited-style buffer')
 if (!terminalSource.includes('shellQuotePath') || !terminalSource.includes('externalInputRef.current') || terminalSource.includes('terminal.paste(location)')) throw new Error('Terminal + path insertion lost quoting, serialization, or exactly-once ownership')
 for (const state of ['requesting-permission', 'recording', 'processing', 'inserting', 'error', 'cancelled']) {

@@ -141,6 +141,138 @@ type SpeechRecognitionLike = {
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 
+function resampleAudio(input: Float32Array, inputRate: number, outputRate = 16_000): Float32Array {
+  if (inputRate === outputRate) return input
+  const length = Math.max(1, Math.round(input.length * outputRate / inputRate))
+  const output = new Float32Array(length)
+  for (let index = 0; index < length; index += 1) {
+    const source = index * inputRate / outputRate
+    const left = Math.floor(source)
+    const right = Math.min(input.length - 1, left + 1)
+    const ratio = source - left
+    output[index] = input[left] * (1 - ratio) + input[right] * ratio
+  }
+  return output
+}
+
+async function captureMicrophone(signal: AbortSignal): Promise<Float32Array> {
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    throw new Error('A captura local de áudio não está disponível neste sistema.')
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  })
+  const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  if (!AudioContextClass) {
+    stream.getTracks().forEach((track) => track.stop())
+    throw new Error('O processamento local de áudio não está disponível.')
+  }
+  const context = new AudioContextClass()
+  await context.resume()
+  const source = context.createMediaStreamSource(stream)
+  const analyser = context.createAnalyser()
+  analyser.fftSize = 1024
+  source.connect(analyser)
+  const recorder = new MediaRecorder(stream)
+  const chunks: Blob[] = []
+
+  try {
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      let settled = false
+      let heardSpeech = false
+      let lastSpeechAt = Date.now()
+      const startedAt = Date.now()
+      const samples = new Uint8Array(analyser.fftSize)
+      const finish = (error?: Error) => {
+        if (settled) return
+        settled = true
+        window.clearInterval(meter)
+        signal.removeEventListener('abort', abort)
+        if (recorder.state !== 'inactive') recorder.stop()
+        if (error) reject(error)
+      }
+      const abort = () => finish(new DOMException('Voice input cancelled', 'AbortError'))
+      const meter = window.setInterval(() => {
+        analyser.getByteTimeDomainData(samples)
+        let energy = 0
+        for (const value of samples) energy += ((value - 128) / 128) ** 2
+        const rms = Math.sqrt(energy / samples.length)
+        const now = Date.now()
+        if (rms > .025) {
+          heardSpeech = true
+          lastSpeechAt = now
+        }
+        if (heardSpeech && now - lastSpeechAt > 1_150 && now - startedAt > 1_400) finish()
+        else if (now - startedAt > 12_000) finish()
+      }, 100)
+      recorder.addEventListener('dataavailable', (event) => { if (event.data.size) chunks.push(event.data) })
+      recorder.addEventListener('error', () => finish(new Error('Falha ao gravar o microfone.')))
+      recorder.addEventListener('stop', () => {
+        if (!settled) {
+          settled = true
+          window.clearInterval(meter)
+          signal.removeEventListener('abort', abort)
+        }
+        if (!signal.aborted) resolve(new Blob(chunks, { type: recorder.mimeType }))
+      }, { once: true })
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+      else recorder.start(200)
+    })
+    const decoded = await context.decodeAudioData(await blob.arrayBuffer())
+    const mono = new Float32Array(decoded.length)
+    for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+      const values = decoded.getChannelData(channel)
+      for (let index = 0; index < values.length; index += 1) mono[index] += values[index] / decoded.numberOfChannels
+    }
+    return resampleAudio(mono, decoded.sampleRate)
+  } finally {
+    source.disconnect()
+    stream.getTracks().forEach((track) => track.stop())
+    await context.close().catch(() => undefined)
+  }
+}
+
+function transcribeWithLocalWhisper(audio: Float32Array, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./voiceWhisperWorker.ts', import.meta.url), { type: 'module' })
+    const finish = (error?: Error, text = '') => {
+      signal.removeEventListener('abort', abort)
+      worker.terminate()
+      if (error) reject(error)
+      else resolve(text)
+    }
+    const abort = () => finish(new DOMException('Voice input cancelled', 'AbortError'))
+    worker.addEventListener('message', (event: MessageEvent<{ type?: string; text?: string; error?: string }>) => {
+      if (event.data.type === 'result') finish(undefined, event.data.text || '')
+      else if (event.data.type === 'error') {
+        finish(new Error(`A transcrição local falhou: ${event.data.error || 'erro desconhecido'}`))
+      }
+    })
+    worker.addEventListener('error', (event) => finish(new Error(`A transcrição local falhou: ${event.message}`)), { once: true })
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
+    else worker.postMessage({ audio, language: 'portuguese' }, [audio.buffer])
+  })
+}
+
+export function createLocalWhisperProvider(): TerminalTranscriptionProvider | null {
+  if (typeof window === 'undefined' || typeof Worker === 'undefined' || typeof MediaRecorder === 'undefined') return null
+  return {
+    id: 'local-whisper',
+    label: 'Whisper local',
+    audioLeavesMachine: false,
+    networkDisclosure: 'O áudio fica neste computador. Na primeira utilização, o modelo multilíngue é descarregado e guardado na cache local.',
+    transcribe: async ({ signal, onTranscript, onPhase }) => {
+      const audio = await captureMicrophone(signal)
+      if (signal.aborted) return
+      onPhase('processing')
+      const transcript = await transcribeWithLocalWhisper(audio, signal)
+      if (transcript) onTranscript(transcript)
+    }
+  }
+}
+
 export function createBrowserSpeechRecognitionProvider(scope: typeof globalThis = globalThis): TerminalTranscriptionProvider | null {
   const candidate = scope as typeof globalThis & {
     SpeechRecognition?: SpeechRecognitionConstructor

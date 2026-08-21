@@ -128,6 +128,107 @@ fn terminal_command_argv(payload: &Value) -> Result<Option<Vec<String>>> {
     Ok(Some(argv))
 }
 
+#[derive(Clone, Copy)]
+struct CanvasRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+fn canvas_rect(node: &Value) -> CanvasRect {
+    CanvasRect {
+        x: node["x"].as_f64().unwrap_or(0.0),
+        y: node["y"].as_f64().unwrap_or(0.0),
+        width: node["width"].as_f64().unwrap_or(300.0).max(1.0),
+        height: node["height"].as_f64().unwrap_or(200.0).max(1.0),
+    }
+}
+
+fn canvas_rects_overlap(left: CanvasRect, right: CanvasRect, margin: f64) -> bool {
+    !(left.x + left.width + margin <= right.x
+        || left.x >= right.x + right.width + margin
+        || left.y + left.height + margin <= right.y
+        || left.y >= right.y + right.height + margin)
+}
+
+fn non_overlapping_canvas_position(
+    existing: &[Value],
+    requested_x: f64,
+    requested_y: f64,
+    width: f64,
+    height: f64,
+) -> (f64, f64) {
+    let margin = 32.0;
+    let nodes = existing.iter().map(canvas_rect).collect::<Vec<_>>();
+    let free = |x: f64, y: f64| {
+        let candidate = CanvasRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        !nodes
+            .iter()
+            .any(|node| canvas_rects_overlap(candidate, *node, margin))
+    };
+    if free(requested_x, requested_y) {
+        return (requested_x, requested_y);
+    }
+
+    let mut nearest = nodes.clone();
+    nearest.sort_by(|left, right| {
+        ((left.x - requested_x).hypot(left.y - requested_y))
+            .total_cmp(&((right.x - requested_x).hypot(right.y - requested_y)))
+    });
+    for node in nearest {
+        for (x, y) in [
+            (node.x + node.width + margin, requested_y),
+            (node.x - width - margin, requested_y),
+            (requested_x, node.y + node.height + margin),
+            (requested_x, node.y - height - margin),
+        ] {
+            if free(x, y) {
+                return (x, y);
+            }
+        }
+    }
+
+    let step_x = (width + margin).max(48.0);
+    let step_y = (height + margin).max(48.0);
+    let max_ring = ((nodes.len() as f64 + 1.0).sqrt().ceil() as i32 + 8).max(16);
+    for ring in 1..=max_ring {
+        for column in -ring..=ring {
+            for row in [-ring, ring] {
+                let position = (
+                    requested_x + f64::from(column) * step_x,
+                    requested_y + f64::from(row) * step_y,
+                );
+                if free(position.0, position.1) {
+                    return position;
+                }
+            }
+        }
+        for row in (-ring + 1)..ring {
+            for column in [-ring, ring] {
+                let position = (
+                    requested_x + f64::from(column) * step_x,
+                    requested_y + f64::from(row) * step_y,
+                );
+                if free(position.0, position.1) {
+                    return position;
+                }
+            }
+        }
+    }
+
+    let right_edge = nodes
+        .iter()
+        .map(|node| node.x + node.width)
+        .fold(requested_x, f64::max);
+    (right_edge + margin, requested_y)
+}
+
 struct PendingRequest {
     source_session_id: String,
     cancel: watch::Sender<bool>,
@@ -752,7 +853,7 @@ impl SocketServer {
                 "daemonVersion": env!("CARGO_PKG_VERSION"),
                 "daemonHash": option_env!("ORCHESTRA_DAEMON_HASH").unwrap_or("development"),
                 "clientToken": client_token,
-                "capabilities": ["terminal.spawn", "terminal.attach", "terminal.detach", "terminal.state", "terminal.input", "terminal.execute", "terminal.complete", "terminal.resize", "terminal.kill", "terminal.screen", "terminal.control", "agent.request.cancel", "agent.request.progress", "portal.authorize", "portal.open", "workspace", "workspace.tree", "workspace.read_file", "workspace.search", "git", "git.refs", "git.branches", "git.stash", "canvas", "canvas.node.context", "notes", "notes.create", "environments", "environment.exec", "settings", "audit"]
+                "capabilities": ["terminal.spawn", "terminal.attach", "terminal.detach", "terminal.state", "terminal.input", "terminal.execute", "terminal.complete", "terminal.resize", "terminal.kill", "terminal.screen", "terminal.control", "agent.request.cancel", "agent.request.progress", "portal.authorize", "portal.open", "workspace", "workspace.tree", "workspace.read_file", "workspace.search", "git", "git.refs", "git.branches", "git.stash", "canvas", "canvas.node.context", "canvas.node.resize", "notes", "notes.create", "environments", "environment.exec", "settings", "audit"]
             })),
 
             "agent.list" => {
@@ -847,21 +948,13 @@ impl SocketServer {
                 let base_x = source_x + source_width + 96.0;
                 let floor_id = context["floorId"].as_str();
                 let existing_nodes = db.get_canvas_nodes_for_floor(workspace_id, floor_id)?;
-                let (x, y) = (0..64)
-                    .map(|slot| (base_x + slot as f64 * (width + 24.0), source_y))
-                    .find(|&(candidate_x, candidate_y)| {
-                        !existing_nodes.iter().any(|node| {
-                            let node_x = node["x"].as_f64().unwrap_or(0.0);
-                            let node_y = node["y"].as_f64().unwrap_or(0.0);
-                            let node_width = node["width"].as_f64().unwrap_or(300.0);
-                            let node_height = node["height"].as_f64().unwrap_or(200.0);
-                            candidate_x + width + 14.0 > node_x
-                                && candidate_x < node_x + node_width + 14.0
-                                && candidate_y + height + 14.0 > node_y
-                                && candidate_y < node_y + node_height + 14.0
-                        })
-                    })
-                    .unwrap_or((base_x, source_y));
+                let (x, y) = non_overlapping_canvas_position(
+                    &existing_nodes,
+                    base_x,
+                    source_y,
+                    width,
+                    height,
+                );
                 let node = json!({
                     "id": note_id,
                     "floorId": context["floorId"],
@@ -876,7 +969,8 @@ impl SocketServer {
                     "properties": {
                         "title": title,
                         "content": content,
-                        "color": color
+                        "color": color,
+                        "createdBySessionId": source
                     }
                 });
                 let edge_id = format!("e_{}_{}", source, node["id"].as_str().unwrap_or_default());
@@ -1725,6 +1819,40 @@ impl SocketServer {
                 db.canvas_node_context(&source)?
                     .ok_or_else(|| anyhow::anyhow!("The terminal is not represented on a canvas"))
             }
+            "canvas.node.resize" => {
+                let source = Self::require_terminal_auth(&pty, &payload)?;
+                let node_id = payload["nodeId"]
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("Missing nodeId"))?;
+                let target = db
+                    .canvas_node_context(node_id)?
+                    .ok_or_else(|| anyhow::anyhow!("Canvas node not found"))?;
+                if target["properties"]["createdBySessionId"].as_str() != Some(source.as_str()) {
+                    return Err(anyhow::anyhow!(
+                        "This terminal can resize only canvas nodes it created"
+                    ));
+                }
+                let width = payload["width"]
+                    .as_f64()
+                    .ok_or_else(|| anyhow::anyhow!("Missing width"))?;
+                let height = payload["height"]
+                    .as_f64()
+                    .ok_or_else(|| anyhow::anyhow!("Missing height"))?;
+                let workspace_id = target["workspaceId"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Canvas node has no workspace"))?;
+                if !db.resize_canvas_node(workspace_id, node_id, width, height)? {
+                    return Err(anyhow::anyhow!("Canvas node was not resized"));
+                }
+                db.record_audit(
+                    &source,
+                    "canvas.node.resize",
+                    node_id,
+                    &json!({ "workspaceId": workspace_id, "width": width, "height": height }),
+                )?;
+                Ok(json!({ "success": true, "nodeId": node_id, "width": width, "height": height }))
+            }
             "canvas.node.list" => {
                 let ws_id = payload["workspaceId"].as_str().unwrap_or("default");
                 let floor_id = payload["floorId"].as_str();
@@ -1960,12 +2088,29 @@ impl SocketServer {
                 };
                 let width = 720.0;
                 let height = 460.0;
+                let floor_id = context["floorId"].as_str();
+                let existing_nodes = match db.get_canvas_nodes_for_floor(workspace_id, floor_id) {
+                    Ok(nodes) => nodes,
+                    Err(error) => {
+                        let _ = pty.kill(&session_id);
+                        return Err(error);
+                    }
+                };
+                let (x, y) = non_overlapping_canvas_position(
+                    &existing_nodes,
+                    context["x"].as_f64().unwrap_or(0.0)
+                        + context["width"].as_f64().unwrap_or(520.0)
+                        + 96.0,
+                    context["y"].as_f64().unwrap_or(0.0),
+                    width,
+                    height,
+                );
                 let node = json!({
                     "id": session_id,
                     "floorId": context["floorId"],
                     "kind": "terminal",
-                    "x": context["x"].as_f64().unwrap_or(0.0) + context["width"].as_f64().unwrap_or(520.0) + 96.0,
-                    "y": context["y"].as_f64().unwrap_or(0.0),
+                    "x": x,
+                    "y": y,
                     "width": width,
                     "height": height,
                     "z_index": 1,
@@ -1976,7 +2121,8 @@ impl SocketServer {
                         "agent": payload["agent"].as_str().unwrap_or("Orchestra Terminal"),
                         "cwd": cwd,
                         "command": payload["command"].as_str().unwrap_or(""),
-                        "status": "running"
+                        "status": "running",
+                        "createdBySessionId": source
                     }
                 });
                 if let Err(error) = db.save_canvas_node(workspace_id, &node) {
@@ -3010,6 +3156,26 @@ mod tests {
             "orchestra-{label}-{}.sock",
             uuid::Uuid::new_v4().simple()
         ))
+    }
+
+    #[test]
+    fn agent_canvas_placement_never_returns_an_overlap() {
+        let existing = vec![
+            json!({ "x": 0.0, "y": 0.0, "width": 400.0, "height": 300.0 }),
+            json!({ "x": 432.0, "y": 0.0, "width": 400.0, "height": 300.0 }),
+            json!({ "x": 0.0, "y": 332.0, "width": 400.0, "height": 300.0 }),
+        ];
+        let (x, y) = non_overlapping_canvas_position(&existing, 0.0, 0.0, 400.0, 300.0);
+        let candidate = CanvasRect {
+            x,
+            y,
+            width: 400.0,
+            height: 300.0,
+        };
+        assert!(existing
+            .iter()
+            .map(canvas_rect)
+            .all(|node| !canvas_rects_overlap(candidate, node, 32.0)));
     }
 
     #[tokio::test]

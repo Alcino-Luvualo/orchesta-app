@@ -3,7 +3,19 @@ import { Handle, Position, NodeResizer } from '@xyflow/react'
 import { CanvasComponentData, useWorkspaceStore } from '../../store/workspaceStore'
 import { smoothDrawingPath } from '../Canvas/smartDrawing'
 
-type ShapeType = 'rectangle' | 'rounded' | 'ellipse' | 'diamond' | 'triangle' | 'line'
+type ShapeType = 'rectangle' | 'rounded' | 'ellipse' | 'diamond' | 'triangle' | 'star' | 'heart' | 'line'
+
+function starPoints(width: number, height: number, inset: number): string {
+  const centerX = width / 2
+  const centerY = height / 2
+  const outerX = Math.max(1, width / 2 - inset)
+  const outerY = Math.max(1, height / 2 - inset)
+  return Array.from({ length: 10 }, (_, index) => {
+    const angle = -Math.PI / 2 + index * Math.PI / 5
+    const radius = index % 2 === 0 ? 1 : .42
+    return `${centerX + Math.cos(angle) * outerX * radius},${centerY + Math.sin(angle) * outerY * radius}`
+  }).join(' ')
+}
 
 export const ShapeNode: React.FC<{ id: string; data: CanvasComponentData }> = ({ id, data }) => {
   const { updateNode, setSelectedNodeId, commitHistory } = useWorkspaceStore()
@@ -63,6 +75,8 @@ export const ShapeNode: React.FC<{ id: string; data: CanvasComponentData }> = ({
       {!drawing && shapeType === 'ellipse' && <ellipse cx={width / 2} cy={height / 2} rx={Math.max(0, width / 2 - strokeWidth)} ry={Math.max(0, height / 2 - strokeWidth)} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />}
       {!drawing && shapeType === 'diamond' && <polygon points={`${width / 2},${strokeWidth} ${width - strokeWidth},${height / 2} ${width / 2},${height - strokeWidth} ${strokeWidth},${height / 2}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />}
       {!drawing && shapeType === 'triangle' && <polygon points={`${width / 2},${strokeWidth} ${width - strokeWidth},${height - strokeWidth} ${strokeWidth},${height - strokeWidth}`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />}
+      {!drawing && shapeType === 'star' && <polygon points={starPoints(width, height, strokeWidth)} fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeLinejoin="round" />}
+      {!drawing && shapeType === 'heart' && <path d={`M ${width / 2} ${height - strokeWidth} C ${width * .12} ${height * .68}, ${strokeWidth} ${height * .42}, ${width * .23} ${height * .23} C ${width * .36} ${height * .1}, ${width * .5} ${height * .2}, ${width * .5} ${height * .34} C ${width * .5} ${height * .2}, ${width * .64} ${height * .1}, ${width * .77} ${height * .23} C ${width - strokeWidth} ${height * .42}, ${width * .88} ${height * .68}, ${width / 2} ${height - strokeWidth} Z`} fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeLinejoin="round" />}
       {!drawing && shapeType === 'line' && <path d={smoothDrawingPath(linePoints)} fill="none" stroke={stroke} strokeWidth={strokeWidth} />}
     </svg>
     {!drawing && shapeType !== 'line' && <textarea

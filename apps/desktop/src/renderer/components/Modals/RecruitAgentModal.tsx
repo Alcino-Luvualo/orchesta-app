@@ -128,7 +128,11 @@ export const RecruitAgentModal: React.FC = () => {
         if (firstInstalled) {
           setSelectedToolId(firstInstalled.id)
           setTerminalName(firstInstalled.label)
-          setCommand(firstInstalled.cmd)
+          // Electron desktop launches do not inherit the user's interactive
+          // shell PATH (notably nvm and ~/.local/bin). Detection already
+          // resolved the executable, so preserve that absolute path in the
+          // structured argv passed to the core.
+          setCommand(firstInstalled.path || firstInstalled.cmd)
         }
       } catch {
         // The known provider list remains usable while detection is unavailable.
@@ -143,7 +147,7 @@ export const RecruitAgentModal: React.FC = () => {
     selectionVersionRef.current += 1
     setSelectedToolId(tool.id)
     setTerminalName(tool.label)
-    setCommand(tool.cmd)
+    setCommand(tool.path || tool.cmd)
   }
 
   const selectCustom = () => {

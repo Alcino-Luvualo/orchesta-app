@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { findNonOverlappingPosition } from '../../shared/canvasPlacement'
 
 export type NodeKind = 'terminal' | 'note' | 'files' | 'browser' | 'text' | 'shape'
 
@@ -16,7 +17,7 @@ export interface NodeProperties {
   text?: string
   drawing?: boolean
   points?: Array<{ x: number; y: number }>
-  shapeType?: 'rectangle' | 'rounded' | 'ellipse' | 'diamond' | 'triangle' | 'line'
+  shapeType?: 'rectangle' | 'rounded' | 'ellipse' | 'diamond' | 'triangle' | 'star' | 'heart' | 'line'
   fill?: string
   stroke?: string
   strokeWidth?: number
@@ -151,25 +152,8 @@ interface WorkspaceState {
   setDaemonError: (error: string | null) => void
 }
 
-const initialNodePosition = (nodes: CanvasNodeData[], node: CanvasNodeData) => {
-  let x = Math.round(node.x)
-  let y = Math.round(node.y)
-  const collides = (left: number, top: number) => nodes.some((other) => !(
-    left + node.width + 14 <= other.x ||
-    left >= other.x + other.width + 14 ||
-    top + node.height + 14 <= other.y ||
-    top >= other.y + other.height + 14
-  ))
-  if (!collides(x, y)) return { x, y }
-  for (let radius = 16; radius <= 480; radius += 16) {
-    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 8) {
-      const candidateX = Math.round(node.x + Math.cos(angle) * radius)
-      const candidateY = Math.round(node.y + Math.sin(angle) * radius)
-      if (!collides(candidateX, candidateY)) return { x: candidateX, y: candidateY }
-    }
-  }
-  return { x, y }
-}
+const initialNodePosition = (nodes: CanvasNodeData[], node: CanvasNodeData) =>
+  findNonOverlappingPosition(nodes, node, 24)
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   currentScreen: 'home',
@@ -282,7 +266,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   addNode: (node) => set((state) => ({
     history: [...state.history, { nodes: state.nodes, edges: state.edges }].slice(-100),
     future: [],
-    nodes: [...state.nodes, { ...node, ...initialNodePosition(state.nodes, node) }]
+    // Ink, shapes and text are compositional canvas content and may overlap
+    // deliberately. Card-like resources (terminals, notes, files, browsers)
+    // start in free space so automatic/manual creation never covers a peer.
+    nodes: [...state.nodes, node.kind === 'shape' || node.kind === 'text'
+      ? { ...node, x: Math.round(node.x), y: Math.round(node.y) }
+      : { ...node, ...initialNodePosition(state.nodes, node) }]
   })),
   updateNode: (id, partial) => set((state) => ({
     nodes: state.nodes.map((node) => node.id !== id

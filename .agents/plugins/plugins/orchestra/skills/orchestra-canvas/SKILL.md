@@ -61,6 +61,7 @@ action:
 - notes: `orchestra note-read`, `note-write`, `note-append` or `note create`
 - connected files: `orchestra files` and `orchestra workspace`
 - browser portals: `orchestra portal` or its `orchestra browser` alias
+- size of objects created by this terminal: `orchestra canvas resize`
 - raw interactive TUI control only when no semantic operation can do the job
 
 Do not send a normal agent briefing through `orchestra terminal type`. Large or
@@ -164,6 +165,15 @@ Immediately rerun `orchestra connections` and `orchestra agents` and require a
 visible edge with the needed permissions. A returned `sessionId` proves only
 that a terminal was created; it does not prove that it is connected. Do not
 delegate work until the edge is confirmed.
+
+Notes, browsers and terminals created through Orchestra record their creator.
+Resize one of those objects without covering its neighbours using:
+
+```bash
+orchestra canvas resize <node-id> --width <pixels> --height <pixels>
+```
+
+The daemon rejects attempts to resize objects created by another terminal.
 
 ## Connected files and workspace
 
