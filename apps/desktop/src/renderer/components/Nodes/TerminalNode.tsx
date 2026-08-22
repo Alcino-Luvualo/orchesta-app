@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Handle, Position, NodeResizer } from '@xyflow/react'
 import { CompletionContext } from '@codemirror/autocomplete'
-import { FileCode2, FolderOpen, GitBranch, Maximize2, Mic, Minimize2, Paperclip, Plus, Square, X } from 'lucide-react'
+import { Ellipsis, FileCode2, FolderOpen, GitBranch, Maximize2, Mic, Minimize2, Paperclip, Plus, Square, X } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
@@ -21,7 +21,7 @@ import { detectTerminalFileReferences, osc52Response, parseOsc52, readTerminalSe
 import { getTerminalTransformScale, isIdentityTerminalScale, mapTerminalPointerToLayout } from './terminalGeometry'
 import { DEFAULT_TERMINAL_KEYBOARD_PROTOCOL, isDirectInteractiveTerminalCommand, isMultilineEnter, isNativeEnterData, multilineEnterPayload, shellQuotePath, terminalPastePayload, TerminalKeyboardProtocol } from './terminalInput'
 import { agentContextInput, AgentContext, materializeAgentContext } from './agentContext'
-import { createBrowserSpeechRecognitionProvider, createLocalWhisperProvider, requestBrowserMicrophonePermission, TerminalVoiceController, VoiceInputSnapshot } from './terminalVoice'
+import { createBrowserSpeechRecognitionProvider, TerminalVoiceController, VoiceInputSnapshot } from './terminalVoice'
 
 type TerminalInteractionMode =
   | 'shell_prompt'
@@ -39,7 +39,6 @@ type PendingClipboardRequest = {
 }
 
 function voiceStateLabel(snapshot: VoiceInputSnapshot): string {
-  if (snapshot.state === 'requesting-permission') return 'A pedir permissão de microfone…'
   if (snapshot.state === 'recording') return 'A gravar… Clica no quadrado para parar e transcrever.'
   if (snapshot.state === 'processing') return 'A transcrever…'
   if (snapshot.state === 'inserting') return 'A inserir transcrição…'
@@ -249,7 +248,6 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   const [clipboardPrompt, setClipboardPrompt] = useState<PendingClipboardRequest | null>(null)
   const [attention, setAttention] = useState(false)
   const [notificationText, setNotificationText] = useState('')
-  const [voiceConsentOpen, setVoiceConsentOpen] = useState(false)
   const [voiceSnapshot, setVoiceSnapshot] = useState<VoiceInputSnapshot>({ state: 'idle', terminalId: null, error: null })
   const { updateNode, deleteNode, setSelectedNodeId, commitHistory, theme, activeWorkspace } = useWorkspaceStore()
 
@@ -265,7 +263,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   const runtimeChip = String(props.runtime || props.nodeVersion || 'v26.7.0')
   const gitSummary = typeof props.gitSummary === 'string' && props.gitSummary.trim() ? props.gitSummary : 'Git · clean'
   const explorerLabel = String(props.explorerLabel || 'File explorer')
-  if (voiceProviderRef.current === undefined) voiceProviderRef.current = createLocalWhisperProvider() || createBrowserSpeechRecognitionProvider()
+  if (voiceProviderRef.current === undefined) voiceProviderRef.current = createBrowserSpeechRecognitionProvider()
   if (!securitySettingsRef.current) securitySettingsRef.current = readTerminalSecuritySettings()
   if (!historyStoreRef.current) historyStoreRef.current = new CommandHistoryStore(id, id)
   if (!blockStoreRef.current) blockStoreRef.current = new TerminalBlockStore()
@@ -1021,14 +1019,12 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
 
   const beginVoiceInput = () => {
     const provider = voiceProviderRef.current
-    setVoiceConsentOpen(false)
     if (!provider) {
       setVoiceSnapshot({ state: 'error', terminalId: id, error: 'Este Chromium não disponibiliza um provider de transcrição.' })
       return
     }
     void voiceControllerRef.current.start({
       terminalId: id,
-      permission: requestBrowserMicrophonePermission,
       provider,
       callbacks: {
         currentTerminalId: () => voiceTerminalIdRef.current,
@@ -1039,12 +1035,12 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
   }
 
   const isVoiceRecording = voiceSnapshot.state === 'recording'
-  const isVoiceBusy = voiceSnapshot.state === 'requesting-permission' || isVoiceRecording || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting'
+  const isVoiceBusy = isVoiceRecording || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting'
   const voiceButtonLabel = isVoiceRecording ? 'Parar gravação e transcrever' : voiceStateLabel(voiceSnapshot)
   const handleVoiceButton = () => {
     if (isVoiceRecording) voiceControllerRef.current.stop()
     else if (isVoiceBusy) voiceControllerRef.current.cancel()
-    else { voiceControllerRef.current.reset(); setVoiceConsentOpen(true) }
+    else { voiceControllerRef.current.reset(); beginVoiceInput() }
   }
   const handleVoiceStateAction = () => {
     if (isVoiceRecording) voiceControllerRef.current.stop()
@@ -1171,7 +1167,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
           </span>)}
           <span className="terminal-chip" title="Runtime do terminal"><FileCode2 className="icon" />{runtimeChip}</span>
           <button type="button" className={`terminal-chip terminal-chip-icon terminal-voice-button ${voiceSnapshot.state}`} data-state={voiceSnapshot.state} aria-label={voiceButtonLabel} aria-pressed={isVoiceRecording} title={voiceButtonLabel} onClick={handleVoiceButton}>
-            {isVoiceRecording ? <Square className="icon" aria-hidden="true" /> : <Mic className="icon" aria-hidden="true" />}
+            {isVoiceRecording ? <Square className="icon" aria-hidden="true" /> : (isVoiceBusy ? <Ellipsis className="icon" aria-hidden="true" /> : <Mic className="icon" aria-hidden="true" />)}
           </button>
           <span className="terminal-chip terminal-chip-git" title="Estado do Git"><GitBranch className="icon" />{gitSummary}</span>
           <span className="terminal-chip terminal-chip-explorer" title="Explorador de ficheiros"><FolderOpen className="icon" />{explorerLabel}</span>
@@ -1191,13 +1187,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
           <TerminalBlockList blocks={blocks} onReinput={reinputCommand} onRerun={rerunCommand} />
           <div ref={terminalRef} className="terminal-body" />
           {notificationText && <div className="terminal-notification" role="status">{notificationText}</div>}
-          {voiceConsentOpen && <div className="terminal-security-prompt terminal-voice-consent nodrag" role="dialog" aria-label="Consentimento para entrada de voz">
-            <strong>Usar o microfone neste terminal?</strong>
-            <span>{voiceProviderRef.current?.label || 'Provider indisponível'} · {voiceProviderRef.current?.audioLeavesMachine ? 'o áudio pode sair da máquina' : 'processamento local'}</span>
-            <span>{voiceProviderRef.current?.networkDisclosure || 'Este build não possui um provider de transcrição.'}</span>
-            <div><button type="button" onClick={() => { setVoiceConsentOpen(false); setVoiceSnapshot({ state: 'cancelled', terminalId: id, error: null }) }}>Cancelar</button><button type="button" disabled={!voiceProviderRef.current} onClick={beginVoiceInput}>Permitir e gravar</button></div>
-          </div>}
-          {!voiceConsentOpen && voiceSnapshot.state !== 'idle' && <div className={`terminal-voice-state ${voiceSnapshot.state}`} role={voiceSnapshot.state === 'error' ? 'alert' : 'status'}><span>{voiceStateLabel(voiceSnapshot)}</span><button type="button" className={isVoiceRecording ? 'recording' : ''} onClick={handleVoiceStateAction}>{isVoiceRecording ? <><Square className="icon" aria-hidden="true" />Parar e transcrever</> : isVoiceBusy ? 'Cancelar' : 'Fechar'}</button></div>}
+          {voiceSnapshot.state === 'error' && <div className="terminal-voice-state error" role="alert"><span>{voiceStateLabel(voiceSnapshot)}</span><button type="button" onClick={handleVoiceStateAction}>Fechar</button></div>}
           {clipboardPrompt && <div className="terminal-security-prompt nodrag" role="dialog" aria-label="Permissão de clipboard">
             <strong>{clipboardPrompt.direction === 'write' ? 'Um programa quer escrever no clipboard.' : 'Um programa quer ler o clipboard.'}</strong>
             <span>OSC 52 · {clipboardPrompt.selection || 'c'}</span>
