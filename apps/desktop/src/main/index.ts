@@ -386,7 +386,7 @@ function portalShouldBeVisible(record: PortalRecord): boolean {
   return Boolean(
     record.desiredVisible &&
     record.presentationActive &&
-    record.firstFrameReady &&
+    (record.firstFrameReady || record.lifecycle === 'loading') &&
     (record.lifecycle === 'ready' || record.lifecycle === 'loading') &&
     !record.frozen &&
     nativePortalSuppressionReasons.size === 0
@@ -804,6 +804,10 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   const partition = portalPartitionForId(portalId)
   const portalSession = session.fromPartition(partition)
   portalSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+  const cleanUserAgent = portalSession.getUserAgent()
+    .replace(/Electron\/\S+\s?/g, '')
+    .replace(/orchestra[^\s/]*\/\S+\s?/gi, '')
+  portalSession.setUserAgent(cleanUserAgent)
   const view = new WebContentsView({
     webPreferences: {
       partition,
@@ -814,6 +818,7 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
       allowRunningInsecureContent: false
     }
   })
+  view.webContents.setUserAgent(cleanUserAgent)
   // A neutral backing color prevents an unpainted GPU surface from appearing
   // black during the first frame. Actual page pixels replace it immediately.
   view.setBackgroundColor('#ffffff')
@@ -896,21 +901,33 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
     record.lifecycle = 'loading'
     record.navigationGeneration += 1
-    record.firstFrameReady = false
     record.lastError = null
     clearPortalRefs(record)
     emitPortalRecordEvent(record, 'portal:loading', { loading: true })
     applyPortalVisibility(record)
   })
+  view.webContents.on('dom-ready', () => {
+    if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    record.firstFrameReady = true
+    if (record.lifecycle === 'loading') record.lifecycle = record.frozen ? 'frozen' : 'ready'
+    applyPortalVisibility(record)
+    emitPortalRecordEvent(record, 'portal:ready', {
+      url: record.url,
+      state: record.lifecycle,
+      firstFrame: true
+    })
+  })
   view.webContents.on('did-finish-load', () => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
-    // A completed navigation only guarantees that the document exists. Keep
-    // the native child hidden until a compositor-backed capture confirms that
-    // at least one frame was painted; this avoids a blank/white native surface
-    // flashing over the renderer during portal creation.
-    record.firstFrameReady = false
     record.lifecycle = record.frozen ? 'frozen' : 'ready'
     record.lastError = null
+    // Mark the portal as frame-ready immediately so applyPortalVisibility can
+    // make it visible right away. On some Linux/GPU configurations capturePage()
+    // cannot produce a frame from a hidden WebContentsView, which would leave
+    // firstFrameReady = false permanently and keep the portal blank. The
+    // screenshot is still attempted afterwards to populate the snapshot cache
+    // used during motion/transitioning, but visibility must not depend on it.
+    record.firstFrameReady = true
     applyPortalVisibility(record)
     void screenshotPortal(record).then(() => {
       if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
@@ -929,12 +946,18 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   })
   view.webContents.on('did-stop-loading', () => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    record.firstFrameReady = true
+    if (record.lifecycle === 'loading') record.lifecycle = record.frozen ? 'frozen' : 'ready'
+    applyPortalVisibility(record)
     emitPortalRecordEvent(record, 'portal:loading', { loading: false, state: record.lifecycle })
   })
   view.webContents.on('did-navigate', (_event, url) => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
     clearPortalRefs(record)
     record.url = url
+    record.firstFrameReady = true
+    if (record.lifecycle === 'loading') record.lifecycle = record.frozen ? 'frozen' : 'ready'
+    applyPortalVisibility(record)
     emitPortalRecordEvent(record, 'portal:navigation', { url, canGoBack: view.webContents.navigationHistory.canGoBack(), canGoForward: view.webContents.navigationHistory.canGoForward() })
   })
   view.webContents.on('did-navigate-in-page', (_event, url) => {
@@ -942,6 +965,9 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
     clearPortalRefs(record)
     if (record.url !== url) record.navigationGeneration += 1
     record.url = url
+    record.firstFrameReady = true
+    if (record.lifecycle === 'loading') record.lifecycle = record.frozen ? 'frozen' : 'ready'
+    applyPortalVisibility(record)
     emitPortalRecordEvent(record, 'portal:navigation', { url, canGoBack: view.webContents.navigationHistory.canGoBack(), canGoForward: view.webContents.navigationHistory.canGoForward() })
     schedulePortalSnapshot(record)
   })
@@ -2268,7 +2294,6 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
     const url = normalizePortalUrl(typeof payload.url === 'string' ? payload.url : 'about:blank')
     record.url = url
     record.lifecycle = 'loading'
-    record.firstFrameReady = false
     record.lastError = null
     applyPortalVisibility(record)
     if (!portalViewAlive(record)) return { url, state: 'destroyed' }
@@ -2282,7 +2307,6 @@ async function dispatchPortalControl(type: string, payload: Record<string, unkno
     else if (action === 'forward' && record.view.webContents.navigationHistory.canGoForward()) record.view.webContents.goForward()
     else if (action === 'reload') {
       record.lifecycle = 'loading'
-      record.firstFrameReady = false
       record.lastError = null
       applyPortalVisibility(record)
       record.view.webContents.reload()
@@ -3178,7 +3202,6 @@ app.whenReady().then(() => {
     const nextUrl = normalizePortalUrl(String(url || 'about:blank'))
     record.url = nextUrl
     record.lifecycle = 'loading'
-    record.firstFrameReady = false
     record.lastError = null
     applyPortalVisibility(record)
     if (!portalViewAlive(record)) return { url: nextUrl, state: 'destroyed' }
@@ -3194,7 +3217,6 @@ app.whenReady().then(() => {
     else if (action === 'forward' && record.view.webContents.navigationHistory.canGoForward()) record.view.webContents.goForward()
     else if (action === 'reload') {
       record.lifecycle = 'loading'
-      record.firstFrameReady = false
       record.lastError = null
       applyPortalVisibility(record)
       record.view.webContents.reload()
