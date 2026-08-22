@@ -178,15 +178,13 @@ async function testVoiceInputLifecycle() {
 
   await controller.start({
     terminalId,
-    permission: async () => 'denied',
     provider: provider(async () => undefined),
     callbacks
   })
-  assert(controller.current.state === 'error' && inserted.length === 0, 'denied microphone permission was not surfaced safely')
+  assert(controller.current.state === 'error' && inserted.length === 0, 'silent voice input was not surfaced safely')
 
   await controller.start({
     terminalId,
-    permission: async () => 'granted',
     provider: provider(async ({ onPhase }) => onPhase('processing')),
     callbacks
   })
@@ -194,7 +192,6 @@ async function testVoiceInputLifecycle() {
 
   await controller.start({
     terminalId,
-    permission: async () => 'granted',
     provider: provider(async () => { throw new Error('provider failed') }),
     callbacks
   })
@@ -202,7 +199,6 @@ async function testVoiceInputLifecycle() {
 
   await controller.start({
     terminalId,
-    permission: async () => 'granted',
     provider: provider(async ({ onTranscript, onPhase }) => {
       onTranscript('hello')
       onPhase('processing')
@@ -212,7 +208,7 @@ async function testVoiceInputLifecycle() {
   })
   assert(inserted.join('') === 'hello world', 'progressive transcript chunks were duplicated or joined incorrectly')
   assert(!inserted.join('').endsWith('\r') && !inserted.join('').endsWith('\n'), 'voice input auto-submitted the terminal')
-  for (const expected of ['requesting-permission', 'recording', 'processing', 'inserting', 'idle']) {
+  for (const expected of ['recording', 'processing', 'inserting', 'idle']) {
     assert(updates.includes(expected), `voice lifecycle never entered ${expected}`)
   }
 
@@ -220,7 +216,6 @@ async function testVoiceInputLifecycle() {
   let manualStopAborted = false
   const stopPending = controller.start({
     terminalId,
-    permission: async () => 'granted',
     provider: provider(({ signal, stopSignal, onTranscript, onPhase }) => new Promise((resolve, reject) => {
       signal.addEventListener('abort', () => {
         manualStopAborted = true
@@ -243,14 +238,14 @@ async function testVoiceInputLifecycle() {
   assert(inserted.at(-1) === 'mensagem ditada' && controller.current.state === 'idle', 'a manually stopped recording was not transcribed into the input')
 
   const waitForAbort = ({ signal }) => new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
-  const cancelPending = controller.start({ terminalId, permission: async () => 'granted', provider: provider(waitForAbort), callbacks })
+  const cancelPending = controller.start({ terminalId, provider: provider(waitForAbort), callbacks })
   await new Promise((resolve) => setTimeout(resolve, 0))
   controller.cancel()
   await cancelPending
   assert(controller.current.state === 'cancelled', 'explicit voice cancellation did not win the provider race')
 
   terminalId = 'terminal-a'
-  const changePending = controller.start({ terminalId, permission: async () => 'granted', provider: provider(waitForAbort), callbacks })
+  const changePending = controller.start({ terminalId, provider: provider(waitForAbort), callbacks })
   await new Promise((resolve) => setTimeout(resolve, 0))
   terminalId = 'terminal-b'
   controller.terminalChanged(terminalId)
