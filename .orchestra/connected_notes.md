@@ -563,3 +563,16 @@ esta pessimo mesmo a experiencia
 
 - [ ] Outro bug é de que colar um texto grande em agy cli, esta a colar o terminal, tipo se colares la linhas simbolos e tal e texto grande, faz esse texte
 
+## Nota: Checklist: ingredientes para bolo (conectada a Shell)
+# Ingredientes para bolo
+
+- [ ] Farinha de trigo
+- [ ] Açúcar
+- [ ] Ovos
+- [ ] Manteiga ou óleo
+- [ ] Leite
+- [ ] Fermento em pó
+- [ ] Essência de baunilha (opcional)
+- [ ] Uma pitada de sal
+
+
