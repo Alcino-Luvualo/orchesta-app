@@ -51,7 +51,7 @@ export function applyCanvasNodeChanges(
   selectedNodeId: string | null,
 ): CanvasNodeChangeResult {
   const nextMeasurements = new Map(measurements)
-  const positionChanges = new Map<string, { x: number; y: number }>()
+  const positionChanges = new Map<string, { x: number; y: number; dragging: boolean }>()
   const removedIds = new Set<string>()
   let nextSelectedNodeId = selectedNodeId
 
@@ -69,7 +69,14 @@ export function applyCanvasNodeChanges(
         if (change.position && Number.isFinite(change.position.x) && Number.isFinite(change.position.y)) {
           // React Flow can queue more than one position change in a batch.
           // The final position is the only one that should reach the domain.
-          positionChanges.set(change.id, { x: change.position.x, y: change.position.y })
+          // Preserve the dragging flag so collision detection can be skipped
+          // while the user is actively moving a node — applying it mid-drag
+          // rejects valid positions and makes nodes snap back.
+          positionChanges.set(change.id, {
+            x: change.position.x,
+            y: change.position.y,
+            dragging: change.dragging === true,
+          })
         }
         break
       case 'select':
@@ -97,6 +104,18 @@ export function applyCanvasNodeChanges(
 
     const wantedX = Math.round(requested.x)
     const wantedY = Math.round(requested.y)
+
+    // Skip collision detection while the user is actively dragging. Enforcing
+    // it mid-drag rejects valid intermediate positions (the node briefly
+    // overlaps another during transit) and causes the node to snap back to its
+    // starting coordinates on every frame. Collision is still applied on the
+    // final drop (dragging === false) to prevent nodes from landing on each other.
+    if (requested.dragging) {
+      if (wantedX === node.x && wantedY === node.y) return node
+      positionChanged = true
+      return { ...node, x: wantedX, y: wantedY }
+    }
+
     const currentRect: CanvasRect = {
       x: node.x,
       y: node.y,
