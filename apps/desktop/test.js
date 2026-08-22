@@ -418,16 +418,28 @@ if (/onMoveStart=\{\(\) => window\.dispatchEvent\(new CustomEvent\('orchestra:ca
 const workspaceStoreSource = fs.readFileSync(path.join(sourceRoot, 'renderer/store/workspaceStore.ts'), 'utf8')
 if (!workspaceStoreSource.includes("orchestra:node-deleting") || !canvasSource.includes("orchestra:node-deleting") || !canvasSource.includes('restoreFocus(false)')) throw new Error('Deleting a focused node must exit focus before removal')
 const cableSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Canvas/CableSystem/CableSystem.tsx'), 'utf8')
-if (!cableSource.includes('onEdgeClick(edge.id)') || !canvasSource.includes('deleteEdge(selectedEdgeId); setSelectedEdgeId(null)') || !workspaceStoreSource.includes('history: [...state.history, { nodes: state.nodes, edges: state.edges }]') || !canvasSource.includes("'canvas.edge.delete'")) throw new Error('Disconnect must preserve edge selection, undo history, persistence, and visual removal')
+if (!cableSource.includes('onEdgeClickRef.current(edgeId)') || !canvasSource.includes('deleteEdge(selectedEdgeId); setSelectedEdgeId(null)') || !workspaceStoreSource.includes('history: [...state.history, { nodes: state.nodes, edges: state.edges }]') || !canvasSource.includes("'canvas.edge.delete'")) throw new Error('Disconnect must preserve edge selection, undo history, persistence, and visual removal')
 if (!cableSource.includes('getBoundingClientRect()') || !cableSource.includes('screen coordinates') || cableSource.includes('mask="url(#nodes-mask)"')) throw new Error('Cables must use rendered DOM rectangles without a mismatched flow-space mask')
 const missingCableEndpointGuard = cableSource.indexOf('if (!source || !target) {')
 const renderedCableRegistration = cableSource.indexOf('renderedEdges.add(edge.id)')
 if (missingCableEndpointGuard < 0 || renderedCableRegistration < missingCableEndpointGuard || !cableSource.includes('simsRef.current.delete(edge.id)') || !cableSource.includes('persisted coordinate is') || cableSource.includes('const viewport = flow.getViewport()')) {
   throw new Error('A cable can survive without two currently rendered endpoint nodes')
 }
+// Cables must tolerate a brief absence of the endpoint node DOM element during
+// a drag, using a frame counter instead of immediate removal.
+if (!cableSource.includes('missingNodeFramesRef') || !cableSource.includes('next >= 8')) throw new Error('Cables must tolerate transient node DOM absence during drag instead of blinking on every frame')
 if (!cableSource.includes('temporaryCableRendered') || !cableSource.includes('if (!temporaryCableRendered)')) throw new Error('Temporary cables can survive after their source node disappears')
 if (!browserSource.includes("scheduleBoundsSync('transitioning', true)") || !mainSource.includes("mode === 'transition'") || !mainSource.includes("mode !== 'transitioning'")) throw new Error('Browser portal motion must keep the native view aligned during drag')
 if (!mainSource.includes('record.view.webContents.setZoomFactor(nextZoom)')) throw new Error('Browser logical viewport no longer follows the canvas scale')
+// The 900ms external-refresh poll must not overwrite positions of nodes that
+// the user has just moved but that haven't yet been saved to the DB (race
+// window between the 350ms debounce and the 900ms poll).
+if (!canvasSource.includes('dirtyNodeIdsRef') || !canvasSource.includes('dirtyNodeIds.has(node.id)') || !canvasSource.includes('dirtyNodeIdsRef.current.delete(node.id)')) throw new Error('External refresh poll must skip geometry merge for locally dirty nodes')
+// The same poll must not reset a focused node to its pre-focus dimensions.
+if (!canvasSource.includes('focusedNodeId') || !canvasSource.includes('node.id === focusedNodeId')) throw new Error('External refresh poll must not override focus-mode node geometry')
+// The browser portal must become visible immediately after load, not only
+// after a compositor screenshot succeeds (which can fail on Linux/GPU paths).
+if (mainSource.includes('record.firstFrameReady = false\n    record.lifecycle = record.frozen') || !mainSource.includes('record.firstFrameReady = true\n    applyPortalVisibility')) throw new Error('Browser portal must not stay hidden after did-finish-load because of a failed screenshot')
 const modalSources = [
   'components/Modals/RecruitAgentModal.tsx',
   'components/Modals/FilesDirectoryModal.tsx',
