@@ -216,6 +216,32 @@ async function testVoiceInputLifecycle() {
     assert(updates.includes(expected), `voice lifecycle never entered ${expected}`)
   }
 
+  let manualStopObserved = false
+  let manualStopAborted = false
+  const stopPending = controller.start({
+    terminalId,
+    permission: async () => 'granted',
+    provider: provider(({ signal, stopSignal, onTranscript, onPhase }) => new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        manualStopAborted = true
+        reject(new DOMException('Voice input cancelled', 'AbortError'))
+      }, { once: true })
+      stopSignal.addEventListener('abort', () => {
+        manualStopObserved = true
+        onPhase('processing')
+        onTranscript('mensagem ditada')
+        resolve()
+      }, { once: true })
+    })),
+    callbacks
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert(controller.current.state === 'recording', 'voice input never entered the manual recording state')
+  controller.stop()
+  await stopPending
+  assert(manualStopObserved && !manualStopAborted, 'stopping a recording cancelled its audio instead of processing it')
+  assert(inserted.at(-1) === 'mensagem ditada' && controller.current.state === 'idle', 'a manually stopped recording was not transcribed into the input')
+
   const waitForAbort = ({ signal }) => new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
   const cancelPending = controller.start({ terminalId, permission: async () => 'granted', provider: provider(waitForAbort), callbacks })
   await new Promise((resolve) => setTimeout(resolve, 0))
