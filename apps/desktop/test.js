@@ -431,7 +431,7 @@ if (!cableSource.includes('missingNodeFramesRef') || !cableSource.includes('next
 if (!cableSource.includes('temporaryCableRendered') || !cableSource.includes('if (!temporaryCableRendered)')) throw new Error('Temporary cables can survive after their source node disappears')
 if (!browserSource.includes("scheduleBoundsSync('transitioning', true)") || !mainSource.includes("mode === 'transition'") || !mainSource.includes("mode !== 'transitioning'")) throw new Error('Browser portal motion must keep the native view aligned during drag')
 if (!mainSource.includes('record.view.webContents.setZoomFactor(nextZoom)')) throw new Error('Browser logical viewport no longer follows the canvas scale')
-if (canvasSource.includes("url: 'https://www.google.com'") || browserSource.includes("props.url && props.url !== 'about:blank' ? props.url : 'https://www.google.com'")) throw new Error('A new browser portal must not make an automatic Google request')
+if (!canvasSource.includes("url: 'https://www.google.com'") || !browserSource.includes("props.url && props.url !== 'about:blank' ? props.url : 'https://www.google.com'")) throw new Error('A new browser portal must open the Google homepage instead of a blank tab')
 // The 900ms external-refresh poll must not overwrite positions of nodes that
 // the user has just moved but that haven't yet been saved to the DB (race
 // window between the 350ms debounce and the 900ms poll).
