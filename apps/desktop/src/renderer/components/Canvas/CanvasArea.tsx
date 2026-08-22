@@ -730,10 +730,10 @@ export const CanvasArea: React.FC = () => {
         cwd: activeFloor?.path || activeWorkspace?.path || '',
         agent: kind === 'terminal' ? 'Claude Code' : undefined,
         ...(kind === 'note' ? { content: '', color: '#fff2a8' } : {}),
-        // A new portal must not make an unsolicited request to a search
-        // provider. Apart from being surprising, that can trigger an
-        // anti-bot challenge before the user has chosen a destination.
-        ...(kind === 'browser' ? { url: 'about:blank' } : {})
+        // Open a useful first page without submitting a search on the user's
+        // behalf. The Google homepage keeps the portal out of a blank/black
+        // initial state while the user still chooses the actual query.
+        ...(kind === 'browser' ? { url: 'https://www.google.com' } : {})
       }
     }
     addNode(newNode)
