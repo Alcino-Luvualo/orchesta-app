@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Check, Code2, FolderOpen, MousePointer2, Pencil, Sparkles, SquareTerminal, Terminal as TerminalIcon, Trash2, X } from 'lucide-react'
+import { Bot, Check, Code2, FolderOpen, MousePointer2, Pencil, Plus, Sparkles, SquareTerminal, Terminal as TerminalIcon, Trash2, X } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { CustomAgent, customAgentArgv, readCustomAgents, validateCustomAgent, writeCustomAgents } from './agentCatalog'
 import { useModalA11y } from './modalUtils'
@@ -73,6 +73,7 @@ export const RecruitAgentModal: React.FC = () => {
   const [agentDraftCommand, setAgentDraftCommand] = useState('')
   const [agentDraftOptions, setAgentDraftOptions] = useState('')
   const [agentCatalogError, setAgentCatalogError] = useState('')
+  const [agentEditorOpen, setAgentEditorOpen] = useState(false)
   const [monitorActivity, setMonitorActivity] = useState(true)
   const [tab, setTab] = useState<ModalTab>('details')
   const [accent, setAccent] = useState('lime')
@@ -113,6 +114,7 @@ export const RecruitAgentModal: React.FC = () => {
     setAgentDraftCommand('')
     setAgentDraftOptions('')
     setAgentCatalogError('')
+    setAgentEditorOpen(false)
     selectionVersionRef.current = 0
     const initialSelectionVersion = selectionVersionRef.current
 
@@ -148,13 +150,15 @@ export const RecruitAgentModal: React.FC = () => {
     setSelectedToolId(tool.id)
     setTerminalName(tool.label)
     setCommand(tool.path || tool.cmd)
+    setTab('details')
   }
 
   const selectCustom = () => {
     selectionVersionRef.current += 1
     setSelectedToolId('custom')
-    setTerminalName('Custom Terminal')
+    setTerminalName('Terminal personalizado')
     setCommand(customCommand)
+    setTab('details')
   }
 
   const selectCatalogAgent = (agent: CustomAgent) => {
@@ -171,6 +175,7 @@ export const RecruitAgentModal: React.FC = () => {
     setAgentDraftCommand(agent.command)
     setAgentDraftOptions(agent.options.join('\n'))
     setAgentCatalogError('')
+    setAgentEditorOpen(true)
   }
 
   const clearAgentDraft = () => {
@@ -179,6 +184,12 @@ export const RecruitAgentModal: React.FC = () => {
     setAgentDraftCommand('')
     setAgentDraftOptions('')
     setAgentCatalogError('')
+    setAgentEditorOpen(false)
+  }
+
+  const startCatalogAgent = () => {
+    clearAgentDraft()
+    setAgentEditorOpen(true)
   }
 
   const saveCatalogAgent = () => {
@@ -192,6 +203,7 @@ export const RecruitAgentModal: React.FC = () => {
     const next = [...customAgents.filter((agent) => agent.id !== result.value?.id), result.value]
     writeCustomAgents(next)
     setCustomAgents(next)
+    selectCatalogAgent(result.value)
     clearAgentDraft()
   }
 
@@ -225,7 +237,7 @@ export const RecruitAgentModal: React.FC = () => {
       width: nodeWidth,
       height: nodeHeight,
       properties: {
-        title: terminalName.trim() || 'New Terminal',
+        title: terminalName.trim() || 'Novo terminal',
         agent: terminalName.trim() || 'Terminal',
         command: safeAgent.command,
         ...((selectedTool?.id === 'zsh' || selectedTool?.id === 'bash') ? {} : { commandArgv: customAgentArgv(safeAgent) }),
@@ -257,7 +269,7 @@ export const RecruitAgentModal: React.FC = () => {
         <header className="terminal-create-head">
           <div className="terminal-create-title-wrap">
             <span className="terminal-create-title-icon" aria-hidden="true"><TerminalIcon className="icon" /></span>
-            <div><h2 id="terminal-create-title">New Terminal</h2><p id="terminal-create-description">Escolhe um provider e configura o teu terminal.</p></div>
+            <div><h2 id="terminal-create-title">Criar terminal</h2><p id="terminal-create-description">Escolhe um agente e configura o terminal.</p></div>
           </div>
           <button className="icon-btn" type="button" aria-label="Fechar criação de terminal" onClick={() => setRecruitModalOpen(false)}>
             <X className="icon" />
@@ -266,85 +278,101 @@ export const RecruitAgentModal: React.FC = () => {
 
         <form className="terminal-create-form" onSubmit={(event) => { event.preventDefault(); handleCreate() }}>
           <section className="terminal-create-quick" aria-labelledby="terminal-quick-start">
-            <div className="terminal-section-title-row"><span id="terminal-quick-start" className="terminal-create-label">Quick Start</span><span className="terminal-detected-status" aria-live="polite">{quickTools.filter((tool) => tool.installed).length} available</span></div>
-            <div className="terminal-provider-row" role="list" aria-label="Terminal providers">
+            <div className="terminal-section-title-row"><span id="terminal-quick-start" className="terminal-create-label">Início rápido</span><span className="terminal-detected-status" aria-live="polite">{quickTools.filter((tool) => tool.installed).length} disponíveis</span></div>
+            <div className="terminal-provider-row" role="list" aria-label="Agentes disponíveis">
               {quickTools.map((tool) => (
                 <button
                   key={tool.id}
                   type="button"
                   className={`terminal-provider ${selectedToolId === tool.id && tool.installed ? 'selected' : ''}`}
                   aria-pressed={selectedToolId === tool.id && tool.installed}
-                  aria-label={`${tool.label}${tool.installed ? '' : ' (unavailable)'}`}
+                  aria-label={`${tool.label}${tool.installed ? '' : ' (indisponível)'}`}
                   disabled={!tool.installed}
                   onClick={() => selectTool(tool)}
-                  title={tool.installed ? tool.description : `${tool.description} · unavailable`}
+                  title={tool.installed ? tool.description : `${tool.description} · indisponível`}
                 >
                   <span className="terminal-provider-icon"><ToolIcon id={tool.id} /></span>
                   <span className="terminal-provider-name">{tool.label}</span>
-                  <small>{tool.installed ? 'Ready' : 'Unavailable'}</small>
+                  <span className="terminal-provider-state">{tool.installed ? 'Pronto' : 'Indisponível'}</span>
                   {tool.installed && <Check className="terminal-provider-check" aria-hidden="true" />}
                 </button>
               ))}
             </div>
             <button type="button" className={`terminal-custom-link ${selectedToolId === 'custom' ? 'selected' : ''}`} aria-pressed={selectedToolId === 'custom'} onClick={selectCustom}>
-              <span>Use a custom command</span><span aria-hidden="true">⌘</span>
+              <span>Usar comando personalizado</span><span aria-hidden="true">⌘</span>
             </button>
           </section>
 
-          <nav className="terminal-create-tabs" aria-label="Terminal settings" role="tablist">
-            <button id="terminal-details-tab" type="button" role="tab" aria-selected={tab === 'details'} aria-controls="terminal-details-panel" className={tab === 'details' ? 'active' : ''} onClick={() => setTab('details')}>Details</button>
-            <button id="terminal-appearance-tab" type="button" role="tab" aria-selected={tab === 'appearance'} aria-controls="terminal-appearance-panel" className={tab === 'appearance' ? 'active' : ''} onClick={() => setTab('appearance')}>Appearance</button>
-            <button id="terminal-agents-tab" type="button" role="tab" aria-selected={tab === 'agents'} aria-controls="terminal-agents-panel" className={tab === 'agents' ? 'active' : ''} onClick={() => setTab('agents')}>Agents</button>
+          <nav className="terminal-create-tabs" aria-label="Definições do terminal" role="tablist">
+            <button id="terminal-details-tab" type="button" role="tab" aria-selected={tab === 'details'} aria-controls="terminal-details-panel" className={tab === 'details' ? 'active' : ''} onClick={() => setTab('details')}>Detalhes</button>
+            <button id="terminal-appearance-tab" type="button" role="tab" aria-selected={tab === 'appearance'} aria-controls="terminal-appearance-panel" className={tab === 'appearance' ? 'active' : ''} onClick={() => setTab('appearance')}>Aspeto</button>
+            <button id="terminal-agents-tab" type="button" role="tab" aria-selected={tab === 'agents'} aria-controls="terminal-agents-panel" className={tab === 'agents' ? 'active' : ''} onClick={() => setTab('agents')}>Agentes</button>
           </nav>
 
           <section id={`terminal-${tab}-panel`} className="terminal-create-body" role="tabpanel" aria-labelledby={`terminal-${tab}-tab`}>
             {tab === 'details' ? (
-              <>
+              <div className="terminal-details-panel">
                 <label className="terminal-create-field">
-                  <span>Name</span>
-                  <input ref={nameInputRef} autoFocus id="terminal-name" value={terminalName} aria-label="Terminal name" onChange={(event) => setTerminalName(event.target.value)} />
+                  <span>Nome</span>
+                  <input ref={nameInputRef} autoFocus id="terminal-name" value={terminalName} aria-label="Nome do terminal" onChange={(event) => setTerminalName(event.target.value)} />
                 </label>
                 <label className="terminal-create-field">
-                  <span>Command</span>
-                  <input id="terminal-command" value={command} aria-label="Terminal command" aria-describedby="terminal-command-help" aria-invalid={!command.trim() || undefined} required onChange={(event) => { setCommand(event.target.value); if (selectedToolId === 'custom') setCustomCommand(event.target.value) }} />
+                  <span>Comando</span>
+                  <input id="terminal-command" value={command} aria-label="Comando do terminal" aria-invalid={!command.trim() || undefined} required onChange={(event) => { setCommand(event.target.value); if (selectedToolId === 'custom') setCustomCommand(event.target.value) }} />
                 </label>
-                <p id="terminal-command-help" className="terminal-command-help">O comando será iniciado no diretório escolhido.</p>
                 <label className="terminal-create-field terminal-directory-field">
-                  <span>Directory</span>
+                  <span>Diretório</span>
                   <span className="terminal-directory-control">
-                    <input id="terminal-directory" value={terminalDirectory} aria-label="Terminal directory" placeholder={activeWorkspace?.path || '/workspace'} required onChange={(event) => setTerminalDirectory(event.target.value)} />
+                    <input id="terminal-directory" value={terminalDirectory} aria-label="Diretório do terminal" placeholder={activeWorkspace?.path || '/workspace'} required onChange={(event) => setTerminalDirectory(event.target.value)} />
                     <button type="button" className="terminal-directory-button" onClick={() => void chooseTerminalDirectory()} title="Escolher diretório" aria-label="Escolher diretório"><FolderOpen className="icon" /></button>
                   </span>
                 </label>
-                <p className="terminal-command-help">O agente ou shell abre diretamente nesta pasta.</p>
                 <label className="terminal-create-check">
                   <input type="checkbox" checked={monitorActivity} onChange={(event) => setMonitorActivity(event.target.checked)} />
-                  <span>Monitor Activity</span>
-                  <span className="terminal-create-info" title="Show status and attention changes on the terminal node" aria-label="Monitora mudanças de estado">i</span>
+                  <span>Monitorizar atividade</span>
+                  <span className="terminal-create-info" title="Mostra alterações de estado e de atenção no nó do terminal" aria-label="Monitora mudanças de estado">i</span>
                 </label>
-              </>
+              </div>
             ) : tab === 'appearance' ? (
               <div className="terminal-appearance-panel">
-                <span className="terminal-create-field-title">Accent color</span>
-                <div className="terminal-accent-row" role="radiogroup" aria-label="Accent color">
+                <span className="terminal-create-field-title">Cor de destaque</span>
+                <div className="terminal-accent-row" role="radiogroup" aria-label="Cor de destaque">
                   {['lime', 'blue', 'purple', 'orange'].map((color) => (
                     <button key={color} type="button" role="radio" className={`terminal-accent terminal-accent-${color} ${accent === color ? 'selected' : ''}`} aria-label={color} aria-checked={accent === color} onClick={() => setAccent(color)} />
                   ))}
                 </div>
-                <p>Appearance settings are saved with this terminal node.</p>
+                <p>A cor fica guardada apenas neste terminal.</p>
               </div>
             ) : <div className="terminal-agents-panel">
-              <div className="terminal-agent-section"><span className="terminal-create-field-title">Known agents</span><p>Detetados automaticamente; continuam disponíveis sem cadastro manual.</p><div className="terminal-known-agents">{quickTools.filter((tool) => tool.id !== 'zsh' && tool.id !== 'bash').map((tool) => <div key={tool.id}><ToolIcon id={tool.id} /><span><b>{tool.label}</b><small>{tool.cmd} · {tool.installed ? 'disponível' : 'não detetado'}</small></span></div>)}</div></div>
-              <div className="terminal-agent-section"><span className="terminal-create-field-title">Custom agents</span><p>O executável e cada opção serão enviados como argv; nenhum comando é executado durante a configuração.</p><div className="terminal-custom-agents">{customAgents.map((agent) => <div key={agent.id}><span><b>{agent.name}</b><small>{customAgentArgv(agent).join(' ')}</small></span><button type="button" onClick={() => selectCatalogAgent(agent)}>Usar</button><button type="button" className="icon-btn" onClick={() => editCatalogAgent(agent)} aria-label={`Editar ${agent.name}`}><Pencil className="icon" /></button><button type="button" className="icon-btn danger" onClick={() => removeCatalogAgent(agent)} aria-label={`Remover ${agent.name}`}><Trash2 className="icon" /></button></div>)}{customAgents.length === 0 && <small>Nenhum agente personalizado.</small>}</div></div>
-              <div className="terminal-agent-editor"><label className="terminal-create-field"><span>Name</span><input value={agentDraftName} maxLength={80} onChange={(event) => setAgentDraftName(event.target.value)} /></label><label className="terminal-create-field"><span>Executable</span><input value={agentDraftCommand} placeholder="my-agent" onChange={(event) => setAgentDraftCommand(event.target.value)} /></label><label className="terminal-create-field"><span>Options · one argv item per line</span><textarea value={agentDraftOptions} rows={3} placeholder={'--model\nfast model'} onChange={(event) => setAgentDraftOptions(event.target.value)} /></label>{agentCatalogError && <p className="terminal-agent-error" role="alert">{agentCatalogError}</p>}<div><button type="button" onClick={clearAgentDraft}>Limpar</button><button type="button" className="primary" onClick={saveCatalogAgent}>{agentDraftId ? 'Guardar alterações' : 'Adicionar agente'}</button></div></div>
+              <div className="terminal-agent-catalog-head">
+                <div><span className="terminal-create-field-title">Agentes personalizados</span><p>Guarda comandos reutilizáveis; as opções são passadas como argv.</p></div>
+                <button type="button" className="terminal-agent-add" onClick={startCatalogAgent} aria-expanded={agentEditorOpen}><Plus className="icon" />Novo agente</button>
+              </div>
+              <div className="terminal-custom-agents">
+                {customAgents.map((agent) => <div key={agent.id}>
+                  <span><b>{agent.name}</b><small>{customAgentArgv(agent).join(' ')}</small></span>
+                  <div className="terminal-agent-actions"><button type="button" onClick={() => selectCatalogAgent(agent)}>Usar</button><button type="button" className="icon-btn" onClick={() => editCatalogAgent(agent)} aria-label={`Editar ${agent.name}`}><Pencil className="icon" /></button><button type="button" className="icon-btn danger" onClick={() => removeCatalogAgent(agent)} aria-label={`Remover ${agent.name}`}><Trash2 className="icon" /></button></div>
+                </div>)}
+                {customAgents.length === 0 && <div className="terminal-agent-empty"><TerminalIcon className="icon" /><span>Ainda não há agentes personalizados.</span></div>}
+              </div>
+              {agentEditorOpen && <section className="terminal-agent-editor" aria-label={agentDraftId ? 'Editar agente personalizado' : 'Adicionar agente personalizado'}>
+                <div className="terminal-agent-editor-head"><span>{agentDraftId ? 'Editar agente' : 'Novo agente'}</span><button type="button" className="icon-btn" onClick={clearAgentDraft} aria-label="Fechar editor de agente"><X className="icon" /></button></div>
+                <div className="terminal-agent-editor-fields">
+                  <label><span>Nome</span><input value={agentDraftName} maxLength={80} onChange={(event) => setAgentDraftName(event.target.value)} /></label>
+                  <label><span>Executável</span><input value={agentDraftCommand} placeholder="my-agent" onChange={(event) => setAgentDraftCommand(event.target.value)} /></label>
+                </div>
+                <label className="terminal-agent-options"><span>Opções <small>uma por linha</small></span><textarea value={agentDraftOptions} rows={2} placeholder={'--model\nfast model'} onChange={(event) => setAgentDraftOptions(event.target.value)} /></label>
+                {agentCatalogError && <p className="terminal-agent-error" role="alert">{agentCatalogError}</p>}
+                <div className="terminal-agent-editor-actions"><button type="button" onClick={clearAgentDraft}>Cancelar</button><button type="button" className="primary" disabled={!agentDraftName.trim() || !agentDraftCommand.trim()} onClick={saveCatalogAgent}>{agentDraftId ? 'Guardar' : 'Adicionar'}</button></div>
+              </section>}
             </div>}
           </section>
 
           <footer className="terminal-create-foot">
-            <span className="terminal-foot-hint">{canCreate ? 'Ready to create' : 'Choose an available provider or custom command'}</span>
+            <span className="terminal-foot-hint">{canCreate ? `${terminalName || 'Terminal'} pronto a criar` : 'Seleciona um agente disponível ou define um comando.'}</span>
             <div className="terminal-foot-actions">
-              <button type="button" className="terminal-create-cancel" onClick={() => setRecruitModalOpen(false)}>Cancel</button>
-              <button type="submit" className="terminal-create-submit" disabled={!canCreate}>Create terminal</button>
+              <button type="button" className="terminal-create-cancel" onClick={() => setRecruitModalOpen(false)}>Cancelar</button>
+              <button type="submit" className="terminal-create-submit" disabled={!canCreate}>Criar terminal</button>
             </div>
           </footer>
         </form>
