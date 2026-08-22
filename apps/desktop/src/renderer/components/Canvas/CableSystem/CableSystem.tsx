@@ -15,6 +15,15 @@ export const CableSystem: React.FC<{
   const svgRef = useRef<SVGSVGElement>(null);
   const simsRef = useRef<Map<string, CableSimulation>>(new Map());
   const tempSimRef = useRef<CableSimulation | null>(null);
+  // Store the callback in a ref so the RAF loop does not need to be torn down
+  // and recreated every time CanvasArea re-renders (which happens at 60fps
+  // during a drag), because that causes cables to blink on every frame.
+  const onEdgeClickRef = useRef(onEdgeClick);
+  onEdgeClickRef.current = onEdgeClick;
+  // Count consecutive frames where a node's DOM element is missing. A brief
+  // absence during React reconciliation is normal; only remove the cable after
+  // several consecutive misses so cables don't flash during a drag.
+  const missingNodeFramesRef = useRef<Map<string, number>>(new Map());
 
   const readRenderedObstacles = (svg: SVGSVGElement, svgRect: DOMRect): NodeRect[] => {
     const persistedNodes = useWorkspaceStore.getState().nodes
@@ -70,13 +79,22 @@ export const CableSystem: React.FC<{
         
         if (!source || !target) {
           // An edge can remain persisted while a legacy/filtered node is not
-          // rendered, or during a brief React Flow reconciliation frame. Drop
-          // both the simulation and its last SVG immediately so stale geometry
-          // cannot survive as a cable with two floating endpoints.
-          simsRef.current.delete(edge.id);
-          svg.querySelector(`#cable-g-${edge.id}`)?.remove();
+          // rendered, or during a brief React Flow reconciliation frame. Count
+          // consecutive misses: a single absent frame during drag or React
+          // reconciliation is normal — only destroy the cable after 8 frames
+          // (~133ms) of continuous absence so cables don't blink during drags.
+          const prev = missingNodeFramesRef.current.get(edge.id) ?? 0;
+          const next = prev + 1;
+          missingNodeFramesRef.current.set(edge.id, next);
+          if (next >= 8) {
+            simsRef.current.delete(edge.id);
+            missingNodeFramesRef.current.delete(edge.id);
+            svg.querySelector(`#cable-g-${edge.id}`)?.remove();
+          }
           return;
         }
+        // Node found — reset the missing-frame counter.
+        missingNodeFramesRef.current.delete(edge.id);
         renderedEdges.add(edge.id);
         
         const { start, end, leadStart, leadEnd } = pairedAnchors(source, target);
@@ -111,9 +129,12 @@ export const CableSystem: React.FC<{
           hit.setAttribute('class', 'wire-hit');
           hit.style.pointerEvents = 'stroke';
           hit.style.cursor = 'pointer';
+          // Use the ref so this listener always calls the latest handler without
+          // requiring the effect to be recreated (which would blink the cable).
+          const edgeId = edge.id;
           hit.addEventListener('click', (e) => {
             e.stopPropagation();
-            onEdgeClick(edge.id);
+            onEdgeClickRef.current(edgeId);
           });
           
           const wire = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -280,7 +301,7 @@ export const CableSystem: React.FC<{
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [connectMode, connectionSourceId, connectionPointer, connectionHoverId, selectedEdgeId, onEdgeClick]);
+  }, [connectMode, connectionSourceId, connectionPointer, connectionHoverId, selectedEdgeId]);
 
   return (
     <div style={{
