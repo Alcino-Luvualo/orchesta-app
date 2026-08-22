@@ -427,6 +427,11 @@ function portalZoomForScale(scale: number): number {
   return clampPortalScale(scale)
 }
 
+function applyPortalZoom(record: PortalRecord): void {
+  if (!portalViewAlive(record)) return
+  try { record.view.webContents.setZoomFactor(portalZoomForScale(record.zoomFactor)) } catch { /* teardown/navigation race */ }
+}
+
 function applyPortalPresentationOrder(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const ordered = Array.from(portals.values())
@@ -908,6 +913,7 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   })
   view.webContents.on('dom-ready', () => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    applyPortalZoom(record)
     record.firstFrameReady = true
     if (record.lifecycle === 'loading') record.lifecycle = record.frozen ? 'frozen' : 'ready'
     applyPortalVisibility(record)
@@ -919,6 +925,7 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   })
   view.webContents.on('did-finish-load', () => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    applyPortalZoom(record)
     record.lifecycle = record.frozen ? 'frozen' : 'ready'
     record.lastError = null
     // Mark the portal as frame-ready immediately so applyPortalVisibility can
@@ -946,6 +953,7 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   })
   view.webContents.on('did-stop-loading', () => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    applyPortalZoom(record)
     record.firstFrameReady = true
     if (record.lifecycle === 'loading') record.lifecycle = record.frozen ? 'frozen' : 'ready'
     applyPortalVisibility(record)
@@ -953,6 +961,7 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   })
   view.webContents.on('did-navigate', (_event, url) => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    applyPortalZoom(record)
     clearPortalRefs(record)
     record.url = url
     record.firstFrameReady = true
@@ -962,6 +971,7 @@ function ensurePortal(portalId: string, requestedUrl: string): PortalRecord {
   })
   view.webContents.on('did-navigate-in-page', (_event, url) => {
     if (record.lifecycle === 'destroying' || record.lifecycle === 'destroyed') return
+    applyPortalZoom(record)
     clearPortalRefs(record)
     if (record.url !== url) record.navigationGeneration += 1
     record.url = url
