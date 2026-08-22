@@ -16,6 +16,7 @@ export interface TerminalTranscriptionProvider {
   networkDisclosure: string
   transcribe(options: {
     signal: AbortSignal
+    stopSignal: AbortSignal
     onTranscript: (text: string) => void
     onPhase: (phase: VoiceTranscriptPhase) => void
   }): Promise<void>
@@ -38,6 +39,7 @@ type VoiceInputCallbacks = {
 export class TerminalVoiceController {
   private generation = 0
   private abortController: AbortController | null = null
+  private stopController: AbortController | null = null
   private activeTerminalId: string | null = null
   private callbacks: VoiceInputCallbacks | null = null
   private snapshot: VoiceInputSnapshot = { state: 'idle', terminalId: null, error: null }
@@ -58,7 +60,9 @@ export class TerminalVoiceController {
     this.cancel(false)
     const generation = ++this.generation
     const abortController = new AbortController()
+    const stopController = new AbortController()
     this.abortController = abortController
+    this.stopController = stopController
     this.activeTerminalId = options.terminalId
     this.callbacks = options.callbacks
     let inserted = false
@@ -71,6 +75,7 @@ export class TerminalVoiceController {
       this.publish('recording')
       await options.provider.transcribe({
         signal: abortController.signal,
+        stopSignal: stopController.signal,
         onPhase: (nextPhase) => {
           if (generation !== this.generation || abortController.signal.aborted) return
           phase = nextPhase
@@ -99,15 +104,26 @@ export class TerminalVoiceController {
     } finally {
       if (generation === this.generation) {
         this.abortController = null
+        this.stopController = null
         this.activeTerminalId = null
       }
     }
   }
 
+  /** Finish the recording and keep the captured audio for transcription. */
+  stop(): void {
+    if (this.snapshot.state !== 'recording' || !this.stopController) return
+    this.publish('processing')
+    this.stopController.abort()
+    this.stopController = null
+  }
+
   cancel(publish = true): void {
     this.generation += 1
     this.abortController?.abort()
+    this.stopController?.abort()
     this.abortController = null
+    this.stopController = null
     if (publish && (this.activeTerminalId || this.snapshot.state !== 'idle')) this.publish('cancelled')
     this.activeTerminalId = null
   }
@@ -136,6 +152,7 @@ type SpeechRecognitionLike = {
   onerror: ((event: { error?: string; message?: string }) => void) | null
   onend: (() => void) | null
   start: () => void
+  stop: () => void
   abort: () => void
 }
 
@@ -155,7 +172,7 @@ function resampleAudio(input: Float32Array, inputRate: number, outputRate = 16_0
   return output
 }
 
-async function captureMicrophone(signal: AbortSignal): Promise<Float32Array> {
+async function captureMicrophone(signal: AbortSignal, stopSignal: AbortSignal): Promise<Float32Array> {
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
     throw new Error('A captura local de áudio não está disponível neste sistema.')
   }
@@ -169,56 +186,52 @@ async function captureMicrophone(signal: AbortSignal): Promise<Float32Array> {
   }
   const context = new AudioContextClass()
   await context.resume()
-  const source = context.createMediaStreamSource(stream)
-  const analyser = context.createAnalyser()
-  analyser.fftSize = 1024
-  source.connect(analyser)
   const recorder = new MediaRecorder(stream)
   const chunks: Blob[] = []
 
   try {
     const blob = await new Promise<Blob>((resolve, reject) => {
       let settled = false
-      let heardSpeech = false
-      let lastSpeechAt = Date.now()
-      const startedAt = Date.now()
-      const samples = new Uint8Array(analyser.fftSize)
-      const finish = (error?: Error) => {
+      let stopping = false
+      const cleanup = () => {
+        signal.removeEventListener('abort', abort)
+        stopSignal.removeEventListener('abort', stop)
+        recorder.removeEventListener('dataavailable', collectChunk)
+        recorder.removeEventListener('error', recorderFailed)
+      }
+      const complete = () => {
         if (settled) return
         settled = true
-        window.clearInterval(meter)
-        signal.removeEventListener('abort', abort)
-        if (recorder.state !== 'inactive') recorder.stop()
-        if (error) reject(error)
+        cleanup()
+        resolve(new Blob(chunks, { type: recorder.mimeType }))
       }
-      const abort = () => finish(new DOMException('Voice input cancelled', 'AbortError'))
-      const meter = window.setInterval(() => {
-        analyser.getByteTimeDomainData(samples)
-        let energy = 0
-        for (const value of samples) energy += ((value - 128) / 128) ** 2
-        const rms = Math.sqrt(energy / samples.length)
-        const now = Date.now()
-        if (rms > .025) {
-          heardSpeech = true
-          lastSpeechAt = now
-        }
-        if (heardSpeech && now - lastSpeechAt > 1_150 && now - startedAt > 1_400) finish()
-        else if (now - startedAt > 12_000) finish()
-      }, 100)
-      recorder.addEventListener('dataavailable', (event) => { if (event.data.size) chunks.push(event.data) })
-      recorder.addEventListener('error', () => finish(new Error('Falha ao gravar o microfone.')))
-      recorder.addEventListener('stop', () => {
-        if (!settled) {
-          settled = true
-          window.clearInterval(meter)
-          signal.removeEventListener('abort', abort)
-        }
-        if (!signal.aborted) resolve(new Blob(chunks, { type: recorder.mimeType }))
-      }, { once: true })
+      const fail = (error: Error) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        if (recorder.state !== 'inactive') recorder.stop()
+        reject(error)
+      }
+      const finishRecording = () => {
+        if (settled || stopping) return
+        stopping = true
+        if (recorder.state === 'inactive') complete()
+        else recorder.stop()
+      }
+      const abort = () => fail(new DOMException('Voice input cancelled', 'AbortError'))
+      const stop = () => finishRecording()
+      const collectChunk = (event: BlobEvent) => { if (event.data.size) chunks.push(event.data) }
+      const recorderFailed = () => fail(new Error('Falha ao gravar o microfone.'))
+      recorder.addEventListener('dataavailable', collectChunk)
+      recorder.addEventListener('error', recorderFailed)
+      recorder.addEventListener('stop', complete, { once: true })
       signal.addEventListener('abort', abort, { once: true })
+      stopSignal.addEventListener('abort', stop, { once: true })
       if (signal.aborted) abort()
+      else if (stopSignal.aborted) stop()
       else recorder.start(200)
     })
+    if (!blob.size) return new Float32Array()
     const decoded = await context.decodeAudioData(await blob.arrayBuffer())
     const mono = new Float32Array(decoded.length)
     for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
@@ -227,7 +240,6 @@ async function captureMicrophone(signal: AbortSignal): Promise<Float32Array> {
     }
     return resampleAudio(mono, decoded.sampleRate)
   } finally {
-    source.disconnect()
     stream.getTracks().forEach((track) => track.stop())
     await context.close().catch(() => undefined)
   }
@@ -263,9 +275,9 @@ export function createLocalWhisperProvider(): TerminalTranscriptionProvider | nu
     label: 'Whisper local',
     audioLeavesMachine: false,
     networkDisclosure: 'O áudio fica neste computador. Na primeira utilização, o modelo multilíngue é descarregado e guardado na cache local.',
-    transcribe: async ({ signal, onTranscript, onPhase }) => {
-      const audio = await captureMicrophone(signal)
-      if (signal.aborted) return
+    transcribe: async ({ signal, stopSignal, onTranscript, onPhase }) => {
+      const audio = await captureMicrophone(signal, stopSignal)
+      if (signal.aborted || !audio.length) return
       onPhase('processing')
       const transcript = await transcribeWithLocalWhisper(audio, signal)
       if (transcript) onTranscript(transcript)
@@ -286,13 +298,16 @@ export function createBrowserSpeechRecognitionProvider(scope: typeof globalThis 
     label: 'Reconhecimento de voz do Chromium',
     audioLeavesMachine: true,
     networkDisclosure: 'O Chromium ou o sistema pode enviar o áudio ao provider de reconhecimento configurado. O Orchestra não guarda o áudio.',
-    transcribe: ({ signal, onTranscript, onPhase }) => new Promise<void>((resolve, reject) => {
+    transcribe: ({ signal, stopSignal, onTranscript, onPhase }) => new Promise<void>((resolve, reject) => {
       const recognition = new Recognition()
       let settled = false
+      let stopRequested = false
+      const transcriptChunks: string[] = []
       const finish = (error?: Error) => {
         if (settled) return
         settled = true
         signal.removeEventListener('abort', abort)
+        stopSignal.removeEventListener('abort', stop)
         if (error) reject(error)
         else resolve()
       }
@@ -300,24 +315,45 @@ export function createBrowserSpeechRecognitionProvider(scope: typeof globalThis 
         try { recognition.abort() } catch { /* recognition already ended */ }
         finish(new DOMException('Voice input cancelled', 'AbortError'))
       }
+      const stop = () => {
+        if (settled) return
+        stopRequested = true
+        onPhase('processing')
+        try { recognition.stop() }
+        catch { finish() }
+      }
       recognition.continuous = true
       recognition.interimResults = false
       recognition.lang = candidate.navigator?.language || 'pt-PT'
       recognition.onresult = (event) => {
         for (let index = event.resultIndex || 0; index < event.results.length; index += 1) {
           const result = event.results[index]
-          if (result?.isFinal) onTranscript(result[0]?.transcript || '')
+          const transcript = result?.isFinal ? result[0]?.transcript?.trim() : ''
+          if (transcript) transcriptChunks.push(transcript)
         }
       }
       recognition.onaudioend = () => onPhase('processing')
       recognition.onerror = (event) => {
-        if (event.error === 'aborted') finish(new DOMException('Voice input cancelled', 'AbortError'))
+        if (event.error === 'aborted' && stopRequested) {
+          const transcript = transcriptChunks.join(' ').trim()
+          if (transcript) onTranscript(transcript)
+          finish()
+        }
+        else if (event.error === 'aborted') finish(new DOMException('Voice input cancelled', 'AbortError'))
         else if (event.error === 'no-speech') finish()
         else finish(new Error(event.message || `Falha no provider de voz: ${event.error || 'desconhecida'}`))
       }
-      recognition.onend = () => finish()
+      recognition.onend = () => {
+        if (settled) return
+        onPhase('processing')
+        const transcript = transcriptChunks.join(' ').trim()
+        if (transcript) onTranscript(transcript)
+        finish()
+      }
       signal.addEventListener('abort', abort, { once: true })
+      stopSignal.addEventListener('abort', stop, { once: true })
       if (signal.aborted) abort()
+      else if (stopSignal.aborted) stop()
       else recognition.start()
     })
   }
