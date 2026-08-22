@@ -57,7 +57,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
   const dataRef = useRef(data)
   dataRef.current = data
   const portalId = String(props.portalId || id)
-  const initialUrl = String(props.url || 'about:blank')
+  const initialUrl = String(props.url && props.url !== 'about:blank' ? props.url : 'https://www.google.com')
   const [address, setAddress] = useState(initialUrl)
   const [currentUrl, setCurrentUrl] = useState(initialUrl)
   const [loading, setLoading] = useState(false)
@@ -326,7 +326,7 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
         }
         if (boundsRafRef.current !== null) window.cancelAnimationFrame(boundsRafRef.current)
         boundsRafRef.current = null
-        setPresentationValue('transitioning')
+        setPresentationValue(snapshotRef.current ? 'snapshot' : 'transitioning')
         lastBoundsKeyRef.current = ''
         scheduleBoundsSync('transitioning', true)
         return
