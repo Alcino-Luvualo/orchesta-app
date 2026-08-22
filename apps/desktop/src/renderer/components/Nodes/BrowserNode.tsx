@@ -57,7 +57,9 @@ export const BrowserNode: React.FC<{ id: string; data: CanvasComponentData }> = 
   const dataRef = useRef(data)
   dataRef.current = data
   const portalId = String(props.portalId || id)
-  const initialUrl = String(props.url && props.url !== 'about:blank' ? props.url : 'https://www.google.com')
+  // Start with a neutral tab. The user chooses whether to visit Google (or
+  // another provider), avoiding an automatic first-request anti-bot prompt.
+  const initialUrl = String(props.url || 'about:blank')
   const [address, setAddress] = useState(initialUrl)
   const [currentUrl, setCurrentUrl] = useState(initialUrl)
   const [loading, setLoading] = useState(false)
