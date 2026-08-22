@@ -1,6 +1,5 @@
 export type VoiceInputState =
   | 'idle'
-  | 'requesting-permission'
   | 'recording'
   | 'processing'
   | 'inserting'
@@ -21,8 +20,6 @@ export interface TerminalTranscriptionProvider {
     onPhase: (phase: VoiceTranscriptPhase) => void
   }): Promise<void>
 }
-
-export type MicrophonePermissionRequester = (signal: AbortSignal) => Promise<'granted' | 'denied'>
 
 export type VoiceInputSnapshot = {
   state: VoiceInputState
@@ -53,7 +50,6 @@ export class TerminalVoiceController {
 
   async start(options: {
     terminalId: string
-    permission: MicrophonePermissionRequester
     provider: TerminalTranscriptionProvider
     callbacks: VoiceInputCallbacks
   }): Promise<void> {
@@ -67,12 +63,8 @@ export class TerminalVoiceController {
     this.callbacks = options.callbacks
     let inserted = false
     let phase: VoiceTranscriptPhase = 'recording'
-    this.publish('requesting-permission')
+    this.publish('recording')
     try {
-      const permission = await options.permission(abortController.signal)
-      if (generation !== this.generation || abortController.signal.aborted) return
-      if (permission !== 'granted') throw new Error('Permissão de microfone negada.')
-      this.publish('recording')
       await options.provider.transcribe({
         signal: abortController.signal,
         stopSignal: stopController.signal,
@@ -158,133 +150,6 @@ type SpeechRecognitionLike = {
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 
-function resampleAudio(input: Float32Array, inputRate: number, outputRate = 16_000): Float32Array {
-  if (inputRate === outputRate) return input
-  const length = Math.max(1, Math.round(input.length * outputRate / inputRate))
-  const output = new Float32Array(length)
-  for (let index = 0; index < length; index += 1) {
-    const source = index * inputRate / outputRate
-    const left = Math.floor(source)
-    const right = Math.min(input.length - 1, left + 1)
-    const ratio = source - left
-    output[index] = input[left] * (1 - ratio) + input[right] * ratio
-  }
-  return output
-}
-
-async function captureMicrophone(signal: AbortSignal, stopSignal: AbortSignal): Promise<Float32Array> {
-  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-    throw new Error('A captura local de áudio não está disponível neste sistema.')
-  }
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-  })
-  const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-  if (!AudioContextClass) {
-    stream.getTracks().forEach((track) => track.stop())
-    throw new Error('O processamento local de áudio não está disponível.')
-  }
-  const context = new AudioContextClass()
-  await context.resume()
-  const recorder = new MediaRecorder(stream)
-  const chunks: Blob[] = []
-
-  try {
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      let settled = false
-      let stopping = false
-      const cleanup = () => {
-        signal.removeEventListener('abort', abort)
-        stopSignal.removeEventListener('abort', stop)
-        recorder.removeEventListener('dataavailable', collectChunk)
-        recorder.removeEventListener('error', recorderFailed)
-      }
-      const complete = () => {
-        if (settled) return
-        settled = true
-        cleanup()
-        resolve(new Blob(chunks, { type: recorder.mimeType }))
-      }
-      const fail = (error: Error) => {
-        if (settled) return
-        settled = true
-        cleanup()
-        if (recorder.state !== 'inactive') recorder.stop()
-        reject(error)
-      }
-      const finishRecording = () => {
-        if (settled || stopping) return
-        stopping = true
-        if (recorder.state === 'inactive') complete()
-        else recorder.stop()
-      }
-      const abort = () => fail(new DOMException('Voice input cancelled', 'AbortError'))
-      const stop = () => finishRecording()
-      const collectChunk = (event: BlobEvent) => { if (event.data.size) chunks.push(event.data) }
-      const recorderFailed = () => fail(new Error('Falha ao gravar o microfone.'))
-      recorder.addEventListener('dataavailable', collectChunk)
-      recorder.addEventListener('error', recorderFailed)
-      recorder.addEventListener('stop', complete, { once: true })
-      signal.addEventListener('abort', abort, { once: true })
-      stopSignal.addEventListener('abort', stop, { once: true })
-      if (signal.aborted) abort()
-      else if (stopSignal.aborted) stop()
-      else recorder.start(200)
-    })
-    if (!blob.size) return new Float32Array()
-    const decoded = await context.decodeAudioData(await blob.arrayBuffer())
-    const mono = new Float32Array(decoded.length)
-    for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
-      const values = decoded.getChannelData(channel)
-      for (let index = 0; index < values.length; index += 1) mono[index] += values[index] / decoded.numberOfChannels
-    }
-    return resampleAudio(mono, decoded.sampleRate)
-  } finally {
-    stream.getTracks().forEach((track) => track.stop())
-    await context.close().catch(() => undefined)
-  }
-}
-
-function transcribeWithLocalWhisper(audio: Float32Array, signal: AbortSignal): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./voiceWhisperWorker.ts', import.meta.url), { type: 'module' })
-    const finish = (error?: Error, text = '') => {
-      signal.removeEventListener('abort', abort)
-      worker.terminate()
-      if (error) reject(error)
-      else resolve(text)
-    }
-    const abort = () => finish(new DOMException('Voice input cancelled', 'AbortError'))
-    worker.addEventListener('message', (event: MessageEvent<{ type?: string; text?: string; error?: string }>) => {
-      if (event.data.type === 'result') finish(undefined, event.data.text || '')
-      else if (event.data.type === 'error') {
-        finish(new Error(`A transcrição local falhou: ${event.data.error || 'erro desconhecido'}`))
-      }
-    })
-    worker.addEventListener('error', (event) => finish(new Error(`A transcrição local falhou: ${event.message}`)), { once: true })
-    signal.addEventListener('abort', abort, { once: true })
-    if (signal.aborted) abort()
-    else worker.postMessage({ audio, language: 'portuguese' }, [audio.buffer])
-  })
-}
-
-export function createLocalWhisperProvider(): TerminalTranscriptionProvider | null {
-  if (typeof window === 'undefined' || typeof Worker === 'undefined' || typeof MediaRecorder === 'undefined') return null
-  return {
-    id: 'local-whisper',
-    label: 'Whisper local',
-    audioLeavesMachine: false,
-    networkDisclosure: 'O áudio fica neste computador. Na primeira utilização, o modelo multilíngue é descarregado e guardado na cache local.',
-    transcribe: async ({ signal, stopSignal, onTranscript, onPhase }) => {
-      const audio = await captureMicrophone(signal, stopSignal)
-      if (signal.aborted || !audio.length) return
-      onPhase('processing')
-      const transcript = await transcribeWithLocalWhisper(audio, signal)
-      if (transcript) onTranscript(transcript)
-    }
-  }
-}
-
 export function createBrowserSpeechRecognitionProvider(scope: typeof globalThis = globalThis): TerminalTranscriptionProvider | null {
   const candidate = scope as typeof globalThis & {
     SpeechRecognition?: SpeechRecognitionConstructor
@@ -324,7 +189,8 @@ export function createBrowserSpeechRecognitionProvider(scope: typeof globalThis 
       }
       recognition.continuous = true
       recognition.interimResults = false
-      recognition.lang = candidate.navigator?.language || 'pt-PT'
+      const browserLanguage = candidate.navigator?.language || ''
+      recognition.lang = browserLanguage.toLowerCase().startsWith('pt') ? browserLanguage : 'pt-PT'
       recognition.onresult = (event) => {
         for (let index = event.resultIndex || 0; index < event.results.length; index += 1) {
           const result = event.results[index]
@@ -356,16 +222,5 @@ export function createBrowserSpeechRecognitionProvider(scope: typeof globalThis 
       else if (stopSignal.aborted) stop()
       else recognition.start()
     })
-  }
-}
-
-export async function requestBrowserMicrophonePermission(signal: AbortSignal): Promise<'granted' | 'denied'> {
-  if (!navigator.mediaDevices?.getUserMedia || signal.aborted) return 'denied'
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    stream.getTracks().forEach((track) => track.stop())
-    return signal.aborted ? 'denied' : 'granted'
-  } catch {
-    return 'denied'
   }
 }
