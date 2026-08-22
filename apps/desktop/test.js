@@ -385,6 +385,7 @@ const recruitAgentModalSource = fs.readFileSync(path.join(sourceRoot, 'renderer/
 if (!recruitAgentModalSource.includes('firstInstalled.path || firstInstalled.cmd') || !recruitAgentModalSource.includes('tool.path || tool.cmd')) throw new Error('Detected agents lost their absolute executable path')
 if (!browserSource.includes("queueGeometry('creating', true)")) throw new Error('New browser portals can deadlock before their first visible frame')
 if (!terminalVoiceSource.includes('createLocalWhisperProvider') || !terminalVoiceSource.includes('transcribeWithLocalWhisper') || !terminalSource.includes('createLocalWhisperProvider() || createBrowserSpeechRecognitionProvider()')) throw new Error('Voice input lost its local Whisper provider/fallback')
+if (!terminalVoiceSource.includes('stopSignal') || !terminalVoiceSource.includes('stop(): void') || !terminalSource.includes('Parar gravação e transcrever') || !terminalSource.includes('<Square')) throw new Error('Voice input lost its explicit stop-and-transcribe control')
 if (!terminalSource.includes('scrollback: 1_000_000')) throw new Error('Terminal scrollback budget regressed from the unlimited-style buffer')
 if (!terminalSource.includes('shellQuotePath') || !terminalSource.includes('externalInputRef.current') || terminalSource.includes('terminal.paste(location)')) throw new Error('Terminal + path insertion lost quoting, serialization, or exactly-once ownership')
 for (const state of ['requesting-permission', 'recording', 'processing', 'inserting', 'error', 'cancelled']) {
