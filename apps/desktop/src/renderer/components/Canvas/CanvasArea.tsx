@@ -99,6 +99,10 @@ export const CanvasArea: React.FC = () => {
   // finishes deleting the persisted record. Without this fence, the poll can
   // observe the old row and immediately re-add the node after clicking X.
   const deletingNodeIdsRef = useRef<Set<string>>(new Set())
+  // Nodes that have been moved locally but whose new position may not yet have
+  // reached the DB (350ms debounce). The 900ms external-refresh poll must not
+  // overwrite these with stale backend coordinates during or just after a drag.
+  const dirtyNodeIdsRef = useRef<Set<string>>(new Set())
   const fittedWorkspaceRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -231,9 +235,18 @@ export const CanvasArea: React.FC = () => {
         // Merge only geometry here; note text and other live renderer state
         // have their own conflict-aware channels and must not be overwritten
         // by a slower database polling tick.
+        // Skip geometry for the focused node: its position is intentionally
+        // different from the DB (expanded to fill the viewport) and must not
+        // be reverted by this poll. Also skip nodes that have been moved
+        // locally but whose new coordinates haven't been persisted yet — the
+        // debounce window (350ms) is shorter than the poll interval (900ms)
+        // but the race is common enough to cause visible snap-back on drag.
+        const focusedNodeId = focusSnapshotRef.current?.id ?? null
+        const dirtyNodeIds = dirtyNodeIdsRef.current
         let externalGeometryChanged = false
         const remoteNodesById = new Map(nextRemoteNodes.map((node) => [node.id, node]))
         const geometryMergedNodes = retainedNodes.map((node) => {
+          if (node.id === focusedNodeId || dirtyNodeIds.has(node.id)) return node
           const remote = remoteNodesById.get(node.id)
           if (!remote || remote.x === node.x && remote.y === node.y && remote.width === node.width && remote.height === node.height) return node
           externalGeometryChanged = true
@@ -282,6 +295,9 @@ export const CanvasArea: React.FC = () => {
         if (persistedNodeHashesRef.current.get(node.id) === hash) return
         window.orchestra?.invoke('canvas.node.save', { workspaceId, floorId: persistedFloorId, node }).catch(() => undefined)
         persistedNodeHashesRef.current.set(node.id, hash)
+        // Node is now in the DB — the external-refresh poll may resume
+        // syncing its geometry from there without snapping it back.
+        dirtyNodeIdsRef.current.delete(node.id)
       })
       persistedNodeIdsRef.current = current
     }, 350)
@@ -654,7 +670,16 @@ export const CanvasArea: React.FC = () => {
         })
       }
 
-      if (result.positionChanged) setNodes(result.nodes)
+      if (result.positionChanged) {
+        // Mark all moved nodes as dirty so the 900ms external-refresh poll
+        // cannot overwrite their new position before it reaches the DB.
+        for (const change of changes) {
+          if (change.type === 'position' && change.position) {
+            dirtyNodeIdsRef.current.add(change.id)
+          }
+        }
+        setNodes(result.nodes)
+      }
 
       const nextSelectedNodeId = result.removedNodeIds.includes(result.selectedNodeId) ? null : result.selectedNodeId
       if (nextSelectedNodeId !== selectedNodeId) setSelectedNodeId(nextSelectedNodeId)
@@ -705,7 +730,7 @@ export const CanvasArea: React.FC = () => {
         cwd: activeFloor?.path || activeWorkspace?.path || '',
         agent: kind === 'terminal' ? 'Claude Code' : undefined,
         ...(kind === 'note' ? { content: '', color: '#fff2a8' } : {}),
-        ...(kind === 'browser' ? { url: 'about:blank' } : {})
+        ...(kind === 'browser' ? { url: 'https://www.google.com' } : {})
       }
     }
     addNode(newNode)
