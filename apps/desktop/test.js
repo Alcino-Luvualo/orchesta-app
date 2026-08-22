@@ -119,6 +119,7 @@ const authChecks = [
   ['native portals are suppressed while renderer surfaces are modal', /nativePortalSuppressionReasons[\s\S]*?applyPortalVisibility/],
   ['portal screenshots preserve a cached live frame', /lastSnapshot[\s\S]*?screenshotPortal/],
   ['canvas scale preserves the browser logical viewport', /function portalZoomForScale\(scale: number\)[\s\S]*?return clampPortalScale\(scale\)[\s\S]*?setZoomFactor\(nextZoom\)/],
+  ['portal reapplies canvas zoom after navigation resets Chromium zoom', /function applyPortalZoom\(record: PortalRecord\)[\s\S]*?setZoomFactor\(portalZoomForScale\(record\.zoomFactor\)\)/],
   ['portal bounds track same-generation revisions', /boundsRevision/],
   ['portal bounds reject stale revisions', /revision < record\.boundsRevision/],
   ['portal handlers accept bounds revisions', /acceptedRevision/],
@@ -381,17 +382,18 @@ const canvasSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/
 const browserSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/BrowserNode.tsx'), 'utf8')
 const terminalSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/TerminalNode.tsx'), 'utf8')
 const terminalVoiceSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Nodes/terminalVoice.ts'), 'utf8')
+if (fs.existsSync(path.join(sourceRoot, 'renderer/components/Nodes/voiceWhisperWorker.ts'))) throw new Error('The removed local Whisper worker is still present')
 const recruitAgentModalSource = fs.readFileSync(path.join(sourceRoot, 'renderer/components/Modals/RecruitAgentModal.tsx'), 'utf8')
 if (!recruitAgentModalSource.includes('firstInstalled.path || firstInstalled.cmd') || !recruitAgentModalSource.includes('tool.path || tool.cmd')) throw new Error('Detected agents lost their absolute executable path')
 if (!browserSource.includes("queueGeometry('creating', true)")) throw new Error('New browser portals can deadlock before their first visible frame')
-if (!terminalVoiceSource.includes('createLocalWhisperProvider') || !terminalVoiceSource.includes('transcribeWithLocalWhisper') || !terminalSource.includes('createLocalWhisperProvider() || createBrowserSpeechRecognitionProvider()')) throw new Error('Voice input lost its local Whisper provider/fallback')
+if (!terminalVoiceSource.includes('createBrowserSpeechRecognitionProvider') || terminalVoiceSource.includes('createLocalWhisperProvider') || terminalVoiceSource.includes('transcribeWithLocalWhisper') || terminalSource.includes('voiceConsentOpen')) throw new Error('Voice input still contains the removed local Whisper/consent flow')
 if (!terminalVoiceSource.includes('stopSignal') || !terminalVoiceSource.includes('stop(): void') || !terminalSource.includes('Parar gravação e transcrever') || !terminalSource.includes('<Square')) throw new Error('Voice input lost its explicit stop-and-transcribe control')
 if (!terminalSource.includes('scrollback: 1_000_000')) throw new Error('Terminal scrollback budget regressed from the unlimited-style buffer')
 if (!terminalSource.includes('shellQuotePath') || !terminalSource.includes('externalInputRef.current') || terminalSource.includes('terminal.paste(location)')) throw new Error('Terminal + path insertion lost quoting, serialization, or exactly-once ownership')
-for (const state of ['requesting-permission', 'recording', 'processing', 'inserting', 'error', 'cancelled']) {
+for (const state of ['recording', 'processing', 'inserting', 'error', 'cancelled']) {
   if (!terminalVoiceSource.includes(`'${state}'`)) throw new Error(`Terminal voice lifecycle lost ${state}`)
 }
-if (!terminalSource.includes('audioLeavesMachine') || !terminalVoiceSource.includes('networkDisclosure') || !terminalVoiceSource.includes('TerminalTranscriptionProvider')) throw new Error('Terminal voice input hides its provider/network disclosure')
+if (!terminalVoiceSource.includes('audioLeavesMachine') || !terminalVoiceSource.includes('networkDisclosure') || !terminalVoiceSource.includes('TerminalTranscriptionProvider')) throw new Error('Terminal voice provider metadata is missing')
 if (!browserSource.includes('propsRef.current') || !browserSource.includes('url: payload.url')) throw new Error('Browser navigation does not preserve current node properties')
 if (!browserSource.includes("scheduleBoundsSync('live')") || !browserSource.includes('pendingUpdate') || !browserSource.includes('snapshotRef.current')) throw new Error('Browser portal motion lost its cached snapshot/latest-only presentation bridge')
 if (!canvasSource.includes("selectedNode.kind === 'browser' ? { portalId: duplicateId }")) throw new Error('Browser duplication can still share a native portal')
