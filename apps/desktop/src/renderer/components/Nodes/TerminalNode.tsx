@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Handle, Position, NodeResizer } from '@xyflow/react'
 import { CompletionContext } from '@codemirror/autocomplete'
-import { FileCode2, FolderOpen, GitBranch, Maximize2, Mic, Minimize2, Paperclip, Plus, X } from 'lucide-react'
+import { FileCode2, FolderOpen, GitBranch, Maximize2, Mic, Minimize2, Paperclip, Plus, Square, X } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
@@ -40,8 +40,8 @@ type PendingClipboardRequest = {
 
 function voiceStateLabel(snapshot: VoiceInputSnapshot): string {
   if (snapshot.state === 'requesting-permission') return 'A pedir permissão de microfone…'
-  if (snapshot.state === 'recording') return 'A ouvir…'
-  if (snapshot.state === 'processing') return 'A processar voz…'
+  if (snapshot.state === 'recording') return 'A gravar… Clica no quadrado para parar e transcrever.'
+  if (snapshot.state === 'processing') return 'A transcrever…'
   if (snapshot.state === 'inserting') return 'A inserir transcrição…'
   if (snapshot.state === 'cancelled') return 'Entrada de voz cancelada.'
   if (snapshot.state === 'error') return snapshot.error || 'Falha na entrada de voz.'
@@ -1038,6 +1038,20 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
     })
   }
 
+  const isVoiceRecording = voiceSnapshot.state === 'recording'
+  const isVoiceBusy = voiceSnapshot.state === 'requesting-permission' || isVoiceRecording || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting'
+  const voiceButtonLabel = isVoiceRecording ? 'Parar gravação e transcrever' : voiceStateLabel(voiceSnapshot)
+  const handleVoiceButton = () => {
+    if (isVoiceRecording) voiceControllerRef.current.stop()
+    else if (isVoiceBusy) voiceControllerRef.current.cancel()
+    else { voiceControllerRef.current.reset(); setVoiceConsentOpen(true) }
+  }
+  const handleVoiceStateAction = () => {
+    if (isVoiceRecording) voiceControllerRef.current.stop()
+    else if (isVoiceBusy) voiceControllerRef.current.cancel()
+    else voiceControllerRef.current.reset()
+  }
+
   const executeRichCommand = async (document: string) => {
     if (!richInputEnabled || !sessionReadyRef.current || interactionModeRef.current !== 'shell_prompt') return
     setEditorHandoffPending(true)
@@ -1156,10 +1170,9 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
             <button className="terminal-chip-file-remove" type="button" onClick={(event) => { event.stopPropagation(); setAgentContexts((current) => current.filter((item) => item.id !== context.id)) }} title="Remover contexto" aria-label={`Remover ${context.title}`}><X className="icon" /></button>
           </span>)}
           <span className="terminal-chip" title="Runtime do terminal"><FileCode2 className="icon" />{runtimeChip}</span>
-          <button type="button" className={`terminal-chip terminal-chip-icon terminal-voice-button ${voiceSnapshot.state}`} data-state={voiceSnapshot.state} aria-label={voiceStateLabel(voiceSnapshot)} aria-pressed={voiceSnapshot.state === 'recording' || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting'} title={voiceStateLabel(voiceSnapshot)} onClick={() => {
-            if (voiceSnapshot.state === 'requesting-permission' || voiceSnapshot.state === 'recording' || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting') voiceControllerRef.current.cancel()
-            else { voiceControllerRef.current.reset(); setVoiceConsentOpen(true) }
-          }}><Mic className="icon" /></button>
+          <button type="button" className={`terminal-chip terminal-chip-icon terminal-voice-button ${voiceSnapshot.state}`} data-state={voiceSnapshot.state} aria-label={voiceButtonLabel} aria-pressed={isVoiceRecording} title={voiceButtonLabel} onClick={handleVoiceButton}>
+            {isVoiceRecording ? <Square className="icon" aria-hidden="true" /> : <Mic className="icon" aria-hidden="true" />}
+          </button>
           <span className="terminal-chip terminal-chip-git" title="Estado do Git"><GitBranch className="icon" />{gitSummary}</span>
           <span className="terminal-chip terminal-chip-explorer" title="Explorador de ficheiros"><FolderOpen className="icon" />{explorerLabel}</span>
         </div>
@@ -1184,10 +1197,7 @@ export const TerminalNode: React.FC<{ id: string; data: CanvasComponentData }> =
             <span>{voiceProviderRef.current?.networkDisclosure || 'Este build não possui um provider de transcrição.'}</span>
             <div><button type="button" onClick={() => { setVoiceConsentOpen(false); setVoiceSnapshot({ state: 'cancelled', terminalId: id, error: null }) }}>Cancelar</button><button type="button" disabled={!voiceProviderRef.current} onClick={beginVoiceInput}>Permitir e gravar</button></div>
           </div>}
-          {!voiceConsentOpen && voiceSnapshot.state !== 'idle' && <div className={`terminal-voice-state ${voiceSnapshot.state}`} role={voiceSnapshot.state === 'error' ? 'alert' : 'status'}><span>{voiceStateLabel(voiceSnapshot)}</span><button type="button" onClick={() => {
-            if (voiceSnapshot.state === 'requesting-permission' || voiceSnapshot.state === 'recording' || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting') voiceControllerRef.current.cancel()
-            else voiceControllerRef.current.reset()
-          }}>{voiceSnapshot.state === 'requesting-permission' || voiceSnapshot.state === 'recording' || voiceSnapshot.state === 'processing' || voiceSnapshot.state === 'inserting' ? 'Cancelar' : 'Fechar'}</button></div>}
+          {!voiceConsentOpen && voiceSnapshot.state !== 'idle' && <div className={`terminal-voice-state ${voiceSnapshot.state}`} role={voiceSnapshot.state === 'error' ? 'alert' : 'status'}><span>{voiceStateLabel(voiceSnapshot)}</span><button type="button" className={isVoiceRecording ? 'recording' : ''} onClick={handleVoiceStateAction}>{isVoiceRecording ? <><Square className="icon" aria-hidden="true" />Parar e transcrever</> : isVoiceBusy ? 'Cancelar' : 'Fechar'}</button></div>}
           {clipboardPrompt && <div className="terminal-security-prompt nodrag" role="dialog" aria-label="Permissão de clipboard">
             <strong>{clipboardPrompt.direction === 'write' ? 'Um programa quer escrever no clipboard.' : 'Um programa quer ler o clipboard.'}</strong>
             <span>OSC 52 · {clipboardPrompt.selection || 'c'}</span>
