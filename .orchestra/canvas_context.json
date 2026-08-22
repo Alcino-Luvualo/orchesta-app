@@ -29,6 +29,10 @@
         {
           "id": "term_1787245174370",
           "agent": "Codex"
+        },
+        {
+          "id": "term_1787407347904",
+          "agent": "Shell"
         }
       ],
       "connectedBrowsers": [],
@@ -42,7 +46,116 @@
       "connectedPeerAgents": [],
       "connectedBrowsers": [],
       "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1787302478560",
+      "agent": "Shell",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [
+        {
+          "id": "note_c9c1df33ab334c93bb16f0637908c916",
+          "title": "Checklist: ingredientes para bolo",
+          "content": "# Ingredientes para bolo\n\n- [ ] Farinha de trigo\n- [ ] Açúcar\n- [ ] Ovos\n- [ ] Manteiga ou óleo\n- [ ] Leite\n- [ ] Fermento em pó\n- [ ] Essência de baunilha (opcional)\n- [ ] Uma pitada de sal\n"
+        }
+      ],
+      "connectedPeerAgents": [
+        {
+          "id": "term_1787302726179",
+          "agent": "Shell"
+        }
+      ],
+      "connectedBrowsers": [
+        {
+          "id": "browser_44f6940a-b52f-439d-8c64-3fc9747676db",
+          "title": "Browser Portal",
+          "url": "https://www.google.com/search?q=kaairo+app&sei=UxeIaqijOafD5OUPmoK0mQc"
+        }
+      ],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1787302726179",
+      "agent": "Shell",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [],
+      "connectedPeerAgents": [
+        {
+          "id": "term_1787302478560",
+          "agent": "Shell"
+        }
+      ],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1787303663880",
+      "agent": "Codex",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [],
+      "connectedPeerAgents": [],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1787404355812",
+      "agent": "Codex",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [],
+      "connectedPeerAgents": [],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1787405315598",
+      "agent": "Shell",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [],
+      "connectedPeerAgents": [],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1787407347904",
+      "agent": "Shell",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [],
+      "connectedPeerAgents": [
+        {
+          "id": "term_1787245337952",
+          "agent": "Gemini CLI"
+        }
+      ],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1787409998985",
+      "agent": "Shell",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [],
+      "connectedPeerAgents": [
+        {
+          "id": "term_1787410147456",
+          "agent": "Shell"
+        }
+      ],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
+    },
+    {
+      "sessionId": "term_1787410147456",
+      "agent": "Shell",
+      "cwd": "/home/alcinoo/dev/orchesta-app",
+      "connectedNotes": [],
+      "connectedPeerAgents": [
+        {
+          "id": "term_1787409998985",
+          "agent": "Shell"
+        }
+      ],
+      "connectedBrowsers": [],
+      "connectedFileTrees": []
     }
   ],
-  "updatedAt": "2026-08-20T17:30:33.089Z"
+  "updatedAt": "2026-08-22T14:50:56.049Z"
 }
