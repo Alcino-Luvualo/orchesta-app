@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "Workspace-local Orchestra Desktop coordination skill for connected canvas nodes.",
   "author": {
-    "name": "Alcinoo Luvualo",
-    "email": "aluvualo@example.com"
+    "name": "Alcino Luvualo",
+    "email": "alcinoluvualo@gmail.com"
   },
-  "repository": "https://github.com/alcino-luvualo/orchestra",
+  "repository": "https://github.com/Alcino-Luvualo/orchesta-app",
   "license": "MIT",
   "keywords": ["orchestra", "canvas", "terminal", "workspace"],
   "skills": "./skills/",

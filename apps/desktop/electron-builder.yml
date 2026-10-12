@@ -26,7 +26,7 @@ extraResources:
   - from: ../../.agents/plugins/marketplace.json
     to: plugins/marketplace.json
 linux:
-  maintainer: Alcino Luvualo <aluvualo@example.com>
+  maintainer: Alcino Luvualo <alcinoluvualo@gmail.com>
   target:
     - target: deb
       arch:

@@ -2,10 +2,10 @@
   "name": "orchestra-desktop",
   "version": "0.1.0",
   "description": "Orchestra Agent Workspace for Developers",
-  "homepage": "https://github.com/alcino-luvualo/orchestra",
+  "homepage": "https://github.com/Alcino-Luvualo/orchesta-app",
   "author": {
     "name": "Alcino Luvualo",
-    "email": "aluvualo@example.com"
+    "email": "alcinoluvualo@gmail.com"
   },
   "private": true,
   "main": "dist-electron/main.js",

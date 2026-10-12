@@ -29,6 +29,7 @@
 - [AI agents supported](#ai-agents-supported)
 - [Agent orchestration model](#agent-orchestration-model)
 - [Tokens: security tokens and token economy](#tokens-security-tokens-and-token-economy)
+- [Highlights worth a closer look](#highlights-worth-a-closer-look)
 - [The `orchestra` CLI](#the-orchestra-cli)
 - [Browser portals and computer use](#browser-portals-and-computer-use)
 - [Git floors, worktrees and roles](#git-floors-worktrees-and-roles)
@@ -263,31 +264,72 @@ Large or multi-line text pushed through a TUI can be duplicated, fragmented or l
 
 ## Tokens: security tokens and token economy
 
-"Tokens" mean two different things in an AI system, and Orchestra cares about both. To be precise about what the code does:
+"Tokens" mean two different things in an AI system, and Orchestra takes both seriously.
 
-> **Orchestra does not implement an LLM tokenizer and does not call model APIs.** Text tokenization happens inside the agent CLIs you run. Orchestra's job is to be *token-aware* in how it moves information between them, and to use *authentication tokens* to keep that movement safe.
+> **Orchestra does not implement an LLM tokenizer and does not call model APIs.** Text tokenization (BPE, SentencePiece, …) happens inside the agent CLIs you run. Orchestra's role is to be the **context-cost-aware layer between agents** — it decides *how much* information crosses between them — and to use **authentication tokens** so that crossing is safe.
 
-### 1. Capability and session tokens (security)
+### Why token economy matters in a multi-agent canvas
+
+Every character an agent reads is converted into tokens that occupy its context window and are billed. In a multi-agent setup the cost compounds: a lead agent briefs three workers, each worker reports back, each report is re-read by the lead. Naïve harnesses re-paste whole files, whole pages and whole transcripts. Orchestra attacks the problem structurally:
+
+```
+  Naïve multi-agent                         Orchestra
+  ───────────────────                       ──────────────────────────────
+  paste 800-line brief  → worker A          write brief once into a note
+  paste same brief      → worker B          "read note n_42" (1 line) → A, B
+  paste raw page HTML   → agent             portal inspect: bounded text+links
+  paste whole log       → agent             terminal screen --plain (tail only)
+  every agent sees all  → context bloat     only connected nodes are visible
+```
+
+### Token-economy techniques implemented
+
+| Technique | Where | Effect on context cost |
+| --- | --- | --- |
+| **Graph-scoped visibility** | Cable graph = ACL; `orchestra connections` lists only wired nodes | An agent never loads context it was not given |
+| **Notes by reference** | `note create/read/append`; skill rule "put long context in a note, send a short reference" | A shared brief is stored once and read on demand, not re-pasted N times |
+| **Bounded browser snapshots** | Portal `inspect` caps page text at **20,000 chars**, **100 links** and **200 interactive elements**, each label clamped (≈200–300 chars) | A heavy SPA becomes a predictable, small payload instead of raw HTML |
+| **Compact element references** | Short-lived element indexes instead of full DOM selectors; selectors clamped to 700 chars | Agents click by index, not by re-describing the DOM |
+| **Secret-aware snapshots** | URLs lose query/fragment; secret-looking attributes skipped | Fewer tokens *and* no credentials leaking into model context |
+| **Tail-only terminal reads** | `terminal screen --plain` returns the scrollback tail, `wait-for` polls for a pattern | Agents wait for one string instead of re-reading the whole session |
+| **Depth-limited tree and search** | `files tree --depth N`, `files search` (names first, `--content` opt-in), `workspace snapshot` | Navigating a monorepo costs a few hundred tokens, not a full `find` dump |
+| **Paged history** | `request-history` limits default to 50 and are clamped to 250; diagnostics truncated to 200 entries | Audit lookups never explode |
+| **Back-pressure & anti-duplication** | PTY output batching, bracketed-paste guard, "do not repeatedly paste the payload" rule | Prevents the same giant prompt from being injected twice |
+| **Semantic delegation** | `send` / `ask --wait` carry a short instruction; results come back via a completion marker | No re-explaining, no round-trip chatter to verify delivery |
+| **Role prompts reused** | Roles are stored once and *applied* to terminals | Persona instructions are not retyped per session |
+| **Local audit instead of re-asking** | `agent_request_audit` / `audit_log` in SQLite | "What did I ask agent B yesterday?" is a query, not a new prompt |
+
+### The mental model: three tiers of context
+
+1. **Hot** — what is in the agent's own window right now (kept small by the techniques above).
+2. **Warm** — notes, files and portals wired to the terminal; one cheap command away.
+3. **Cold** — SQLite: note revisions, request history, audit log, floors; queryable, never auto-loaded.
+
+Moving information *down* the tiers (into notes and the database) and pulling it *up* only on demand is what keeps long-running, multi-agent sessions affordable.
+
+### Security tokens (authentication)
 
 - The daemon issues a **client token** to the desktop app and a **per-terminal PTY token** to every session.
-- Tokens are **scoped to the daemon connection** that issued them. On reconnect, they are invalidated and refreshed through a single in-flight refresh (no stampede, no stale-token resurrection).
-- Every privileged request — notes, portals, computer-use, spawn — carries a terminal token. Missing or invalid tokens produce a *specific* authentication error, never a partial success.
-- `ORCHESTRA_TOKEN` is exposed to the agent's environment only to authenticate the CLI. The skill forbids printing it or copying it into commands or other sessions.
-- The wire protocol is **versioned independently** of the app (`PROTOCOL_VERSION = 2`), uses length-prefixed JSON frames over a Unix socket, and caps frames at 8 MiB.
-- The portal element picker strips query strings and fragments from URLs and skips attributes/IDs that look secret (`access_token`, `api_key`, `password`, `csrf`, …) before page data is handed to an agent.
+- Tokens are **scoped to the daemon connection** that issued them. On reconnect they are invalidated and refreshed through a single in-flight refresh — no refresh stampede, no stale token repopulating the map for a new generation.
+- Every privileged request — notes, portals, computer use, spawn — carries a terminal token. A missing or invalid token yields a *specific* authentication error, never a partial success.
+- `ORCHESTRA_TOKEN` lives only in the agent's environment to authenticate the CLI. The skill forbids printing it, copying it into commands, or borrowing another session's token.
+- The wire protocol is **versioned independently** of the app (`PROTOCOL_VERSION = 2`), uses length-prefixed JSON frames over a Unix socket, and caps frames at 8 MiB (16 MiB for portal frames).
+- A second desktop/core instance can never change the first one's socket or token (no split-brain), and a stale socket is recovered automatically.
 
-### 2. Token economy (LLM context cost)
+---
 
-Every byte an agent reads costs context-window tokens. The harness is designed to spend them deliberately:
+## Highlights worth a closer look
 
-| Technique | Why it saves tokens |
-| --- | --- |
-| **Scoped connections** | An agent sees only its wired nodes, not the whole workspace |
-| **Notes by reference** | Long briefs live in a note; the message is one line pointing to it |
-| **Semantic CLI commands** | `files search`, `workspace snapshot`, `files tree --depth N` return compact, structured output instead of whole dumps |
-| **Bounded outputs** | Portal `inspect` returns text and links, not raw HTML; scrollback is bounded; the CLI offers `screen --plain` |
-| **No duplicated pastes** | Back-pressure and bracketed-paste handling avoid sending the same payload twice |
-| **Request history** | Past delegations can be looked up locally instead of re-explained |
+- **A harness that distrusts its own success messages.** Delivery is split into `ptyWritten → delivered → agentAcknowledged → completed`, with an explicit `unverified` state. Most orchestration tools silently collapse these.
+- **Cables that are real security boundaries.** The visual graph and the authorization graph are the same object, so what you *see* is exactly what an agent *can reach*.
+- **Physics-driven rope system.** A dedicated simulation, collision solver, anchor resolver and router make connections feel physical — while remaining a typed permission edge in the database.
+- **Heterogeneous agent swarms.** Claude Code, Codex, Cursor, Antigravity (Gemini) and OpenCode can share notes, files and a browser in one workspace, regardless of vendor.
+- **Agents that verify their own UI.** An agent can open a portal, click through its app, read console errors and take a screenshot — closing the loop between code and result.
+- **Beyond the browser.** Linux accessibility-based *computer use* lets agents drive native desktop apps with the same authenticated model.
+- **Parallel work without collisions.** Floors map to git worktrees, so several agents implement different features on the same repo at once.
+- **Daemon-first reliability.** Rust core with startup/restart/stale-socket recovery, bounded scrollback, PTY back-pressure and dedicated regression gates for the terminal.
+- **Skill + plugin distribution.** The operating manual for agents ships as a real skill and a Codex plugin, kept in sync by a CI-style check (`skill:check`).
+- **Local-first.** Everything is in SQLite on your machine; the only network traffic is whatever the agents you launch decide to do.
 
 ---
 
