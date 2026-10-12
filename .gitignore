@@ -10,3 +10,7 @@ apps/desktop/release/
 .DS_Store
 .orchestra/terminals/
 apps/desktop/.orchestra/terminals/
+
+# Local Orchestra canvas state and notes
+.orchestra/
+apps/desktop/.orchestra/

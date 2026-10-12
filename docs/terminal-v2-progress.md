@@ -1,7 +1,7 @@
 # Orchesta Terminal V2 — Phase Progress
 
 Canonical checkpoint for the phased terminal modernization described in
-`ORCHESTA_TERMINAL_GOAL_MODE_PHASED.txt`.
+the original phased goal brief (no longer tracked in the repository).
 
 ## Current phase
 

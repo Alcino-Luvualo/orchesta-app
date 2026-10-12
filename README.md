@@ -525,4 +525,4 @@ GitHub: [@Alcino-Luvualo](https://github.com/Alcino-Luvualo)
 
 ## License
 
-Released under the **MIT License**, as declared in the Orchestra plugin manifest.
+Released under the **MIT License** — see [LICENSE](LICENSE).
